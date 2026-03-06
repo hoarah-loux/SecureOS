@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ (F5)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${fileDirname}/${fileBasenameNoExtension}",
+      "cwd": "${fileDirname}",
+      "preLaunchTask": "Build C/C++",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+
+      "externalConsole": false,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+
+      "setupCommands": [
+        { "text": "-enable-pretty-printing" }
+      ]
+    },
+    {
+      "name": "ASM (F5)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${fileDirname}/${fileBasenameNoExtension}",
+      "cwd": "${fileDirname}",
+      "preLaunchTask": "Build ASM",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+
+      "externalConsole": false,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+
+      "setupCommands": [
+        { "text": "-enable-pretty-printing" }
+      ]
+    }
+  ]
+}

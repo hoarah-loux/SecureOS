@@ -1,0 +1,232 @@
+Plan (in the order you should implement)
+0) Make “printing” available to PMM (so you can debug) 
+Right now, the serial print functions live as static inside kernel.c, so another file (your PMM) can’t call them.
+
+Plan:
+
+Create a real serial module:
+src/kernel/core/serial.h
+src/kernel/core/serial.c
+Move outb/inb/serial_init/serial_write_string/serial_write_hex32/serial_write_hex64 into it (non-static where needed).
+Update kernel.c to include the header and use the module.
+This is optional, but if you skip it, PMM debugging becomes painful.
+
+1) Update the build to compile multiple kernel C files
+Your boot Makefile currently compiles only one C file: kernel.c. PMM won’t link until we compile it too.
+
+Plan:
+
+Update Makefile so KERNEL_SRC becomes a list (kernel.c + serial.c + pmm.c etc.)
+Produce multiple .o files and link them all.
+2) Decide the PMM public API and file layout
+Plan:
+
+Create:
+src/kernel/mm/alloc/pmm.h
+pmm.c
+API (minimum, stable):
+
+void pmm_init(uint32_t mb2_info_ptr);
+uintptr_t pmm_alloc_frame(void); (returns physical address of a 4KiB frame, 0 on failure)
+void pmm_free_frame(uintptr_t phys);
+Optional (but useful):
+uint64_t pmm_total_frames(void);
+uint64_t pmm_free_frames(void);
+3) Define data model + bitmap (this is the “B” choice)
+We will hard-cap at 4GiB for now, so bitmap size is fixed:
+
+total frames = 4GiB / 4KiB = 1,048,576 frames
+bitmap bits = 1,048,576
+bitmap bytes = 131,072 (128KiB)
+Plan:
+
+Add global static storage in pmm.c (BSS):
+static uint8_t pmm_bitmap[131072];
+Define bit helpers:
+bit_test, bit_set, bit_clear
+Define constants/macros:
+FRAME_SIZE = 4096
+PMM_MAX_PHYS = 0x100000000ULL
+Important convention:
+
+1 = used/reserved, 0 = free
+Init starts with all bits = 1 (super safe), then we free usable frames.
+4) Parse MB2 memory map (start with E820 tag type 6 only)
+Plan:
+
+Implement a minimal MB2 tag scanner in PMM or create a shared MB2 module later.
+For v1: find tag type 6, walk entries, for each entry with type == 1 (usable):
+compute [base, base+len)
+clamp to <4GiB
+align to 4KiB
+mark frames free in that region
+If tag 6 isn’t present: print + halt (or just return with no free frames).
+
+5) Reserve critical ranges (must-do to avoid self-corruption)
+After freeing usable ranges, reserve again:
+
+Frame 0 (optional but recommended): [0, 0x1000)
+Kernel image range (recommended to have linker symbols for this)
+.pgtables section region
+.stack region
+MB2 info structure range: [mb2_info_ptr, mb2_info_ptr + total_size)
+This step is what prevents “PMM alloc returns a page that contains my kernel / page tables / mb2”.
+
+6) Implement alloc/free
+Plan:
+
+pmm_alloc_frame():
+scan bitmap for a 0 bit
+set it to 1
+decrement free counter
+return frame_index * 4096
+pmm_free_frame(phys):
+validate alignment and <4GiB
+clear bit to 0
+increment free counter
+7) Add “checkpoints” via serial prints (so you trust it)
+Plan: during pmm_init, print:
+
+detected usable RAM bytes (sum of usable entries under 4GiB)
+total frames managed
+free frames after freeing usable
+free frames after reservations
+That gives you immediate “this is sane” signals.
+
+One small linker-script improvement (strongly recommended)
+Right now your linker script exports text + bss + stack_top, but PMM wants “kernel image bounds”.
+
+Plan:
+
+Add __kernel_start and __kernel_end to linker.ld
+__kernel_start near the beginning of the first loaded section
+__kernel_end at the end of the last loaded/NOLOAD reservation you consider “kernel-owned”
+This makes reserving the kernel in PMM clean and reliable.
+
+
+
+DONE(S0,S1)
+PENDING(S2,S3,S4,S5,S6,S7)
+
+
+
+
+
+
+
+Reserve Kernel and Critical Regions:
+
+Mark frames used for the kernel, bootloader, modules, and other reserved areas as used in the bitmap, even if the memory map says they’re usable.
+Support for Multiboot2 Modules:
+
+Parse the Multiboot2 modules tag and mark those memory regions as used.
+Statistics and Debug Output:
+
+Count total, used, and free frames.
+Print memory statistics for debugging.
+Sanity Checks:
+
+Validate that the memory map does not overlap with the bitmap or kernel.
+Warn or halt if the memory map is malformed.
+Support for Higher Memory:
+
+If you plan to support >4GiB RAM, extend the bitmap and logic accordingly.
+Memory Map Logging:
+
+Print or log all memory map entries for diagnostics.
+Frame Alignment Checks:
+
+Ensure all marked frames are properly aligned and do not cross reserved boundaries.
+Error Handling:
+
+Handle cases where no usable memory is found or the memory map is missing.
+Would you like a step-by-step plan or code for any of these features?
+
+
+
+
+
+
+fynamicx alloc
+
+Here are the steps to make the PMM bitmap dynamically allocated, and (for completeness) what would be required to make the kernel image itself “dynamically allocated” (though this is not standard or practical):
+
+1. Dynamically Allocating the PMM Bitmap:
+   - Change the bitmap from a static array to a pointer: `static uint8_t *bitmap;`
+   - Parse the Multiboot2 memory map to find the highest usable RAM address and total RAM size.
+   - Calculate the required bitmap size: `bitmap_size = (frame_count / 8);`
+   - Find a free region in RAM large enough for the bitmap (not overlapping kernel, boot info, etc.).
+   - Set `bitmap = (uint8_t *)<chosen address>;` and initialize it with `memset`.
+   - Mark the frames used by the bitmap itself as reserved in the PMM.
+
+2. Dynamically Allocating the Kernel Image (not standard):
+   - The kernel image must be loaded by the bootloader at a fixed address, so you cannot allocate it dynamically at runtime.
+   - If you want a relocatable kernel, you can use position-independent code and have the bootloader load the kernel at any address, but this is advanced and requires special linker and bootloader support.
+   - The kernel’s code, data, and initial stack must always be loaded before the kernel runs.
+
+Summary:
+- Only the PMM bitmap and other runtime data structures can be dynamically allocated after boot.
+- The kernel image itself must be loaded statically by the bootloader.
+
+Would you like code for step 1 (dynamic PMM bitmap allocation)?
+
+
+
+
+
+
+now the pmm is done, but it’s static. If you want to make it dynamic (allocated from the heap), you would need to:
+
+Read pmm.c
+
+Your code is in good shape and covers the essentials for a bitmap-based PMM. Here are a few suggestions and checks to make it more robust and future-proof:
+
+Frame Count Check in All Bitmap Loops:
+In pmm_free_frame_count, you should add a check to avoid counting bits past the real frame count (just like you do in pmm_used_frame_count and pmm_total_frame_count):
+
+
+if (frame < frame_count && (frame_chunk & (1 << j)) == 0) {    count++;}
+Consistency:
+Make sure all your bitmap-scanning functions (free, used, total) use the same frame < frame_count check to avoid counting padding bits.
+
+Comments:
+You already have good comments. Consider adding a note in each function that iterates the bitmap, explaining why you check frame < frame_count.
+
+Dynamic Support:
+Your code is ready for dynamic allocation (just change the static array to a pointer and allocate at runtime). Passing bitmap_size as a parameter is a good step.
+
+Error Handling:
+If you ever add dynamic allocation, check for allocation failures (e.g., bitmap == NULL).
+
+API Consistency:
+If you pass bitmap_size to some functions, consider passing frame_count as well, for full generality.
+
+Unused Parameters:
+In pmm_total_frame_count, if you ever use only frame_count, you can mark bitmap_size as unused with (void)bitmap_size; to avoid warnings.
+
+Summary:
+
+Add frame < frame_count checks in all bitmap loops.
+Otherwise, your code is solid and ready for both static and dynamic bitmap allocation.
+Let me know if you want me to apply any of these improvements!
+
+
+
+
+
+
+
+
+
+IMPORTANT
+
+we now have a pmm that usese a bitmap tot track free/used frames. The next step is to make it dynamic 
+(allocated from the heap) we can’t do that until we have a heap, but the code is already structured to support it.
+You would just change the static array to a pointer and allocate it at runtime based on the detected RAM size.
+
+
+we may switch to a different data structure later (e.g., linked list of free ranges),
+but the bitmap is a good starting point and is simple to implement.
+
+optimaztion can be added later to support differing sizes of frames (e.g., 2MiB huge pages),
+but for now we can hard-code 4KiB frames.
