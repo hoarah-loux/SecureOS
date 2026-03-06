@@ -1,0 +1,28 @@
+////////// The linker file can be used to creat .bin or .elf files it can be used to combine .o files or simply reformat .o files to .elf or
+////////// or. bin in this case we are just creating a linker script to scpecify exact start memory adress of kernel entry and aslo define
+////////// data, code, and stack segments of the kernel itself not the cpu, GRUB initializes the cpu with flat segmentation.
+////////// GRUB sets flat segmentation and CPU mode.
+////////// The linker script arranges kernel sections in memory.
+////////// so in short cpu is initialized flat, this linker script maps the sections in ther elf file of the kernel to raw adresses to start at
+////////// the method we are using is start the next section were the previous one ends
+////////// the ELF file marks that the sections start at specific addresses
+
+
+////////// Linker script
+//////////    ↓
+////////// Sections laid out
+//////////    ↓
+////////// Linker builds ELF program headers (segments)
+//////////    ↓
+////////// GRUB reads program headers
+//////////    ↓
+////////// GRUB loads segments into memory
+//////////    ↓
+////////// CPU executes
+//////////
+
+
+////////// ASM  → creates sections
+////////// LD   → places sections
+////////// GRUB → loads segments
+////////// CPU  → executes addresses

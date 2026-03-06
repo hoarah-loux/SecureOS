@@ -1,0 +1,662 @@
+% boot_docs.tex
+% SecureOS boot pipeline documentation.
+% This file is intended to be compiled with: pdflatex boot_docs.tex
+
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{verbatim}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue,
+  pdftitle={SecureOS Boot Process Documentation},
+  pdfauthor={SecureOS Project},
+}
+
+\setlist[itemize]{leftmargin=*,itemsep=2pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=*,itemsep=2pt,topsep=3pt}
+
+% -----------------------------------------------------------------------------
+% Abbreviation policy (user requirement)
+% -----------------------------------------------------------------------------
+% The user requirement for this document is:
+%   - Every abbreviation should always be followed by "(what it is)".
+% To make that mechanically enforceable, we define macros that *always* print
+% the abbreviation plus its expansion/context in parentheses.
+% Use these macros in narrative text instead of writing bare abbreviations.
+
+\newcommand{\ABI}{ABI (Application Binary Interface)}
+\newcommand{\ACPI}{ACPI (Advanced Configuration and Power Interface)}
+\newcommand{\AMDsixtyfour}{AMD64 (AMD 64-bit architecture name for 64-bit x86)}
+\newcommand{\APIC}{APIC (Advanced Programmable Interrupt Controller)}
+\newcommand{\BIOS}{BIOS (Basic Input/Output System)}
+\newcommand{\BSS}{BSS (Block Started by Symbol; zero-initialized globals region)}
+\newcommand{\COMone}{COM1 (first serial port; typically input/output port 0x3F8)}
+\newcommand{\CPU}{CPU (Central Processing Unit)}
+\newcommand{\CRzero}{CR0 (Control Register 0)}
+\newcommand{\CRthree}{CR3 (Control Register 3)}
+\newcommand{\CRfour}{CR4 (Control Register 4)}
+\newcommand{\EAXreg}{EAX (32-bit accumulator register; low 32 bits of RAX)}
+\newcommand{\EBXreg}{EBX (32-bit base register; low 32 bits of RBX)}
+\newcommand{\EEightTwoZero}{E820 (conventional physical memory map format)}
+\newcommand{\EFER}{EFER (Extended Feature Enable Register; model specific register 0xC0000080)}
+\newcommand{\EFI}{EFI (Extensible Firmware Interface; predecessor name to Unified Extensible Firmware Interface)}
+\newcommand{\ESP}{ESP (EFI System Partition)}
+\newcommand{\ELF}{ELF (Executable and Linkable Format)}
+\newcommand{\ELFSixtyFour}{ELF64 (64-bit Executable and Linkable Format executable)}
+\newcommand{\GDT}{GDT (Global Descriptor Table)}
+\newcommand{\GiB}{GiB (gibibytes; 1024 MiB)}
+\newcommand{\GOP}{GOP (Graphics Output Protocol)}
+\newcommand{\GRUB}{GRUB (GRand Unified Bootloader)}
+\newcommand{\IDT}{IDT (Interrupt Descriptor Table)}
+\newcommand{\ISOImg}{ISO (ISO 9660 bootable disk image)}
+\newcommand{\IO}{I/O (Input/Output)}
+\newcommand{\ISR}{ISR (Interrupt Service Routine)}
+\newcommand{\KiB}{KiB (kibibytes; 1024 bytes)}
+\newcommand{\LMA}{LMA (Long Mode Active; EFER bit 10)}
+\newcommand{\LME}{LME (Long Mode Enable; EFER bit 8)}
+\newcommand{\MBtwo}{Multiboot2 (Multiboot version 2 boot protocol)}
+\newcommand{\MBtwoInfo}{Multiboot2 (Multiboot version 2 boot protocol) information structure}
+\newcommand{\MBtwoShort}{MB2 (Multiboot2)}
+\newcommand{\MiB}{MiB (mebibytes; 1024 KiB)}
+\newcommand{\MSR}{MSR (Model Specific Register)}
+\newcommand{\NX}{NX (No-eXecute; page permission bit)}
+\newcommand{\NXE}{NXE (No-eXecute Enable; EFER.NXE)}
+\newcommand{\OS}{OS (Operating System)}
+\newcommand{\OVMF}{OVMF (Open Virtual Machine Firmware; Unified Extensible Firmware Interface firmware for Quick Emulator)}
+\newcommand{\PAE}{PAE (Physical Address Extension; required for 64-bit long-mode paging)}
+\newcommand{\PCI}{PCI (Peripheral Component Interconnect)}
+\newcommand{\PC}{PC (Personal Computer)}
+\newcommand{\PD}{PD (Page Directory; paging level)}
+\newcommand{\PDE}{PDE (Page Directory Entry)}
+\newcommand{\PDPT}{PDPT (Page Directory Pointer Table; paging level)}
+\newcommand{\PIC}{PIC (Programmable Interrupt Controller)}
+\newcommand{\PMLfour}{PML4 (Page Map Level 4; top paging level)}
+\newcommand{\PT}{PT (Page Table; paging level)}
+\newcommand{\PTE}{PTE (Page Table Entry)}
+\newcommand{\PTLOAD}{PT\_LOAD (ELF program header type for loadable segments)}
+\newcommand{\QEMU}{QEMU (Quick Emulator; virtual machine monitor)}
+\newcommand{\QThirtyFive}{Q35 (Intel Q35 chipset model)}
+\newcommand{\RAM}{RAM (Random Access Memory)}
+\newcommand{\RO}{RO (Read-Only; not writable)}
+\newcommand{\RW}{RW (Read + Write)}
+\newcommand{\RWX}{RWX (Read + Write + eXecute)}
+\newcommand{\RX}{RX (Read + eXecute)}
+\newcommand{\SMP}{SMP (Symmetric Multi-Processing)}
+\newcommand{\SysV}{System V (UNIX System V) \AMDsixtyfour ABI (Application Binary Interface)}
+\newcommand{\UART}{UART (Universal Asynchronous Receiver/Transmitter)}
+\newcommand{\UEFI}{UEFI (Unified Extensible Firmware Interface)}
+\newcommand{\VGA}{VGA (Video Graphics Array)}
+\newcommand{\VM}{VM (Virtual Machine)}
+\newcommand{\WP}{WP (Write Protect)}
+\newcommand{\WX}{W\textasciicircum X (Write XOR Execute policy)}
+\newcommand{\xEightySixSixtyFour}{x86\_64 (64-bit x86 architecture; also called AMD64)}
+\newcommand{\PECOFF}{PE/COFF (Portable Executable / Common Object File Format)}
+
+\title{SecureOS Boot Process (A to Z) \\ \large Design Rationale, Alternatives, Security Hardening, and From-Scratch Build Guide}
+\author{SecureOS}
+\date{February 10, 2026}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Scope, Audience, and Ground Rules}
+
+\subsection{What this document covers}
+This document explains the SecureOS boot process end-to-end, as implemented in this repository at the date shown on the title page. It includes:
+\begin{itemize}
+  \item A full narrative of what happens from power-on/virtual-machine start to reaching \texttt{kernel\_main}.
+  \item The exact boot path chosen, the other realistic paths that exist, and why we chose this one.
+  \item Security hardening performed in the boot path (early paging, \WX, \NX, \WP, bounds checks), why each measure exists, and what it protects.
+  \item A ``from empty page'' implementation guide that teaches the \emph{know-how} (steps, invariants, reasoning, checks) without requiring you to copy code.
+\end{itemize}
+
+\subsection{What this document does \emph{not} cover}
+\begin{itemize}
+  \item Full kernel memory management (physical page allocator, higher-half kernel paging, full permission mapping across the whole address space). Those are deliberately deferred.
+  \item A complete interrupt/exception subsystem (\IDT, \ISR stubs, \PIC/\APIC, timer). The current boot path intentionally keeps interrupts off.
+  \item \ACPI parsing, \SMP (multi-core) bringup, \PCI enumeration, filesystem loading, userspace.
+\end{itemize}
+
+\subsection{Source of truth: files in the repo}
+When this document references ``the current implementation,'' it refers to these files:
+\begin{itemize}
+  \item \texttt{src/boot/grub/entry64\_mb2.asm} (active \MBtwo entry stub)
+  \item \texttt{src/boot/grub/linker.ld} (linker script controlling layout and \ELF segments)
+  \item \texttt{src/boot/grub/grub.cfg} (\GRUB menu entry and graphics persistence)
+  \item \texttt{src/boot/Makefile} (build and run targets)
+  \item \texttt{src/kernel/core/kernel.c} (kernel entry, serial + framebuffer output, \MBtwoShort parsing)
+  \item \texttt{src/boot/grub/entry64.asm} (legacy/unused reference)
+\end{itemize}
+
+\subsection{Abbreviations and glossary (expanded \emph{every time})}
+This document follows a strict readability rule: every abbreviation is written as
+\emph{ABBREV (what it is)} on every occurrence, not only on first use.
+
+The table below is therefore a glossary: it expands the text in parentheses and also explains
+what the concept is, where it appears in SecureOS, and why it matters.
+
+\begin{longtable}{@{}p{0.30\linewidth}p{0.66\linewidth}@{}}
+\toprule
+\textbf{Abbrev. (Expanded)} & \textbf{What it is / where we use it} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Abbrev. (Expanded)} & \textbf{What it is / where we use it} \\
+\midrule
+\endhead
+\UEFI & Modern firmware interface. In this project, \UEFI is provided by \OVMF under \QEMU and is the environment that launches \GRUB as an \EFI application. \\
+\BIOS & Legacy firmware interface. Mentioned for comparison only; SecureOS focuses on \UEFI because it matches modern machines and modern virtual firmware. \\
+\EFI & The older naming lineage of \UEFI. Used in terms like \ESP and \texttt{x86\_64-efi}. \\
+\ESP & Standard partition/filesystem location where \UEFI loaders live. Under \OVMF+\QEMU we boot an \ISOImg that contains \GRUB’s \EFI binaries and modules. \\
+\GRUB & Bootloader that implements \MBtwo. Reads \texttt{grub.cfg}, selects graphics mode, loads kernel \ELF segments, and passes the \MBtwoInfo. \\
+\MBtwoShort & Loader protocol used between \GRUB and the kernel. It defines the magic value in \EAXreg and the boot info pointer in \EBXreg, and defines the tag list layout. \\
+\ELF & Kernel binary format. \GRUB loads \ELF \PTLOAD segments (not sections), which is why the linker script’s program headers matter. \\
+\PTLOAD & \ELF program header type describing bytes \GRUB copies into memory. SecureOS splits \RX and \RW segments to avoid \RWX. \\
+\ISOImg & The artifact we boot in \QEMU. Built via \GRUB tooling; contains kernel and \GRUB configuration/modules. \\
+\QEMU & Virtual machine monitor used for deterministic testing. We use serial redirection and \OVMF for a reproducible \UEFI boot environment. \\
+\OVMF & \UEFI firmware implementation for \QEMU. Provides the firmware services and \GOP framebuffer backing. \\
+\GOP & \UEFI graphics protocol. When \GRUB keeps the graphics payload, the kernel receives a framebuffer that is typically backed by \GOP. \\
+\VGA & Legacy text buffer. Mentioned to explain why BIOS-era tutorials relying on \VGA text do not match \UEFI-first development. \\
+\CPU & The processor we configure. The entry stub explicitly sets up paging/long mode rather than assuming any loader-provided state. \\
+\RAM & Where the kernel, boot info, page tables, stack, and framebuffer live. Many boot bugs are accidental \RAM clobbers. \\
+\PAE & Paging mode required on x86 before entering 64-bit long mode. We set \PAE prior to enabling long mode. \\
+\MSR & \CPU registers accessed via \texttt{rdmsr/wrmsr}. Used to set \EFER bits like \LME and \NXE. \\
+\EFER & The \MSR controlling long-mode enable and \NX enable. We read \EFER to confirm \LMA is set after transition. \\
+\LME & \EFER bit that requests long mode. Must be enabled before paging is turned on to enter long mode. \\
+\LMA & \EFER bit that confirms the \CPU is actually executing in long mode. We sanity-check it. \\
+\NX & Page permission bit that prevents instruction fetch. We enable \NXE and mark non-code pages \NX by default to enforce \WX. \\
+\NXE & \EFER bit that enables \NX behavior in paging. \\
+\WP & Feature controlled by \CRzero.\WP. With \WP set, supervisor code cannot write \RO pages, enabling meaningful \RO protections. \\
+\WX & Security policy: memory should be writable or executable, not both. Implemented early via \NX and \RO mappings plus \WP. \\
+\GDT & Segmentation descriptor table. We keep it in writable memory to avoid faults if the CPU updates accessed bits while \WP is enabled. \\
+\IDT & Interrupt/exception vector table. Not installed yet in this boot stage, which is why interrupts remain disabled early. \\
+\ISR & Handler entry points referenced from the \IDT. Mentioned as deferred work; we keep early boot minimal. \\
+\PIC & Legacy interrupt controller. Mentioned for completeness; typically replaced/augmented by \APIC on modern x86. \\
+\APIC & Modern interrupt controller. Mentioned as future work after boot is stable. \\
+\ACPI & Firmware tables used later to enumerate hardware and configure power/interrupts. Deferred beyond boot closure. \\
+\SMP & Multi-core bringup. Deferred beyond boot closure; early boot runs on the bootstrap processor only. \\
+\PCI & Hardware bus enumeration. Deferred beyond boot closure. \\
+\ABI & The calling/stack/register contract between assembly and C. We follow the \SysV rules when calling \texttt{kernel\_main}. \\
+\SysV & Defines argument registers (RDI/RSI/...), stack alignment, callee-saved registers. Critical so the C code runs reliably. \\
+\PMLfour & Top-level \xEightySixSixtyFour paging table. Our early page tables include a \PMLfour and lower levels for identity mapping. \\
+\PDPT & Second-level paging structure. Used for both 4 \KiB and 2 \MiB mapping paths. \\
+\PD & Used to point to either 2 \MiB pages or to \PT entries for 4 \KiB pages. \\
+\PT & Lowest-level table for 4 \KiB mappings. Used to get fine-grained permissions in the first 2 \MiB. \\
+\PTE & Entry describing a 4 \KiB page mapping. Used to set \NX and \RO at fine granularity. \\
+\PDE & Entry describing either a pointer to a \PT or a large-page mapping. Used for 2 \MiB pages beyond the low region. \\
+\RX & Permissions for code pages. The kernel \texttt{.text} is intended to be \RX, not writable. \\
+\RW & Permissions for data pages. Kernel data and page table pages must be \RW. \\
+\RWX & Bad default for kernels; we split \ELF segments and set paging permissions to avoid \RWX. \\
+\EEightTwoZero & Multiboot2 tag type 6. We rely on it for initial physical memory layout before implementing our own allocator. \\
+\COMone & Used for early deterministic logs. Implemented by writing to a \UART at an \IO port (0x3F8) in typical \PC-compatible setups. \\
+\UART & Hardware interface behind \PC serial ports. Used to print text when the framebuffer isn’t usable yet. \\
+\KiB / \MiB / \GiB & Size units used for mapping and alignment discussion (4 \KiB pages, 2 \MiB pages, identity-map up to 4 \GiB). \\
+\QThirtyFive & \QEMU machine type with a more modern chipset layout than legacy i440fx. Used to better approximate modern platforms. \\
+\bottomrule
+\end{longtable}
+
+\newpage
+\section{The Big Picture: What We Built}
+
+\subsection{Boot chain overview}
+SecureOS uses this chain:
+\begin{enumerate}
+  \item \QEMU starts a \VM using the \textbf{\QThirtyFive} machine model.
+  \item The \VM firmware is \textbf{\UEFI}, implemented by \textbf{\OVMF}.
+  \item \OVMF loads \textbf{\GRUB} as a \textbf{x86\_64-efi (64-bit x86 \EFI target)} \UEFI application from the \ISOImg.
+  \item \GRUB reads \texttt{grub.cfg} and selects the \texttt{SecureOS} menu entry.
+  \item \GRUB loads \texttt{/boot/secureos.elf} and validates the \textbf{\MBtwo header}.
+  \item \GRUB jumps to the kernel entry point with \MBtwo state in registers.
+  \item Our entry stub (\texttt{entry64\_mb2.asm}) sets up paging, long mode, and early hardening.
+  \item Our C kernel entry (\texttt{kernel\_main}) prints deterministic serial logs and draws to the framebuffer.
+\end{enumerate}
+
+\subsection{Why this is a good ``close the booting stuff'' stopping point}
+This boot pipeline is considered ``done enough'' because:
+\begin{itemize}
+  \item It boots reliably in a modern \UEFI environment (\OVMF + \GRUB) rather than depending on legacy \VGA-only assumptions.
+  \item It provides deterministic debug output via serial.
+  \item It delivers a usable initial physical memory map (Multiboot2 tag type 6, and optionally type 17).
+  \item It provides a framebuffer for on-screen output.
+  \item It already includes early memory safety hardening (\NX + \WX + \WP + bounds checks).
+\end{itemize}
+
+\newpage
+\section{Boot Process A to Z (What Happens at Runtime)}
+
+\subsection{Phase 0: Build artifacts produced on the host}
+The build produces:
+\begin{itemize}
+  \item \textbf{Kernel \ELF}: \texttt{src/boot/build/secureos.elf}
+  \item \textbf{Staging tree}: \texttt{src/boot/build/isodir/boot/secureos.elf} and \texttt{.../boot/grub/grub.cfg}
+  \item \textbf{Bootable \ISOImg}: \texttt{secureos-uefi.iso} at repository root
+\end{itemize}
+
+Key concept: \GRUB loads \emph{\ELF program headers} (segments), not individual \ELF sections. Our linker script deliberately splits \RX and \RW \PTLOAD segments.
+
+\subsection{Phase 1: Firmware loads the bootloader}
+In a \UEFI system, firmware does not read ``boot sectors'' like \BIOS. Instead:
+\begin{itemize}
+  \item \UEFI runs programs in the \ESP or from boot media.
+  \item In \QEMU + \OVMF, the \ISOImg contains the \GRUB \EFI binary and modules.
+  \item \OVMF starts \GRUB, which then becomes the boot manager.
+\end{itemize}
+
+\subsection{Phase 2: Bootloader configuration and graphics mode}
+\texttt{grub.cfg} does the following:
+\begin{itemize}
+  \item Loads the \texttt{all\_video} module so \GRUB can drive graphics output.
+  \item Sets \texttt{gfxmode=auto} (choose a supported graphics mode).
+  \item Sets \texttt{gfxpayload=keep} (preserve the mode and framebuffer for the OS).
+\end{itemize}
+
+\textbf{Why \texttt{gfxpayload=keep} matters:}
+If \GRUB resets the graphics mode when booting the kernel, the \MBtwo framebuffer info tag (type 8) may be missing or unusable. Keeping the graphics payload ensures the kernel can draw into the same framebuffer that \GRUB configured (typically backed by \UEFI \GOP).
+
+\subsection{Phase 3: Bootloader loads the kernel using Multiboot2}
+\GRUB loads \texttt{/boot/secureos.elf} and checks:
+\begin{itemize}
+  \item \MBtwo header magic (0xE85250D6)
+  \item Header alignment and checksum
+  \item Requested information tags (memory map, framebuffer, etc.)
+\end{itemize}
+
+Then \GRUB:
+\begin{itemize}
+  \item Copies the loadable segments into memory at the addresses specified by the \ELF program headers.
+  \item Constructs a \MBtwoInfo (a tagged list).
+  \item Jumps to the kernel entry point.
+\end{itemize}
+
+\subsection{Phase 4: Kernel entry stub runs (entry64\_mb2.asm)}
+This is the first code we control. It receives:
+\begin{itemize}
+  \item \textbf{\EAXreg} = \MBtwo magic (0x36D76289)
+  \item \textbf{\EBXreg} = pointer to the \MBtwoInfo (in practice often 0x00004000 in \QEMU)
+\end{itemize}
+
+The stub then performs these steps:
+\begin{enumerate}
+  \item \textbf{Disable interrupts} (\texttt{cli}). Rationale: no \IDT is installed yet.
+  \item \textbf{Clear direction flag} (\texttt{cld}). Rationale: required by \SysV expectations.
+  \item \textbf{Save \MBtwoShort registers} into writable memory. Rationale: setup code clobbers registers.
+  \item \textbf{Install a temporary stack}. Rationale: even simple routines may require stack.
+  \item \textbf{Build early page tables} in a reserved in-kernel section (\texttt{.pgtables}).
+  \item \textbf{Enable \PAE}, load \CRthree, enable long mode and \NX, then enable paging + \WP.
+  \item \textbf{Load a known-good \GDT} and perform a far jump to 64-bit code.
+  \item \textbf{In 64-bit mode}, load segment selectors safely, initialize serial, validate long mode and \MBtwoShort magic, sanity-scan for the memory map tag.
+  \item \textbf{Zero \BSS}. Rationale: C globals in \BSS must start as zero.
+  \item \textbf{Call \texttt{kernel\_main(magic, info\_ptr)}} using the \SysV (RDI/RSI).
+\end{enumerate}
+
+\subsection{Phase 5: Kernel C entry runs (kernel.c)}
+The kernel entry currently:
+\begin{itemize}
+  \item Initializes serial (safe even if already initialized).
+  \item Prints a \texttt{kernel\_main reached} banner and echoes \MBtwoShort magic and info pointer.
+  \item Parses \MBtwo framebuffer tag (type 8) and draws \texttt{KERNEL RUNNING!} to the framebuffer when supported.
+  \item Parses \MBtwo memory map tag (type 6) and prints a few entries.
+\end{itemize}
+
+\newpage
+\section{The Chosen Path vs Other Paths (Pros, Cons, and Rationale)}
+
+\subsection{Paths that exist}
+There are several common ways to boot an \xEightySixSixtyFour hobby \OS:
+
+\subsubsection{Path A: \UEFI + \GRUB (x86\_64-efi (64-bit x86 \EFI target)) + \MBtwo + self-managed long mode (\emph{our path})}
+\textbf{Summary:} Use \GRUB under \UEFI for loading, but do not trust the \CPU entry state; do the full long-mode + paging setup in the kernel entry stub.
+
+\textbf{Pros:}
+\begin{itemize}
+  \item Works well in \UEFI environments, including \QEMU + \OVMF.
+  \item \GRUB gives you a standardized handoff with a memory map and framebuffer info.
+  \item You control your own early paging and security hardening.
+  \item Debuggability: deterministic serial output early.
+\end{itemize}
+
+\textbf{Cons:}
+\begin{itemize}
+  \item More work in the entry stub: you must correctly build page tables and transition.
+  \item You must carefully avoid clobbering \GRUB/\MBtwoShort structures.
+  \item You must keep the stub minimal but correct; mistakes cause triple faults.
+\end{itemize}
+
+\textbf{Why we chose it:}
+We wanted \UEFI correctness and modern graphics support, while keeping deterministic control over \CPU mode and paging to avoid assumptions that vary across loaders/configurations.
+
+\subsubsection{Path B: \UEFI native loader (no \GRUB) + \PECOFF kernel}
+\textbf{Summary:} Write an \EFI application (bootloader) that loads your kernel (often \PECOFF) and passes a custom boot info structure.
+
+\textbf{Pros:}
+\begin{itemize}
+  \item Full control; no \GRUB dependencies.
+  \item Easy access to \UEFI services (file \IO, graphics, memory map).
+  \item Natural fit for \UEFI-only systems.
+\end{itemize}
+
+\textbf{Cons:}
+\begin{itemize}
+  \item You must maintain your own bootloader and file system reading.
+  \item You must manage the \UEFI ``ExitBootServices'' boundary correctly.
+  \item More moving parts than using \GRUB.
+\end{itemize}
+
+\subsubsection{Path C: \BIOS + Multiboot (Multiboot version 1 boot protocol) or \MBtwo + \GRUB}
+\textbf{Summary:} Classic OSDev (Operating System Development) setup. \GRUB runs in \BIOS mode, loads kernel.
+
+\textbf{Pros:}
+\begin{itemize}
+  \item Historically common tutorials.
+  \item Simpler if you only need \VGA text.
+\end{itemize}
+
+\textbf{Cons:}
+\begin{itemize}
+  \item \BIOS is legacy; real hardware is increasingly \UEFI-only.
+  \item \VGA text assumptions break under modern setups.
+\end{itemize}
+
+\subsubsection{Path D: Modern boot protocols (Limine / Stivale2, etc.)}
+\textbf{Summary:} Use a modern boot protocol that provides a 64-bit entry and richer structured data.
+
+\textbf{Pros:}
+\begin{itemize}
+  \item Often cleaner 64-bit entry contract.
+  \item Rich boot-time metadata.
+\end{itemize}
+
+\textbf{Cons:}
+\begin{itemize}
+  \item Different ecosystem than \GRUB.
+  \item You must ensure the protocol and tooling match your environment.
+\end{itemize}
+
+\subsection{Key design choice: ``don’t trust entry state''}
+\MBtwo is a loader protocol, not a full \CPU-state contract. Even with \UEFI \GRUB, the safest and most portable approach is:
+\begin{itemize}
+  \item Treat entry as 32-bit compatible.
+  \item Set up your own page tables.
+  \item Enable long mode yourself.
+\end{itemize}
+
+This is why our entry stub contains the long-mode transition.
+
+\newpage
+\section{Security Hardening in the Boot Path (What, Why, and Where it Helps)}
+
+\subsection{Threat model (boot-stage realistic threats)}
+At boot stage, we are not defending against a malicious hypervisor or hostile firmware in this project. The security measures here are primarily:
+\begin{itemize}
+  \item Preventing accidental self-corruption (bugs that smash memory).
+  \item Establishing invariants that reduce exploitability later.
+  \item Making debugging failures deterministic instead of ``random crashes.''
+\end{itemize}
+
+Put differently: we are hardening against the most common class of early bring-up failures---incorrect assumptions about \CPU state, accidental \RAM clobbers, and executing from the wrong memory region---because those failures are both common and expensive to debug.
+
+\subsection{\NX enablement}
+\textbf{What we did:}
+\begin{itemize}
+  \item Enabled \NXE via \EFER (which is configured via an \MSR write).
+  \item Marked pages \NX by default.
+  \item Explicitly cleared \NX only for pages overlapping the kernel \texttt{.text} region.
+\end{itemize}
+
+\textbf{Why it matters:}
+\NX prevents the \CPU from executing instructions from data pages. This is foundational for enforcing \WX.
+
+\textbf{Where it helps:}
+\begin{itemize}
+  \item If a bug overwrites function pointers or return addresses to point into writable memory, \NX can turn that into a fault rather than arbitrary code execution.
+  \item It forces executable code to live in known locations, which simplifies later security policies.
+\end{itemize}
+
+\subsection{\WX in early paging}
+\textbf{What we did:}
+\begin{itemize}
+  \item Built a mixed paging scheme:
+  \begin{itemize}
+    \item 4 \KiB pages for 0..2 \MiB, so we can set permissions at fine granularity.
+    \item 2 \MiB pages for 2 \MiB..4 \GiB for simplicity.
+  \end{itemize}
+  \item Made pages \RO for the 1 \MiB..2 \MiB range in the fine-grained region.
+  \item Cleared \NX only for the page(s) that overlap kernel \texttt{.text}.
+\end{itemize}
+
+\textbf{Why it matters:}
+\WX reduces the chance that writable memory can become executable. Even if the kernel later has a memory corruption bug, this early posture sets the stage.
+
+\subsection{\CRzero.\WP enforcement}
+\textbf{What we did:} Set \CRzero.\WP so supervisor-mode writes to \RO pages fault.
+
+\textbf{Why it matters:}
+Without \CRzero.\WP, ring 0 (kernel privilege level) can still write to \RO pages, defeating the purpose of marking pages read-only. With \CRzero.\WP set, \RO actually means \RO even for the kernel.
+
+\subsection{Bounds-checked \MBtwo tag scanning}
+\textbf{What we did:}
+\begin{itemize}
+  \item Tag scanning is bounded by \texttt{total\_size}.
+  \item Tag sizes are validated (minimum header size, aligned stepping).
+\end{itemize}
+
+\textbf{Why it matters:}
+Boot info structures are memory in \RAM. If pointers are wrong (for example, due to clobbering) or tags are malformed, unbounded scanning can run off into unmapped memory and crash or corrupt state.
+
+\subsection{Avoid clobbering bootloader data (dedicated page table section)}
+\textbf{Problem we hit:} The \MBtwoInfo (often at 0x4000) was overwritten by early paging structures when those were placed at a fixed low address.
+
+\textbf{Fix:}
+\begin{itemize}
+  \item Put page tables in \texttt{.pgtables} inside the kernel image, mapped as runtime memory.
+  \item Ensure the linker script places \texttt{.pgtables} in the \RW region at/after 2 \MiB.
+\end{itemize}
+
+\textbf{Why it matters:}
+Clobbering the \MBtwoShort info structure creates extremely confusing failures: ``missing memory map tag'' or random tag values. Reserving memory inside the kernel image avoids that class of bug.
+
+\subsection{\GDT in writable memory}
+\textbf{Problem we hit:} Some \CPU implementations may set the ``accessed'' bit on segment descriptors, which is a write.
+
+\textbf{Fix:} Place the \GDT in writable memory, not \RO.
+
+\textbf{Why it matters:} With \CRzero.\WP enabled and \RO mappings, having the \GDT in \RO memory can cause faults.
+
+\newpage
+\section{From Scratch: How to Build This Boot Pipeline (Know-How, Not Syntax)}
+
+This section is a step-by-step recipe. It intentionally describes \emph{what you must guarantee} at each step and \emph{how to verify it}, rather than providing literal code.
+
+\subsection{Step 1: Decide on your boot contract}
+\begin{enumerate}
+  \item Choose the firmware environment: \UEFI or \BIOS.
+  \item Choose the loader protocol: \MBtwo (via \GRUB) is a good initial choice.
+  \item Decide whether to trust the loader’s CPU mode entry state.
+\end{enumerate}
+
+For SecureOS, the contract is:
+\begin{itemize}
+  \item \GRUB loads an \ELFSixtyFour kernel containing a \MBtwo header.
+  \item Kernel entry stub assumes a 32-bit compatible entry and performs long-mode bringup.
+  \item Kernel receives (magic, info\_ptr) and parses \MBtwo tags.
+\end{itemize}
+
+\subsection{Step 2: Create a minimal freestanding kernel binary layout}
+You need a linker layout that:
+\begin{itemize}
+  \item Places the \MBtwo header early in the file (first 8 \KiB).
+  \item Places \texttt{.text} at a known virtual address (commonly 1 \MiB).
+  \item Separates \RX and \RW segments so you do not get an \RWX load segment.
+  \item Reserves memory for early page tables and a stack in a predictable place.
+\end{itemize}
+
+\textbf{Verification checklist:}
+\begin{itemize}
+  \item Use an \ELF inspection tool to confirm there are separate \RX and \RW \PTLOAD segments.
+  \item Confirm the \MBtwo header section virtual address is within the first 8 \KiB of the file.
+  \item Confirm symbols exist for \texttt{stack\_top}, \texttt{\_start}, \texttt{\_\_bss\_start}, \texttt{\_\_bss\_end}, \texttt{\_\_kernel\_text\_start}, \texttt{\_\_kernel\_text\_end}.
+\end{itemize}
+
+\subsection{Step 3: Write the \MBtwo header}
+A correct \MBtwo header requires:
+\begin{itemize}
+  \item Correct magic value.
+  \item Correct architecture field.
+  \item Correct checksum field.
+  \item Tags that request the info you want (memory map, framebuffer).
+  \item Proper 8-byte alignment and a required end tag.
+\end{itemize}
+
+\textbf{Common pitfall:} wrong header length or misalignment causes \GRUB to reject the kernel.
+
+\subsection{Step 4: Make the entry stub robust}
+Your entry stub must:
+\begin{itemize}
+  \item Disable interrupts until you install an \IDT.
+  \item Establish a temporary stack early.
+  \item Preserve the bootloader-provided registers (magic/info pointer).
+\end{itemize}
+
+\subsection{Step 5: Build early page tables without clobbering bootloader data}
+Requirements:
+\begin{itemize}
+  \item Choose a safe place in memory for page tables.
+  \item Ensure those pages are writable.
+  \item Ensure you do not overwrite the \MBtwoInfo.
+\end{itemize}
+
+Approach used here:
+\begin{itemize}
+  \item Reserve page table memory inside the kernel’s \RW segment (\texttt{.pgtables}).
+  \item Zero that region before filling entries.
+  \item Identity-map at least the range you will touch early:
+  \begin{itemize}
+    \item The kernel image
+    \item The \MBtwoInfo
+    \item The framebuffer physical address
+  \end{itemize}
+\end{itemize}
+
+\subsection{Step 6: Transition to long mode correctly}
+Invariant ordering (conceptual):
+\begin{enumerate}
+  \item Enable \PAE in \CRfour.
+  \item Load \CRthree with the top-level paging table.
+  \item Enable long mode (\EFER.\LME).
+  \item Enable \NX (\EFER.\NXE) if using \NX.
+  \item Enable paging (\CRzero.PG (Control Register 0 Paging Enable)).
+  \item Load a valid \GDT.
+  \item Far jump to 64-bit code.
+\end{enumerate}
+
+\textbf{Verification:}
+\begin{itemize}
+  \item In 64-bit mode, read \EFER and confirm \LMA is set.
+  \item Print a serial banner immediately after the jump.
+\end{itemize}
+
+\subsection{Step 7: Implement early hardening}
+Minimum measures that are practical at this stage:
+\begin{itemize}
+  \item Enable \NX and mark non-code as \NX.
+  \item Enforce \RO pages with \CRzero.\WP.
+  \item Avoid \RWX by splitting segments and by permission-aware mapping.
+  \item Bound all parsing of bootloader-provided data.
+\end{itemize}
+
+\subsection{Step 8: Zero \BSS (why and how)}
+\BSS is the region that contains ``uninitialized'' globals.
+
+You must:
+\begin{enumerate}
+  \item Export symbols for start and end of BSS in your linker script.
+  \item Compute the size = end - start.
+  \item Write zeros across the entire region before calling C.
+\end{enumerate}
+
+\textbf{Why:} C (and C-like languages) assume uninitialized globals start at zero.
+
+\subsection{Step 9: Handoff to C with a defined \ABI}
+Choose a calling convention and stick to it.
+
+For \xEightySixSixtyFour \SysV:
+\begin{itemize}
+  \item 1st argument: RDI
+  \item 2nd argument: RSI
+  \item Stack must be 16-byte aligned at call boundaries
+\end{itemize}
+
+\subsection{Step 10: Parse \MBtwo tags safely}
+Rules:
+\begin{itemize}
+  \item Use the \texttt{total\_size} field as your scan boundary.
+  \item Validate each tag’s \texttt{size} before advancing.
+  \item Advance by \texttt{align8(size)}.
+  \item Stop on end tag (type 0).
+\end{itemize}
+
+\subsection{Step 11: Provide two debug outputs: serial + framebuffer}
+Practical reality:
+\begin{itemize}
+  \item Serial is reliable early; it works even if graphics are misconfigured.
+  \item Framebuffer output gives immediate visual confirmation in the VM window.
+\end{itemize}
+
+\newpage
+\section{Operational Instructions (Build and Run)}
+
+\subsection{Build the ISO image}
+Use the boot Makefile:
+\begin{itemize}
+  \item Run: \texttt{make -C src/boot clean all}
+  \item Output \ISOImg: \texttt{secureos-uefi.iso} at repository root
+\end{itemize}
+
+\subsection{Run under \QEMU + \OVMF with serial output}
+Use:
+\begin{itemize}
+  \item Run: \texttt{make -C src/boot run-uefi-serial}
+\end{itemize}
+
+Expected serial milestones:
+\begin{itemize}
+  \item \texttt{\MBtwoShort entry reached} (marker printed by the boot entry stub)
+  \item ``Long mode active''
+  \item Memory map tag present
+  \item ``kernel\_main reached''
+\end{itemize}
+
+\newpage
+\section{Known Limitations and Next Steps (After Boot is ``Closed'')}
+These are not failures; they are deliberate scope boundaries.
+\begin{itemize}
+  \item The early identity map covers 0..4 \GiB. Later you should implement a kernel-owned paging regime (likely higher-half) and map only what you need.
+  \item Interrupts are disabled; once you install an \IDT and handlers, you can enable interrupts.
+  \item Multiboot2 info and framebuffer are used in-place; a robust kernel should copy the data it needs before tearing down identity maps.
+\end{itemize}
+
+\section{Appendix: Common Failure Modes (Boot Debugging Mindset)}
+\begin{itemize}
+  \item \textbf{\GRUB says ``invalid Multiboot2 header''}: alignment/length/checksum/tag structure.
+  \item \textbf{Triple fault right after enabling paging}: invalid \CRthree, bad tables, missing identity map of current code/stack.
+  \item \textbf{``Missing mmap tag'' but should exist}: you clobbered the \MBtwoInfo (for example, by placing page tables in low memory that overlaps the Multiboot2 info pointer).
+  \item \textbf{Random faults after enabling \CRzero.\WP}: something you assumed writable is actually \RO (\GDT placement is a classic pitfall).
+  \item \textbf{Framebuffer missing under \UEFI}: ensure \GRUB keeps gfxpayload and you request the framebuffer tag.
+\end{itemize}
+
+\end{document}
