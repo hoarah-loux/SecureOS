@@ -1,0 +1,5 @@
+binutils-2.42
+build-binutils
+build-gcc
+gcc-13.2.0
+nasm
