@@ -1,5 +1,5 @@
     ; Minimal Multiboot2 entry stub.
-    ;
+    ; most of the comments here are ai generated ONLY THE COMMENTS not all of them tho
     ; What this file is:
     ; - This NASM (Netwide Assembler) source file contains:
     ;   1) A Multiboot2 header (so GRUB recognizes the kernel)
