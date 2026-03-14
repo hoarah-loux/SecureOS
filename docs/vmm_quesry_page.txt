@@ -1,0 +1,35 @@
+For vmm_query_page, the best improvements are:
+
+Replace magic level numbers with named constants.
+Right now 2, 3, and 4 work, but named values would make the code much clearer.
+
+Use page_size from the walker result instead of hardcoding the offset masks again.
+That removes duplication between the walker and query logic.
+
+Validate that the walker result is internally consistent.
+For example, if success is true but page size or final level is zero, treat that as failure.
+
+Add canonical-address validation if you want stricter x86_64 correctness.
+That is optional, not required for your current stage.
+
+Use a single final return path if you want cleaner style.
+Right now multiple early returns are fine, but some people prefer one clearly structured result path.
+
+Add debug logging for bad or unexpected cases while bringing the system up.
+Useful for catching wrong mappings early.
+
+Eventually derive the exact physical address from page_size rather than final_page_level.
+That is a better abstraction because the query function should care about mapping size more than paging-tree level.
+
+Consider returning a richer query result later if you want both:
+
+exact physical address
+mapping size
+pointer to final entry
+stop level
+If you mean “what is actually worth doing now,” then the top two are:
+
+replace magic level numbers
+make query use page_size instead of re-encoding the level logic
+Those are the cleanest improvements without changing behavior.
+

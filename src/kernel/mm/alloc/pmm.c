@@ -6,7 +6,7 @@
 
 // PMM bitmap constants
 #define frame_size   (4096UL)
-#define max_pyhs     (0x100000000UL)
+#define max_pyhs     (0x100000000UL) //4gib
 #define frame_count  ((max_pyhs) / (frame_size))
 #define BITMAP_SIZE  ((frame_count) / 8)
 extern uint8_t _kernel_start[];
@@ -140,7 +140,8 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
     }
 
 
-    //now to set frames for the bitmap itself as used
+    //now to set frames for the bitmap itself as used for now this is redyundeabnt
+    
     uintptr_t bitmap_adress = (uintptr_t)&bitmap;
     uintptr_t bitmap_size_in_bytes = BITMAP_SIZE;
     uintptr_t bitmap_end = bitmap_adress + bitmap_size_in_bytes;
@@ -167,8 +168,7 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
 }
 
 
-//may add function to get frame of an adress
-
+//get adress of a frame
 uintptr_t pmm_alloc_frame(void){
     uintptr_t free_frame = get_frame(bitmap, BITMAP_SIZE);
     if (free_frame == 0) {
