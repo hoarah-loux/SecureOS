@@ -5,7 +5,7 @@
 //this is the header file for our vmm, the public api, most of the returns are just for success/fail
 
 
-void vmm_init(uintptr_t *pgtables); 
+uint64_t vmm_init(uintptr_t *pgtables); 
 
 
 //pretty obvious what this does, but incase ur a nutcase we are mapping a virtual page to a physical adress here
