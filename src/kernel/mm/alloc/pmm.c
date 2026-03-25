@@ -13,7 +13,8 @@ extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
 
 
-
+//WE NEED TO COPY THE ENTIRITY OF LOW MEM CONTAINING THE MB2 INFO STRUCT AND OTEHR STUFF FROM EARLY BOOT TO LOCAL KERNEL
+//DATA STRUCTURES, or maybe just map it im not sure
 
 // here we have 8 bits per entry
 // our frame is represented by one bit only

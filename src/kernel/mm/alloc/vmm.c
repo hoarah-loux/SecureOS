@@ -1,6 +1,5 @@
 #include "vmm.h"
 #include "serial.h"
-#include <string.h>
 #include "pmm.h"
 
 
@@ -8,6 +7,12 @@
 typedef uint8_t bool;
 #define true 1
 #define false 0
+#define LOW_BASE 0x100000
+#define HIGHER_HALF_BASE 0xFFFFFFFF80000000
+#define MAX_PHYS     (0x100000000UL) //4gib
+
+extern uint8_t _kernel_start[];
+extern uint8_t _kernel_end[];
 
 
 //this is the local pointer that will hold the lable
@@ -106,6 +111,9 @@ typedef struct walker_out{
 //bcz of identity mapping we can treat physical adresses as virtuial adresses but when we switch from identity map
 //we cant do that anymore some logic needs to be chamged idfk what yet atp i jsutw ant to kill myself
 //idfk why im doing this to myslef maybe i hate myself idfk.
+
+
+
 //page walker, this is a helper function that itterates overpages it follows a virtuyal adress 
 //and itterates over page levels adn checks wether its mapped and were its mapped and at what level is the mapping at
  static walker_out the_walking_pager(uintptr_t *root_table, uintptr_t virtual_adress){
@@ -429,7 +437,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
     
 
 }
-
+//add flag checks
 
 static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_adress, uintptr_t physical_adress, uint64_t flags ){
 
@@ -515,3 +523,407 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
 }
 
+//need to add old flag preservation
+static uint64_t copy_mapping_dynamic(uintptr_t *src_table, uintptr_t src_va, uintptr_t *dest_table, uintptr_t dest_va){
+
+    if(is_initialized == false){return 0;}
+    if(src_table == NULL){return 0;}
+    if(dest_table == NULL){return 0;}
+
+    walker_out walker_out = the_walking_pager(src_table, src_va);
+
+    if(walker_out.success == false || walker_out.final_entry_pointer == NULL){return 0;}
+
+    uint64_t final_walker_out_lvl = walker_out.final_page_level;
+
+    uintptr_t source_final_entry_val = * walker_out.final_entry_pointer;
+
+    //extract source flags
+    uintptr_t source_phys = walker_out.physical_base_adress; 
+    uint64_t src_flags = source_final_entry_val & 0xFFF;
+    
+
+    if(final_walker_out_lvl == 3){
+
+        if(populate2m_into_table(dest_table, dest_va, source_phys, src_flags) == 0 ){return 0;}
+
+        
+
+
+        
+    }else if(final_walker_out_lvl == 4){
+
+        if(populate4k_into_table(dest_table, dest_va, source_phys, src_flags) == 0){return 0;}
+
+        
+        
+
+        
+
+    }else{
+
+        return 0;
+    }
+
+
+
+    return 1;
+
+}
+
+
+//END EXCLUSIVE
+
+static uint64_t copy_mapping_dynamic_over_range(
+    uintptr_t *src_table, 
+    uintptr_t src_start_va,
+    uintptr_t src_end_va,
+    uintptr_t *dest_table, 
+    uintptr_t dest_start_va){
+
+
+        if(is_initialized == false){return 0;}
+        if(src_table == NULL){return 0;}
+        if(dest_table == NULL){return 0;}
+
+        if(src_start_va > src_end_va){return 0;}
+
+
+        uintptr_t curr_src_va = src_start_va;
+        uintptr_t curr_dest_va = dest_start_va;
+
+
+        while(curr_src_va < src_end_va){
+            walker_out page_metadata = the_walking_pager(src_table, curr_src_va);
+            if(page_metadata.success == false){return 0;}
+            uintptr_t step_size;
+
+            uint64_t stop_lvl = page_metadata.final_page_level;
+
+            //this check is mainly to move tthe VA in an alligned manor(how much we increment the VA per itter), sorry i dont know how to put into better words
+            if(stop_lvl == 3){
+
+                step_size = 2097152; //2mib in bytes
+
+            }else if(stop_lvl == 4){
+
+                step_size = 4096; //4kib in bytes
+
+            }else{return 0;}
+
+            if(src_end_va - curr_src_va < step_size){return 0;}
+            if(step_size == 2097152){
+
+                if(curr_src_va % 2097152 != 0){
+                    return 0;
+                }
+
+                if(curr_dest_va % 2097152 != 0){
+
+                    return 0;
+                }
+
+                if(copy_mapping_dynamic(src_table, curr_src_va, dest_table, curr_dest_va) == 0){
+                    return 0;
+                }
+
+                if(curr_src_va + step_size < curr_src_va){return 0;}
+                if(curr_dest_va + step_size < curr_dest_va){return 0;}
+
+                curr_src_va += step_size;
+                curr_dest_va += step_size;
+
+
+            }else if(step_size == 4096){
+                if(curr_src_va % 4096 != 0){
+                    return 0;
+                }
+
+                if(curr_dest_va % 4096 != 0){return 0;}
+
+                if(copy_mapping_dynamic(src_table, curr_src_va, dest_table, curr_dest_va) == 0){
+                    return 0;
+                }
+
+                if(curr_src_va + step_size < curr_src_va){return 0;}
+                if(curr_dest_va + step_size < curr_dest_va){return 0;}
+
+                curr_src_va += step_size;
+                curr_dest_va += step_size;
+
+
+
+            }else{return 0;}
+
+        }
+
+
+
+        return 1;
+
+
+}
+
+
+
+static uintptr_t cr3_switch_t(uintptr_t new_root_table_phys){
+
+    if(new_root_table_phys % 4096 != 0){return 0;}
+
+    uintptr_t old_table_phys;
+
+
+    //this part will need to be wrapped if we are going to port to rspi
+    asm volatile(
+
+        "mov %%cr3, %0\n\t"
+        "mov %1, %%cr3\n\t"
+        :"=r"(old_table_phys)
+        :"r"(new_root_table_phys)
+        :"memory"
+
+    );
+
+return old_table_phys;
+
+}
+
+
+
+uint64_t transition(uintptr_t *old_root){
+
+    
+
+free_page_frame_out page_metdata = vmm_create_root_table();
+if(page_metdata.success == false){return 0;}
+uintptr_t *new_root = page_metdata.pgtable_pointer;
+uintptr_t new_root_phys = page_metdata.physical_adress;
+
+uintptr_t src_start_va =(uintptr_t)& _kernel_start;
+uintptr_t src_end_va = (uintptr_t)&_kernel_end;
+
+uintptr_t dest_va_start = HIGHER_HALF_BASE + (_kernel_start - LOW_BASE);
+
+
+if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
+
+cr3_switch_t(new_root_phys);
+
+toptable = new_root;
+adress_toptable = new_root_phys;
+
+return 1;
+
+
+}
+
+
+//TRANSITION IS DOEN
+
+//if u still havent figured im not the best at spelling
+//now with page based virtual mem mangagment we are only concerned with alloc free, map unmap pages, which is pretty simple
+
+
+
+//this fucntion looks very unsafe idfk
+static uintptr_t phys_to_virt(uintptr_t physical_adress){
+
+    if(physical_adress == 0){return 0;}
+    if (physical_adress < LOW_BASE || physical_adress >= MAX_PHYS){return 0;}
+    
+    uintptr_t va = physical_adress + (HIGHER_HALF_BASE - LOW_BASE);
+
+    return va;
+
+
+}
+
+
+
+static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_adress){
+
+    walker_out result = {0};
+
+    if(root_table == NULL){return result;}
+    if(virtual_adress == 0){return result;}
+
+    
+    //this is an index in the table size meaning from 0 to 511
+    //every 9th bit in the virtual adress gives you the index in the table which it refers to
+    uint64_t index_in_pml4 = (virtual_adress >> 39) & 0x1FF;
+    uint64_t index_in_pdpt = (virtual_adress >> 30) & 0x1FF;
+    uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
+    uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
+
+    uintptr_t *curr = phys_to_virt(root_table);
+
+    
+
+    uintptr_t pml4_entry = curr[index_in_pml4];
+    uintptr_t *pml4_entry_adress = &curr[index_in_pml4];
+
+    if((pml4_entry & 1) == 0 || pml4_entry == 0){
+
+        return result;
+    }
+
+
+    uintptr_t pdpt_adress = phys_to_virt(pml4_entry & ~0xFFF);
+
+    curr = (uintptr_t *)pdpt_adress;
+
+    uintptr_t pdpt_entry = curr[index_in_pdpt];
+    uintptr_t *pdpt_entry_adress = &curr[index_in_pdpt];
+
+    if(((pdpt_entry & 1) == 0) || pdpt_entry == 0){
+
+        return result;
+    }
+
+
+
+    uint64_t pdpt_page_size_bit = (pdpt_entry & (1ULL << 7));
+
+    if(pdpt_page_size_bit != 0){
+
+        result.success = true;
+        result.final_entry_pointer = pdpt_entry_adress;
+        result.final_page_level = 2;
+
+        uintptr_t final_entry_value = * result.final_entry_pointer;
+        result.page_size = 1048576; //1gib in kib
+        uintptr_t physical_base = final_entry_value & ~((1ULL << 30) - 1);
+        result.physical_base_adress = physical_base;
+
+        return result;
+
+    }
+    
+
+    uintptr_t pd_adress = phys_to_virt(pdpt_entry & ~0xFFF); 
+
+
+    curr = (uintptr_t *)pd_adress;
+
+    uintptr_t pd_entry = curr[index_in_pd];
+    uintptr_t *pd_entry_adress = &curr[index_in_pd];
+    
+
+    if(((pd_entry & 1) == 0) || pd_entry == 0){
+
+        return result;
+    }
+
+     uint64_t pd_page_size_bit = (pd_entry & (1ULL << 7));
+
+
+      if(pd_page_size_bit != 0){
+
+        result.success = true;
+        result.final_entry_pointer = pd_entry_adress;
+        result.final_page_level = 3;
+
+        uintptr_t final_entry_value = * result.final_entry_pointer;
+        result.page_size = 2048; //2mib in kib
+        uintptr_t physical_base = final_entry_value & ~((1ULL << 21) - 1);
+        result.physical_base_adress = physical_base;
+
+                return result;
+
+    }
+
+    uintptr_t pt_adress = phys_to_virt(pd_entry & ~0xFFF); 
+
+    curr = (uintptr_t *)pt_adress;
+
+    uintptr_t pt_entry = curr[index_in_pt];
+    uintptr_t *pt_entry_adress = &curr[index_in_pt];
+
+    if(((pt_entry & 1) == 0) || pt_entry == 0){
+
+                return result;
+    }
+
+
+   
+        result.success = true;
+        result.final_entry_pointer = pt_entry_adress;
+        result.final_page_level = 4;
+
+        uintptr_t final_entry_value = * result.final_entry_pointer;
+        result.page_size = 4; 
+        uintptr_t physical_base = final_entry_value & ~((1ULL << 12) - 1);
+        result.physical_base_adress = physical_base;
+
+    return result;
+
+
+
+
+
+
+
+}
+
+//add is alligned helpers, and allign helpers..
+
+
+static free_page_frame_out free_frame_for_new_page_structure_and_create_it2(void){
+
+    free_page_frame_out result = {0};
+
+    if(is_initialized == false){
+
+        return result;
+    }
+
+    uintptr_t free_frame = pmm_alloc_frame();
+
+    if(free_frame == 0){
+
+        return result;
+    }
+
+    result.physical_adress = free_frame;
+    uintptr_t *free_frame_ptr = (uintptr_t *) phys_to_virt(free_frame);
+    result.pgtable_pointer = free_frame_ptr;
+    size_t byte_counter = 0;
+    uint8_t *free_frame_byte_ptr = (uint8_t *)free_frame_ptr;
+
+    while(byte_counter < 4096){
+       
+        *free_frame_byte_ptr = 0;
+
+        free_frame_byte_ptr++;
+        byte_counter++;
+
+    }
+
+    result.success = true;
+
+    return result;
+
+   
+
+}
+
+
+
+static uint64_t spilt_page(uintptr_t *root_table, uintptr_t virtual_adress){
+
+    if(root_table == NULL){return 0;}
+    if(virtual_adress == 0){return 0;}
+
+    walker_out walker_result =  the_walking_pager2(root_table, virtual_adress);
+
+    uintptr_t *v_root_table = phys_to_virt(root_table);
+
+    if(walker_result.final_page_level == 2){
+
+        if()
+
+
+    }
+
+
+}
