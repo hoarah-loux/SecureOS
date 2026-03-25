@@ -1,0 +1,22 @@
+**How the transition helpers work together**
+- `vmm_init` stores the boot/root table (`toptable`) so you can read existing mappings from it (source of truth) in vmm.c.
+- `free_frame_for_new_page_structure_and_create_it` allocates+zeroes a fresh 4 KiB page that you’ll use as a PDPT/PD/PT/PML4 page during transition.
+- `vmm_create_root_table` uses that helper to make a brand new empty PML4 (your destination root).
+- `the_walking_pager(source_root, src_va)` is *read-only*: it tells you “is it mapped?”, “what size?” (level 3=2 MiB, level 4=4 KiB), gives you the aligned `physical_base_adress`, and a pointer to the leaf entry.
+- `copy_mapping_dynamic(source_root, src_va, dest_root, dest_va)` ties it together: it walks the source mapping, grabs the **physical base** (`walker_out.physical_base_adress`) and the **leaf entry value** (to get flags), then calls `populate2m_into_table` or `populate4k_into_table` to write the destination mapping.
+
+**Why there are 2 flag types**
+- **Table-link flags** (your `table_flags` inside `populate2m_into_table` / `populate4k_into_table`): these are for *non-leaf* entries that point to the next table page (PML4→PDPT, PDPT→PD, PD→PT). You set them to `P|RW` so the path exists and doesn’t accidentally block writes. These must NOT set the “large page” bit.
+- **Leaf/mapping flags** (the `flags` argument to `populate2m_into_table` / `populate4k_into_table`): these are for the *final mapping entry* (PD entry for 2 MiB, PT entry for 4 KiB). This controls permissions/caching for the mapped memory (RW/US/PWT/PCD/G/PAT, etc). In `copy_mapping_dynamic` you currently extract these as `source_final_entry_val & 0xFFF` (low 12 bits).
+
+Important nuance: the “physical_adress” passed to `populate*` is the **physical base of the mapped memory** (aligned 2 MiB or 4 KiB), not the physical address of the page-table pages you allocate internally.
+
+
+
+
+
+
+
+Optional (not range-builder, but you should know)
+
+In copy_mapping_dynamic you extract flags as entry & 0xFFF in vmm.c:518-561. That drops the NX bit (bit 63) if you ever start using NX; if you care about preserving NX, you’ll want to include it explicitly.
