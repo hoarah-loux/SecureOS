@@ -101,6 +101,7 @@ typedef struct walker_out{
     uint64_t final_page_level;
     uintptr_t physical_base_adress;
     uint64_t page_size;
+    bool table_here;
     
 }walker_out;
 
@@ -755,7 +756,12 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
     uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
     uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
 
-    uintptr_t *curr = phys_to_virt(root_table);
+
+    
+    
+
+    uintptr_t *curr = (uintptr_t *)phys_to_virt((uintptr_t)root_table);
+    if(curr == NULL){return result;}
 
     
 
@@ -768,14 +774,17 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
     }
 
 
-    uintptr_t pdpt_adress = phys_to_virt(pml4_entry & ~0xFFF);
+    uintptr_t pdpt_adress = phys_to_virt((uintptr_t)(pml4_entry & ~0xFFF));
 
     curr = (uintptr_t *)pdpt_adress;
+    if(curr == NULL){return result;}
 
     uintptr_t pdpt_entry = curr[index_in_pdpt];
     uintptr_t *pdpt_entry_adress = &curr[index_in_pdpt];
 
     if(((pdpt_entry & 1) == 0) || pdpt_entry == 0){
+
+        result.table_here = false;
 
         return result;
     }
@@ -800,16 +809,18 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
     }
     
 
-    uintptr_t pd_adress = phys_to_virt(pdpt_entry & ~0xFFF); 
+    uintptr_t pd_adress = phys_to_virt((uintptr_t)(pdpt_entry & ~0xFFF)); 
 
 
     curr = (uintptr_t *)pd_adress;
+    if(curr == NULL){return result;}
 
     uintptr_t pd_entry = curr[index_in_pd];
     uintptr_t *pd_entry_adress = &curr[index_in_pd];
     
 
     if(((pd_entry & 1) == 0) || pd_entry == 0){
+        result.table_here = false;
 
         return result;
     }
@@ -832,14 +843,16 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
 
     }
 
-    uintptr_t pt_adress = phys_to_virt(pd_entry & ~0xFFF); 
+    uintptr_t pt_adress = phys_to_virt((uintptr_t)(pd_entry & ~0xFFF)); 
 
     curr = (uintptr_t *)pt_adress;
+    if(curr == NULL){return result;}
 
     uintptr_t pt_entry = curr[index_in_pt];
     uintptr_t *pt_entry_adress = &curr[index_in_pt];
 
     if(((pt_entry & 1) == 0) || pt_entry == 0){
+             result.table_here = false;
 
                 return result;
     }
@@ -856,7 +869,6 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.physical_base_adress = physical_base;
 
     return result;
-
 
 
 
@@ -886,6 +898,10 @@ static free_page_frame_out free_frame_for_new_page_structure_and_create_it2(void
 
     result.physical_adress = free_frame;
     uintptr_t *free_frame_ptr = (uintptr_t *) phys_to_virt(free_frame);
+    if (free_frame_ptr == NULL){
+        pmm_free_frame(free_frame);
+        return result;
+    }
     result.pgtable_pointer = free_frame_ptr;
     size_t byte_counter = 0;
     uint8_t *free_frame_byte_ptr = (uint8_t *)free_frame_ptr;
@@ -907,6 +923,10 @@ static free_page_frame_out free_frame_for_new_page_structure_and_create_it2(void
 
 }
 
+//this function will need alot of revision and might explode later
+// i think its kinda fixed rn //// shouyld add more allignmnt checka and null checks, and also return a struct
+// okay fuck this im redoing the funciton
+
 
 
 static uint64_t spilt_page(uintptr_t *root_table, uintptr_t virtual_adress){
@@ -914,16 +934,193 @@ static uint64_t spilt_page(uintptr_t *root_table, uintptr_t virtual_adress){
     if(root_table == NULL){return 0;}
     if(virtual_adress == 0){return 0;}
 
-    walker_out walker_result =  the_walking_pager2(root_table, virtual_adress);
+    // root_table is a physical pointer; convert to virtual only when dereferencing
 
-    uintptr_t *v_root_table = phys_to_virt(root_table);
+    walker_out walker_result = the_walking_pager2(root_table, virtual_adress);
+    if(walker_result.success == false){return 0;}
 
-    if(walker_result.final_page_level == 2){
+    // Already split to 4KiB
+    if(walker_result.final_page_level == 4){return 11;}
 
-        if()
+    // Split 2MiB -> 4KiB (already implemented)
+    if(walker_result.final_page_level == 3){
+        // 2MiB = 2097152 bytes
+        if(virtual_adress % 2097152 != 0 ){return 0;}
+        // walker_result.final_entry_pointer is a virtual pointer (from the_walking_pager2)
+        uintptr_t original_entry = *(walker_result.final_entry_pointer);
+        uintptr_t original_entry_nf = original_entry & ~0xFFF;
+        uintptr_t original_entry_flags = original_entry & 0xFFF;
+        free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
+        if(new_page.success == false){return 0;}
+        uintptr_t *new_page_vptr = new_page.pgtable_pointer; // new_page.pgtable_pointer is a virtual pointer
+        for(size_t i = 0; i < 512; i++){
+            uintptr_t subpage_phys = original_entry_nf + (i * 0x1000);
+            // Each entry: physical address of 4KiB subpage, with correct flags (large bit cleared)
+            new_page_vptr[i] = subpage_phys | (original_entry_flags & ~(1ULL << 7));
+        }
+        // Update parent PD entry to point to new PT (physical address, flags, large bit cleared)
+        // walker_result.final_entry_pointer is a virtual pointer, so this is correct
+        *(walker_result.final_entry_pointer) = new_page.physical_adress | (original_entry_flags & ~(1ULL << 7));
+        // Update walker_out to point to the new 4KiB entry for this VA
+        uintptr_t *new_pt_vptr = (uintptr_t *)phys_to_virt(new_page.physical_adress);
+
+        if (new_pt_vptr == NULL) { 
+        pmm_free_frame(new_page.physical_adress); 
+        return 0;} // new_page.physical_adress is a physical address
 
 
+        uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
+        walker_result.final_entry_pointer = &new_pt_vptr[index_in_pt];
+        walker_result.final_page_level = 4;
+        walker_result.page_size = 4096;
+        walker_result.physical_base_adress = (original_entry_nf + (index_in_pt * 0x1000));
+        return 1;
     }
+
+    // Split 1GiB -> 2MiB (and recursively to 4KiB if needed)
+    if(walker_result.final_page_level == 2){
+        // 1GiB = 1073741824 bytes, 2MiB = 2097152 bytes
+        if(virtual_adress % 1073741824 != 0 ){return 0;}
+        uintptr_t original_entry = *(walker_result.final_entry_pointer);
+        uintptr_t original_entry_nf = original_entry & ~0xFFF;
+        uintptr_t original_entry_flags = original_entry & 0xFFF;
+        // Allocate a new PD (page directory) for 2MiB entries
+        free_page_frame_out new_pd = free_frame_for_new_page_structure_and_create_it2();
+        if(new_pd.success == false){return 0;}
+        uintptr_t *new_pd_vptr = new_pd.pgtable_pointer;
+        // Fill the new PD with 512 2MiB entries, mapping the 1GiB region
+        for(size_t i = 0; i < 512; i++){
+            uintptr_t subpage_phys = original_entry_nf + (i * 0x200000); // 2MiB per entry
+            // Each entry: physical address of 2MiB subpage, with correct flags (large bit set)
+            new_pd_vptr[i] = subpage_phys | (original_entry_flags | (1ULL << 7));
+        }
+        // Update parent PDPT entry to point to new PD (physical address, flags, large bit cleared)
+        *(walker_result.final_entry_pointer) = new_pd.physical_adress | (original_entry_flags & ~(1ULL << 7));
+
+        // Now, check if the relevant 2MiB entry is a large page (bit 7 set)
+        uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
+        uintptr_t *target_pd_entry = &new_pd_vptr[index_in_pd];
+        uintptr_t pd_entry_val = *target_pd_entry;
+        // Update walker_result to reflect the new 2MiB mapping
+        walker_result.final_entry_pointer = target_pd_entry;
+        walker_result.final_page_level = 3;
+        walker_result.page_size = 2097152;
+        walker_result.physical_base_adress = (original_entry_nf + (index_in_pd * 0x200000));
+
+        if((pd_entry_val & (1ULL << 7)) != 0) {
+            // The 2MiB entry is a large page, so recursively split it to 4KiB
+            // Alignment check for 2MiB
+            if((virtual_adress % 2097152) != 0) { return 0; }
+            spilt_page((uintptr_t *)new_pd.physical_adress, virtual_adress);
+            // After recursion, re-walk to update walker_result to the new 4KiB entry
+            walker_out new_walker = the_walking_pager2(root_table, virtual_adress);
+            if (!new_walker.success) { return 0; }
+            walker_result = new_walker;
+        }
+        return 1;
+    }
+
+    return 0;
+
+}
+
+
+
+
+
+
+
+typedef struct page_structure{
+
+    bool success;
+    uintptr_t v_final_entry_ptr;
+    uint64_t final_page_lvl;
+    uintptr_t final_table_adress;
+    uintptr_t v_final_table_adress;
+    uint64_t error_code;
+
+
+    
+}page_structure;
+
+
+
+page_structure create_page_struct_dynamic(
+    uintptr_t *root_table, 
+    uint64_t map_lvl_desired, 
+    uintptr_t virtual_adress, 
+    uint64_t flags){
+
+        page_structure result = {0};
+
+        if(root_table == NULL){return result;}
+        if(virtual_adress % map_lvl_desired != 0){return result;}
+
+        walker_out walker_result = the_walking_pager2(root_table, virtual_adress);
+
+        if((walker_result.final_page_level != map_lvl_desired)
+         && (walker_result.final_page_level < map_lvl_desired) 
+         && (walker_result.success == true)){
+             
+            if(!spilt_page(root_table, virtual_adress)){return result;}
+            result.final_page_lvl = map_lvl_desired;
+            result.success = true;
+
+            return result;
+
+
+        }
+
+        if((walker_result.table_here = false) && (walker_result.final_page_level != map_lvl_desired)){
+
+            free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
+
+            *walker_result.final_entry_pointer = new_page.physical_adress | flags;//this fucntion is no complete yet
+
+
+
+
+        }
+
+        
+
+
+
+        
+
+        
+
+}
+
+
+typedef struct map_out{
+   bool success;
+   uint64_t error_code;
+   uintptr_t v_final_entry_ptr;
+   uintptr_t physical_adress;
+
+}map_out;
+
+//the split page behaviour will be added later allthough the helper exisits i dont belive its a 100% correct
+// since i dont understand it very well
+map_out vmm_map_page(
+    uintptr_t virtual_adress,
+    uintptr_t physical_adress, 
+    uintptr_t *root_table, 
+    uint64_t mapping_size, 
+    uint64_t flags ){
+
+        map_out result = {0};
+
+        if(root_table == NULL){return result;}
+
+        if(virtual_adress % mapping_size != 0 || physical_adress % mapping_size != 0){return result;}
+        if(mapping_size == 0){return result;}// u have to fix 5his
+        if(flags == 0){return result;}// aslo this
+
+
+
 
 
 }
+
