@@ -45,6 +45,9 @@ uint64_t pmm_used_frame_count(size_t bitmap_size);
 // not this will be added later for dynamic allocation not useful now since we are working witha fixed size, YETTTT!!!!!
 uint64_t pmm_max_phys_addr(void);
 
+// total bytes covered by the MB2 mmap entries (all types)
+uint64_t pmm_total_map_bytes(void);
+
 
 
 
