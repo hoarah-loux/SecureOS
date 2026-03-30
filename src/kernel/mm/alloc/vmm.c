@@ -9,7 +9,7 @@ typedef uint8_t bool;
 #define false 0
 #define LOW_BASE 0x100000
 #define HIGHER_HALF_BASE 0xFFFFFFFF80000000
-#define MAX_PHYS     (0x100000000UL) //4gib
+uint64_t MAX_PHYS;
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -38,6 +38,7 @@ uint64_t vmm_init(uintptr_t *pgtables){
     is_initialized = false;
     toptable = NULL;
     adress_toptable = 0;
+    MAX_PHYS = pmm_total_map_bytes();
     
 
 
@@ -101,6 +102,7 @@ typedef struct walker_out{
     uint64_t final_page_level;
     uintptr_t physical_base_adress;
     uint64_t page_size;
+    uintptr_t *final_page_walked_ptr;
     bool table_here;
     
 }walker_out;
@@ -798,6 +800,7 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.success = true;
         result.final_entry_pointer = pdpt_entry_adress;
         result.final_page_level = 2;
+        result.final_page_walked_ptr = curr;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 1048576; //1gib in kib
@@ -833,6 +836,7 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.success = true;
         result.final_entry_pointer = pd_entry_adress;
         result.final_page_level = 3;
+        result.final_page_walked_ptr = curr;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 2048; //2mib in kib
@@ -862,6 +866,7 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.success = true;
         result.final_entry_pointer = pt_entry_adress;
         result.final_page_level = 4;
+        result.final_page_walked_ptr = curr;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 4; 
@@ -1056,6 +1061,12 @@ page_structure create_page_struct_dynamic(
         if(root_table == NULL){return result;}
         if(virtual_adress % map_lvl_desired != 0){return result;}
 
+
+        uint64_t index_in_pml4 = (virtual_adress >> 39) & 0x1FF;
+        uint64_t index_in_pdpt = (virtual_adress >> 30) & 0x1FF;
+        uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
+        uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
+
         walker_out walker_result = the_walking_pager2(root_table, virtual_adress);
 
         if((walker_result.final_page_level != map_lvl_desired)
@@ -1073,11 +1084,29 @@ page_structure create_page_struct_dynamic(
 
         if((walker_result.table_here = false) && (walker_result.final_page_level != map_lvl_desired)){
 
+            while((!walker_result.success || walker_result.final_page_level != map_lvl_desired)){
+                //uint64_t index;
+
+                //if(walker_result.final_page_level == 2){
+                    //index = index_in_pdpt;
+                    
+                //}else if(walker_result.final_page_level == 3){
+                    //index = index_in_pd;
+                
+                //}else if(walker_result.final_page_level == 4){
+                    //index = index_in_pt;
+                //}
+
             free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
+            if (!new_page.success) return result;
+
+            //walker_result.final_page_walked_ptr[index] = new_page.physical_adress | flags; this also works
 
             *walker_result.final_entry_pointer = new_page.physical_adress | flags;//this fucntion is no complete yet
 
+            walker_result = the_walking_pager2(root_table, virtual_adress);
 
+            }
 
 
         }
