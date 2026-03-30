@@ -1,4 +1,5 @@
 #include "pmm.h"
+#include "buddy.h"
 
 #include <string.h>
 
@@ -203,11 +204,19 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
 
     }
 
+    // Init the buddy allocator before populating it
+    buddy_init(0, pmm_managed_frame_count,  )
+    
 
-
-
-
-
+    // Buddy allocator initialization here
+    // For every frame marked as free we need to add it to the list of free frames in the buddy
+    for (uintptr_t frame = 0; frame < pmm_managed_frame_count; frame++) {
+        if ((bitmap[frame / 8] & (1 << (frame % 8))) == 0) {
+            // This frame is free, add it to the buddy allocator
+            uintptr_t frame_addr = frame * frame_size;
+            buddy_free_blocks(frame_addr, 0); // Free single block (order 0)
+        }
+    }
 }
 
 
@@ -335,15 +344,19 @@ uint64_t pmm_total_frame_count(size_t bitmap_size) {
     return count;
 }
 
-//implemnt later
 uint64_t pmm_max_phys_addr(void){
-
     return pmm_max_phys_end;
-
 }
 
 uint64_t pmm_total_map_bytes(void){
-
     return pmm_total_mmap_bytes;
+}
 
+// calculate address from bitmap index and bit position, return 0 if out of bounds
+uintptr_t get_frame_address(size_t byte_index, size_t bit_index) {
+    size_t frame = byte_index * 8 + bit_index;
+    if (frame >= pmm_managed_frame_count) {
+        return 0; // Out of bounds
+    }
+    return frame * frame_size;
 }
