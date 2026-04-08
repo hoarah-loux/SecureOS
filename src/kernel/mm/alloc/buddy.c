@@ -99,6 +99,54 @@ uintptr_t buddy_alloc_blocks(size_t order) {
     // Literally out of memory at this point
 }
 
-void buddy_free_blocks(uintptr_t addr, size_t order) {
+static uintptr_t get_buddy_addr(uintptr_t addr, size_t order) {
+    size_t block_size = (1UL << (order + 12)); // 2^order * 4096
+    uintptr_t relative_addr = addr - mem_base_addr;
+    uintptr_t buddy_relative_addr = relative_addr ^ block_size;
+    return mem_base_addr + buddy_relative_addr;
+}
 
+void buddy_free_blocks(uintptr_t addr, size_t order) {
+    if (order >= MAX_ORDER - 1) {
+        // Add to the highest possible free list and stop
+        struct buddy_node* node = (struct buddy_node*)addr;
+        node->next = free_lists[order];
+        free_lists[order] = node;
+        return;
+    }
+
+    uintptr_t buddy_addr = get_buddy_addr(addr, order);
+    size_t buddy_index = (buddy_addr - mem_base_addr) / MIN_BLOCK_SIZE;
+
+    // Check if the buddy is free AND of the same order
+    // A block can only merge if its buddy is also free and not part of a larger allocation
+    if (all_frames[buddy_index].flags == 0 && all_frames[buddy_index].order == order) {
+        
+        // --- COALESCING ---
+        // 1. Remove buddy from its current free list
+        struct buddy_node** curr = &free_lists[order];
+        while (*curr != NULL) {
+            if ((uintptr_t)*curr == buddy_addr) {
+                *curr = (*curr)->next;
+                break;
+            }
+            curr = &((*curr)->next);
+        }
+
+        // 2. Determine the start of the combined block (the lower address)
+        uintptr_t merged_addr = (addr < buddy_addr) ? addr : buddy_addr;
+
+        // 3. Recursively free the larger merged block
+        buddy_free_blocks(merged_addr, order + 1);
+        
+    } else {
+        // --- NO MERGING ---
+        // Just add the current block back to the free list
+        all_frames[(addr - mem_base_addr) / MIN_BLOCK_SIZE].flags = 0;
+        all_frames[(addr - mem_base_addr) / MIN_BLOCK_SIZE].order = order;
+        
+        struct buddy_node* node = (struct buddy_node*)addr;
+        node->next = free_lists[order];
+        free_lists[order] = node;
+    }
 }
