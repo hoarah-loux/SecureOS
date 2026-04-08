@@ -5,7 +5,7 @@
 static struct buddy_node* free_lists[MAX_ORDER];
 
 // List of all frames, indexed by frame number
-struct frame* all_frames;
+struct frame* frame_metadata = NULL; // we set this shit in pmm.c to the actual mem address (very cursed)
 
 uintptr_t mem_base_addr; // The start of the managed physical memory
 
@@ -24,11 +24,11 @@ int size_to_order(size_t nbytes) {
 void buddy_init(uintptr_t base, size_t size, struct frame* frames) {
     // Initialize buddy allocator structures here
     mem_base_addr = base;
-    all_frames = frames;
+    frame_metadata = frames;
     // Initialize all frames as free
     for (size_t i = 0; i < size / MIN_BLOCK_SIZE; i++) {
-        all_frames[i].flags = 0; // 0 = free
-        all_frames[i].order = 0;
+        frame_metadata[i].flags = 0; // 0 = free
+        frame_metadata[i].order = 0;
     }
 
 }
@@ -60,8 +60,8 @@ uintptr_t buddy_alloc_blocks(size_t order) {
         // Mark as used
         // FIX: Cast to uintptr_t so subtraction gives raw bytes, then divide by 4KiB
         size_t block_index = ((uintptr_t)block - mem_base_addr) / MIN_BLOCK_SIZE;
-        all_frames[block_index].flags = 1;
-        all_frames[block_index].order = order;
+        frame_metadata[block_index].flags = 1;
+        frame_metadata[block_index].order = order;
 
         return (uintptr_t)block; // Return the address of the allocated block
     }
@@ -84,13 +84,13 @@ uintptr_t buddy_alloc_blocks(size_t order) {
         // Keep track of metadata for buddy
         // FIX: The buddy is FREE, so we mark it as 0. 
         size_t buddy_index = (buddy_addr - mem_base_addr) / MIN_BLOCK_SIZE;
-        all_frames[buddy_index].flags = 0; // The buddy block is free
-        all_frames[buddy_index].order = order; 
+        frame_metadata[buddy_index].flags = 0; // The buddy block is free
+        frame_metadata[buddy_index].order = order; 
 
         // Update metadata for the block we are returning
         size_t block_index = (higher_block - mem_base_addr) / MIN_BLOCK_SIZE; 
         // Note: flags is already 1 from the base case. We just update the order.
-        all_frames[block_index].order = order; 
+        frame_metadata[block_index].order = order; 
 
         return higher_block; // Return the address of the allocated block
     }
@@ -120,7 +120,7 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
 
     // Check if the buddy is free AND of the same order
     // A block can only merge if its buddy is also free and not part of a larger allocation
-    if (all_frames[buddy_index].flags == 0 && all_frames[buddy_index].order == order) {
+    if (frame_metadata[buddy_index].flags == 0 && frame_metadata[buddy_index].order == order) {
         
         // --- COALESCING ---
         // 1. Remove buddy from its current free list
@@ -142,9 +142,9 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
     } else {
         // --- NO MERGING ---
         // Just add the current block back to the free list
-        all_frames[(addr - mem_base_addr) / MIN_BLOCK_SIZE].flags = 0;
-        all_frames[(addr - mem_base_addr) / MIN_BLOCK_SIZE].order = order;
-        
+        frame_metadata[(addr - mem_base_addr) / MIN_BLOCK_SIZE].flags = 0;
+        frame_metadata[(addr - mem_base_addr) / MIN_BLOCK_SIZE].order = order;
+
         struct buddy_node* node = (struct buddy_node*)addr;
         node->next = free_lists[order];
         free_lists[order] = node;

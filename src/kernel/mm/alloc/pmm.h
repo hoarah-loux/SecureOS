@@ -5,6 +5,9 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+
+#define ALIGN_UP(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
+
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
 
@@ -20,17 +23,14 @@ void pmm_init(uint32_t mb2_info_ptr,uint8_t _kernel_start, uint8_t _kernel_end);
 // dont be mislead we are not returning a ptr
 // its just a holder that can hold the size of an adress also 64 bits
 // RETURNS ZERO IN SERIAL IF WE ARE OUT OF BOUNDS
-uintptr_t pmm_alloc_frame(void); 
+uintptr_t pmm_alloc_frame(void);
 
-uintptr_t pmm_alloc_frame_range(uintptr_t start_addr, uintptr_t end_addr);
-
+uintptr_t pmm_alloc_bytes(size_t size);
 
 
 // this function frees memory that needs to be freed
 // thats if they were allocated before
-uintptr_t pmm_free_frame(uintptr_t adress_to_free);
-
-uintptr_t pmm_free_range(uintptr_t start_addr, uintptr_t end_addr);
+uintptr_t pmm_free_frame(uintptr_t address_to_free);
 
 // these three functions are self explanatory please just read the name
 // read READDDD
@@ -38,11 +38,11 @@ uint64_t pmm_total_frame_count(size_t bitmap_size);
 
 uint64_t pmm_free_frame_count(size_t bitmap_size);
 
-uint64_t pmm_used_frame_count(size_t bitmap_size);
+uint64_t pmm_used_frame_count(void);
 
 // this function returns the highest physical adress manged by this pmm 
 // (the limit)
-// not this will be added later for dynamic allocation not useful now since we are working witha fixed size, YETTTT!!!!!
+// note this will be added later for dynamic allocation not useful now since we are working witha fixed size, YETTTT!!!!!
 uint64_t pmm_max_phys_addr(void);
 
 // total bytes covered by the MB2 mmap entries (all types)
