@@ -26,7 +26,6 @@ static uint64_t pmm_max_phys_end = 0;
 static size_t pmm_managed_frame_count = frame_count;
 static size_t pmm_managed_bitmap_size = BITMAP_SIZE;
 
-
 void* memset_me(void* ptr, int value, size_t size){
 
     unsigned char *p = (unsigned char *)ptr;
@@ -69,18 +68,16 @@ static uintptr_t get_frame(uint8_t *bitmap, size_t bitmap_size) {
 
 
 
-void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end){
+void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end) {
 
     // Start with all frames as used; we'll clear usable frames after map parsing.
     memset_me(bitmap, 0xff, (size_t)BITMAP_SIZE);
 
-
-    //set frames in the mb2 mmpa to used
-    //parse mb2info struct, and get the memory map tag type6
+    // Parse mb2info struct, and get the memory map tag (type 6)
     const uint8_t *mb2_base = (const uint8_t *)(uintptr_t)mb2_info_ptr;
-    uint32_t size = *(const uint32_t *)mb2_base;
+    uint32_t mb2_total_size = *(const uint32_t *)mb2_base; // Fix: Get total size to protect it later
     const uint8_t *tag = mb2_base + 8;
-    const uint8_t *mb2_end = mb2_base + size;
+    const uint8_t *mb2_end = mb2_base + mb2_total_size;
 
     pmm_total_mmap_bytes = 0;
     pmm_max_phys_end = 0;
@@ -89,9 +86,8 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
         uint32_t tag_type = *(const uint32_t *)tag;
         uint32_t tag_size = *(const uint32_t *)(tag + 4);
 
-        if (tag_type == 0) {
-            break;
-        }
+        if (tag_type == 0) break;
+        
         if (tag_type == 6) {
             // First pass: collect max phys + total map bytes across all types.
             uint32_t entry_size = *(const uint32_t *)(tag + 8);
@@ -109,22 +105,14 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
                 }
 
                 uint64_t region_end_all_types = base_addr + length;
-                if (region_end_all_types < base_addr) {
-                    region_end_all_types = UINT64_MAX;
-                }
                 if (region_end_all_types > pmm_max_phys_end) {
                     pmm_max_phys_end = region_end_all_types;
                 }
-
                 entry_ptr += entry_size;
             }
 
-            // Set runtime managed bitmap size based on detected max phys,
-            // clamped to our current static 4GiB PMM backing store.
-            uint64_t managed_phys_end = pmm_max_phys_end;
-            if (managed_phys_end > max_pyhs) {
-                managed_phys_end = max_pyhs;
-            }
+            // Set runtime managed size, clamped to our static 4GiB store.
+            uint64_t managed_phys_end = (pmm_max_phys_end > max_pyhs) ? max_pyhs : pmm_max_phys_end;
 
             if (managed_phys_end == 0) {
                 pmm_managed_frame_count = 0;
@@ -146,12 +134,7 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
                 if (type == 1) {
                     uint64_t region_start = base_addr;
                     uint64_t region_end = base_addr + length;
-                    if (region_end < region_start) {
-                        region_end = UINT64_MAX;
-                    }
-                    if (region_end > managed_phys_end) {
-                        region_end = managed_phys_end;
-                    }
+                    if (region_end > managed_phys_end) region_end = managed_phys_end;
 
                     for (uint64_t addr = region_start; addr < region_end; addr += frame_size) {
                         size_t frame = addr / frame_size;
@@ -167,61 +150,47 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
         tag += (tag_size + 7) & ~7;
     }
 
+    // -=- CRITICAL RESERVATIONS -=-
 
+    // 1. Reserve Kernel frames
+    _pmm_alloc_frame_range(_kernel_start, _kernel_end);
 
+    // 2. Reserve MB2 Info structure (so it's not overwritten by buddy nodes)
+    _pmm_alloc_frame_range(mb2_info_ptr, mb2_info_ptr + mb2_total_size);
 
-    ///we still need to reseve frames for the bootloader and the kernel
-    //first we calculate strart and end indices of the frames for the labels kernel start and end
+    // 3. Reserve the Bitmap's own frames (redundant if inside kernel, but safe)
+    uintptr_t bitmap_addr = (uintptr_t)&bitmap;
+    _pmm_alloc_frame_range(bitmap_addr, bitmap_addr + pmm_managed_bitmap_size);
 
-    uintptr_t kernel_start = (uintptr_t)_kernel_start;
-    uintptr_t kernel_end = (uintptr_t)_kernel_end;
-    uintptr_t start_frame = kernel_start / frame_size;
-    uintptr_t end_frame = (kernel_end + frame_size - 1) / frame_size;
-    for (uintptr_t frame = start_frame; frame < end_frame; frame++) {
-        if (frame < pmm_managed_frame_count) {
-            bitmap[frame / 8] |= (1 << (frame % 8));
-        }
-    }
+    // 4. Set up the Buddy Metadata (frame_metadata)
+    // We store this 4 KiB after the kernel end.
+    // to align use the ALIGN_UP macro
+    uintptr_t metadata_addr = ALIGN_UP((uintptr_t)_kernel_end, frame_size);
+    frame_metadata = (struct frame*)metadata_addr;
+    uintptr_t metadata_size = pmm_managed_frame_count * sizeof(struct frame);
 
+    // Mark the metadata frames as USED in the bitmap so we don't overwrite them
+    _pmm_alloc_frame_range((uintptr_t)frame_metadata, (uintptr_t)frame_metadata + metadata_size);
 
-    //now to set frames for the bitmap itself as used for now this is redyundeabnt
-    
-    uintptr_t bitmap_adress = (uintptr_t)&bitmap;
-    uintptr_t bitmap_size_in_bytes = pmm_managed_bitmap_size;
-    uintptr_t bitmap_end = bitmap_adress + bitmap_size_in_bytes;
-    uintptr_t bit_map_end_frame = (bitmap_end + frame_size - 1) / frame_size;
-    uintptr_t bit_map_start_frame = bitmap_adress/frame_size;
+    // --- BUDDY HANDOVER ---
 
-    for(uintptr_t frame = bit_map_start_frame; frame < bit_map_end_frame; frame++){
+    // Init the buddy allocator structures
+    buddy_init(0, pmm_managed_frame_count * frame_size, frame_metadata);
 
-        if(frame<pmm_managed_frame_count){
-
-            bitmap[frame/8]|=(1<<(frame % 8));
-        }
-
-
-
-
-    }
-
-    // Init the buddy allocator before populating it
-    buddy_init(0, pmm_managed_frame_count,  )
-    
-
-    // Buddy allocator initialization here
-    // For every frame marked as free we need to add it to the list of free frames in the buddy
+    // For every frame still marked as FREE (0) in our bootstrap bitmap, 
+    // we hand it over to the buddy allocator.
     for (uintptr_t frame = 0; frame < pmm_managed_frame_count; frame++) {
         if ((bitmap[frame / 8] & (1 << (frame % 8))) == 0) {
-            // This frame is free, add it to the buddy allocator
             uintptr_t frame_addr = frame * frame_size;
-            buddy_free_blocks(frame_addr, 0); // Free single block (order 0)
+            // Free single block (order 0) into the buddy system. 
+            // The buddy system will automatically coalesce these into larger blocks.
+            buddy_free_blocks(frame_addr, 0); 
         }
     }
 }
 
-
 //get adress of a frame
-uintptr_t pmm_alloc_frame(void){
+uintptr_t _pmm_alloc_frame(void){
     uintptr_t free_frame = get_frame(bitmap, pmm_managed_bitmap_size);
     if (free_frame == 0) {
         return 0; // No free frame available
@@ -231,7 +200,7 @@ uintptr_t pmm_alloc_frame(void){
     return free_frame;
 }
 
-uintptr_t pmm_alloc_frame_range(uintptr_t start_addr, uintptr_t end_addr) {
+uintptr_t _pmm_alloc_frame_range(uintptr_t start_addr, uintptr_t end_addr) {
     if (end_addr < start_addr) {
         return 0; // Invalid range
     }
@@ -250,7 +219,7 @@ uintptr_t pmm_alloc_frame_range(uintptr_t start_addr, uintptr_t end_addr) {
 }
 
 
-uintptr_t pmm_free_frame(uintptr_t address_to_free) {
+uintptr_t _pmm_free_frame(uintptr_t address_to_free) {
     size_t frame_to_free = address_to_free / frame_size;
     if (frame_to_free >= pmm_managed_frame_count) {
         return 0; // Invalid frame
@@ -260,7 +229,7 @@ uintptr_t pmm_free_frame(uintptr_t address_to_free) {
 }
 
 
-uintptr_t pmm_free_range(uintptr_t start_addr, uintptr_t end_addr){
+uintptr_t _pmm_free_range(uintptr_t start_addr, uintptr_t end_addr){
 
     if(end_addr < start_addr){
 
@@ -288,39 +257,23 @@ uintptr_t pmm_free_range(uintptr_t start_addr, uintptr_t end_addr){
 
 
 
-uint64_t pmm_free_frame_count(size_t bitmap_size){
-
+uint64_t pmm_free_frame_count(void) {
     size_t count = 0;
-    if (bitmap_size > pmm_managed_bitmap_size) {
-        bitmap_size = pmm_managed_bitmap_size;
-    }
-    for (size_t i = 0; i < bitmap_size; i++) {
-        uint8_t frame_chunk = bitmap[i];
-        for (int j = 0; j < 8; j++) {
-            size_t frame = i * 8 + j;
-            // Only count real frames, not padding bits
-            if (frame < pmm_managed_frame_count && (frame_chunk & (1 << j)) == 0) {
-                count++;
-            }
+    
+    for (size_t i = 0; i < pmm_managed_frame_count; i++) {
+        // In your buddy implementation, we set flags = 0 for free, 1 for used
+        if (frame_metadata[i].flags == 0) {
+            count++;
         }
     }
     return count;
-
-
 }
 
-uint64_t pmm_used_frame_count(size_t bitmap_size) {
+uint64_t pmm_used_frame_count(void) {
     size_t count = 0;
-    if (bitmap_size > pmm_managed_bitmap_size) {
-        bitmap_size = pmm_managed_bitmap_size;
-    }
-    for (size_t i = 0; i < bitmap_size; i++) {
-        uint8_t frame_chunk = bitmap[i];
-        for (int j = 0; j < 8; j++) {
-            size_t frame = i * 8 + j;
-            if (frame < pmm_managed_frame_count && (frame_chunk & (1 << j))) {
-                count++;
-            }
+    for (size_t i = 0; i < pmm_managed_frame_count; i++) {
+        if (frame_metadata[i].flags == 1) { // 1 = Allocated
+            count++;
         }
     }
     return count;
@@ -328,20 +281,7 @@ uint64_t pmm_used_frame_count(size_t bitmap_size) {
 
 //this fucntion is useless for now but it will be needed when switching to dynamic allocation
 uint64_t pmm_total_frame_count(size_t bitmap_size) {
-    size_t count = 0;
-    if (bitmap_size > pmm_managed_bitmap_size) {
-        bitmap_size = pmm_managed_bitmap_size;
-    }
-    for (size_t byte_index = 0; byte_index < bitmap_size; byte_index++) {
-        for (size_t bit_index = 0; bit_index < 8; bit_index++) {
-            //this account for if the bit isnt mapping an real frames (if the bit represents padding) 
-            size_t frame = byte_index * 8 + bit_index;
-            if (frame < pmm_managed_frame_count) {
-                count++;
-            }
-        }
-    }
-    return count;
+    return (uint64_t)pmm_managed_frame_count;
 }
 
 uint64_t pmm_max_phys_addr(void){
@@ -353,10 +293,33 @@ uint64_t pmm_total_map_bytes(void){
 }
 
 // calculate address from bitmap index and bit position, return 0 if out of bounds
+// PRETTY SURE WE DON'T NEED THIS NO MORE BUT I'LL LEAVE IT FOR NOW.. assaf what do you think?
 uintptr_t get_frame_address(size_t byte_index, size_t bit_index) {
     size_t frame = byte_index * 8 + bit_index;
     if (frame >= pmm_managed_frame_count) {
         return 0; // Out of bounds
     }
     return frame * frame_size;
+}
+
+// Implement buddy functions for vmm
+
+uintptr_t pmm_alloc_frame(void) {
+    return buddy_alloc_blocks(0); // Allocate a single block (order 0)
+}
+
+uintptr_t pmm_free_frame(uintptr_t address_to_free) {
+    if (address_to_free % frame_size != 0) return 0;
+
+    // find out the order
+    size_t frame_idx = address_to_free / frame_size;
+    size_t order = frame_metadata[frame_idx].order; // should always be 0... I hope
+
+    buddy_free_blocks(address_to_free, order);
+    return 1; // Success
+}
+
+uintptr_t pmm_alloc_bytes(size_t size) {
+    int order = size_to_order(size); 
+    return buddy_alloc_blocks(order);
 }

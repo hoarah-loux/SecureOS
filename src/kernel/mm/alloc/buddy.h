@@ -4,6 +4,7 @@
 #define MAX_ORDER 11 // 2^0 = 1 frame (4KiB) to 2^10 = 1024 frames (4 MiB)
 #define MAX_BLOCK_SIZE (4096 * (1 << MAX_ORDER)) // 4 MiB
 #define MIN_BLOCK_SIZE 4096 // 4 KiB
+extern struct frame* frame_metadata;
 
 struct buddy_node {
     struct buddy_node* next;
