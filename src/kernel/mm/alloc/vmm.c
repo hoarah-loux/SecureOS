@@ -21,6 +21,10 @@ static uintptr_t adress_toptable;
 static bool is_initialized = false;
 
 
+//VERY IMPORTANT:
+// after the transition is done all inputs are physical and outputs are virtual.....
+
+
 
 
 
@@ -104,6 +108,7 @@ typedef struct walker_out{
     uint64_t page_size;
     uintptr_t *final_page_walked_ptr;
     bool table_here;
+    uint64_t error_code; //10 for present bit = 0
     
 }walker_out;
 
@@ -725,7 +730,9 @@ return 1;
 
 //if u still havent figured im not the best at spelling
 //now with page based virtual mem mangagment we are only concerned with alloc free, map unmap pages, which is pretty simple
-
+static void invlpg(void *va) {
+    asm volatile("invlpg (%0)" ::"r"(va) : "memory");
+}
 
 
 //this fucntion looks very unsafe idfk
@@ -741,14 +748,62 @@ static uintptr_t phys_to_virt(uintptr_t physical_adress){
 
 }
 
+enum walker_error{
+
+    STOP_AT_PML4,
 
 
-static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_adress){
+};
 
-    walker_out result = {0};
+enum walker_stop_reson{
+    NOT_PRESENT,
+    LARGE_PAGE,
+    WALK_COMPLETEST,
+
+};
+
+typedef struct walker_out2{
+
+    bool success;
+    uintptr_t *final_entry_pointer;
+    uint64_t final_page_level;
+    uintptr_t physical_base_adress;
+    uint64_t page_size;
+    uintptr_t *final_page_walked_ptr;
+    uint64_t stop_reason;
+    uint64_t parent_flags;
+    uintptr_t *parent_table_ptr;
+    uintptr_t parent_entry;
+    uint64_t parent_lvl;
+   
+    uint64_t error_code;
+
+
+}walker_out2;
+
+
+// We are redefining constraints and sucess for this walker and refactoring the full next phase, for clarity and 
+// debug ease cuz its a nightmare now.
+// faliure is only when the walk actually fails for sm reason now we have also the stop reason which will make our life 
+// much easier.
+// ALL POINTERS RETURNED BY THIS FUNCTION ARE VIRTUAL....
+static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_adress){
+
+
+    const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+    const uint64_t ADDR_MASK_2M = 0x000FFFFFFFE00000ULL;
+    const uint64_t ADDR_MASK_1G = 0x000FFFFFC0000000ULL;
+    const uint64_t BIT_PRESENT = 1ULL;
+    const uint64_t BIT_PS_OR_PTE_PAT = (1ULL << 7);
+    const uint64_t BIT_LARGE_PAT = (1ULL << 12);
+
+
+    walker_out2 result = {0};
 
     if(root_table == NULL){return result;}
     if(virtual_adress == 0){return result;}
+    if ((((int64_t)virtual_adress) >> 47) != 0 && (((int64_t)virtual_adress) >> 47) != -1) { return result; }
+    //non canonical va check idfk what this shit is
 
     
     //this is an index in the table size meaning from 0 to 511
@@ -764,6 +819,7 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
 
     uintptr_t *curr = (uintptr_t *)phys_to_virt((uintptr_t)root_table);
     if(curr == NULL){return result;}
+    uintptr_t *pml4_ptr = curr;
 
     
 
@@ -771,22 +827,45 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
     uintptr_t *pml4_entry_adress = &curr[index_in_pml4];
 
     if((pml4_entry & 1) == 0 || pml4_entry == 0){
+        
+        result.final_page_walked_ptr = curr;
+        result.final_entry_pointer = pml4_entry_adress;
+        result.physical_base_adress = NULL;
+        result.page_size = NULL;
+        result.final_page_level = 1;
+        result.success = true;
+        result.error_code = STOP_AT_PML4;
+        result.stop_reason =  NOT_PRESENT;
+
 
         return result;
     }
 
 
-    uintptr_t pdpt_adress = phys_to_virt((uintptr_t)(pml4_entry & ~0xFFF));
+    uintptr_t pdpt_adress = phys_to_virt((uintptr_t)(pml4_entry & ADDR_MASK_4K));
 
     curr = (uintptr_t *)pdpt_adress;
     if(curr == NULL){return result;}
+    uintptr_t *pdpt_ptr = curr;
 
     uintptr_t pdpt_entry = curr[index_in_pdpt];
     uintptr_t *pdpt_entry_adress = &curr[index_in_pdpt];
 
     if(((pdpt_entry & 1) == 0) || pdpt_entry == 0){
+        result.stop_reason = NOT_PRESENT;
+        result.final_page_level = 2;
+        result.final_page_walked_ptr = curr;
+        result.final_entry_pointer = pdpt_entry_adress;
+        result.physical_base_adress = NULL;
+        result.page_size = NULL;
+        result.success = true;
+        result.parent_flags = pml4_entry & ~ADDR_MASK_4K;
+        result.parent_entry = pml4_entry;
+        result.parent_table_ptr = pml4_ptr;
+        result.parent_lvl = 1;
+        
 
-        result.table_here = false;
+        
 
         return result;
     }
@@ -801,29 +880,45 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.final_entry_pointer = pdpt_entry_adress;
         result.final_page_level = 2;
         result.final_page_walked_ptr = curr;
+        result.stop_reason = LARGE_PAGE;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
-        result.page_size = 1048576; //1gib in kib
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 30) - 1);
+        result.page_size = 1073741824; //1gib in bytes
+        uintptr_t physical_base = final_entry_value & ADDR_MASK_1G;
         result.physical_base_adress = physical_base;
+        result.parent_flags = pml4_entry & ~ADDR_MASK_4K;
+         result.parent_entry = pml4_entry;
+        result.parent_table_ptr = pml4_ptr;
+        result.parent_lvl = 1;
 
         return result;
 
     }
     
 
-    uintptr_t pd_adress = phys_to_virt((uintptr_t)(pdpt_entry & ~0xFFF)); 
+    uintptr_t pd_adress = phys_to_virt((uintptr_t)(pdpt_entry & ADDR_MASK_4K)); 
 
 
     curr = (uintptr_t *)pd_adress;
     if(curr == NULL){return result;}
+    uintptr_t *pd_ptr = curr;
 
     uintptr_t pd_entry = curr[index_in_pd];
     uintptr_t *pd_entry_adress = &curr[index_in_pd];
     
 
     if(((pd_entry & 1) == 0) || pd_entry == 0){
-        result.table_here = false;
+        result.stop_reason = NOT_PRESENT;
+        result.final_page_level = 3;
+        result.final_page_walked_ptr = curr;
+        result.final_entry_pointer = pd_entry_adress;
+        result.physical_base_adress = NULL;
+        result.page_size = NULL;
+        result.success = true;
+        result.parent_flags = pdpt_entry & ~ADDR_MASK_4K;
+         result.parent_entry = pdpt_entry;
+        result.parent_table_ptr = pdpt_ptr;
+        result.parent_lvl = 2;
 
         return result;
     }
@@ -837,26 +932,44 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.final_entry_pointer = pd_entry_adress;
         result.final_page_level = 3;
         result.final_page_walked_ptr = curr;
+        result.stop_reason = LARGE_PAGE;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
-        result.page_size = 2048; //2mib in kib
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 21) - 1);
+        result.page_size = 2097152; //2mib in bytes
+        uintptr_t physical_base = final_entry_value & ADDR_MASK_2M;
         result.physical_base_adress = physical_base;
+        result.parent_flags = pdpt_entry & ~ADDR_MASK_4K;
+         result.parent_entry = pdpt_entry;
+        result.parent_table_ptr = pdpt_ptr;
+        result.parent_lvl = 2;
 
                 return result;
 
     }
 
-    uintptr_t pt_adress = phys_to_virt((uintptr_t)(pd_entry & ~0xFFF)); 
+    uintptr_t pt_adress = phys_to_virt((uintptr_t)(pd_entry & ADDR_MASK_4K)); 
 
     curr = (uintptr_t *)pt_adress;
     if(curr == NULL){return result;}
+
 
     uintptr_t pt_entry = curr[index_in_pt];
     uintptr_t *pt_entry_adress = &curr[index_in_pt];
 
     if(((pt_entry & 1) == 0) || pt_entry == 0){
-             result.table_here = false;
+        result.stop_reason = NOT_PRESENT;
+        result.final_page_level = 4;
+        result.final_page_walked_ptr = curr;
+        result.final_entry_pointer = pt_entry_adress;
+        result.physical_base_adress = NULL;
+        result.page_size = NULL;
+        result.success = true;
+        result.parent_flags = pd_entry & ~ADDR_MASK_4K;
+        result.parent_entry = pd_entry;
+        result.parent_table_ptr = pd_ptr;
+        result.parent_lvl = 3;
+        
+
 
                 return result;
     }
@@ -867,11 +980,16 @@ static walker_out the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_ad
         result.final_entry_pointer = pt_entry_adress;
         result.final_page_level = 4;
         result.final_page_walked_ptr = curr;
+        result.stop_reason = WALK_COMPLETEST;
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
-        result.page_size = 4; 
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 12) - 1);
+        result.page_size = 4096; 
+        uintptr_t physical_base = final_entry_value & ADDR_MASK_4K;
         result.physical_base_adress = physical_base;
+        result.parent_flags = pd_entry & ~ADDR_MASK_4K;
+          result.parent_entry = pd_entry;
+        result.parent_table_ptr = pd_ptr;
+        result.parent_lvl = 3;
 
     return result;
 
@@ -928,228 +1046,611 @@ static free_page_frame_out free_frame_for_new_page_structure_and_create_it2(void
 
 }
 
+
+enum spilt_error{
+    
+    NO_FLAG_PROVIDED_FOR_NP_CASE,
+    INVALID_FLAGS_FOR_NP_CASE,
+    COELSENCE, //coalesce i didnt know how to spell it
+    UNDEFINED_ERROR,
+    REWALK_FAILED,
+    PARENT_PA_IS_0,
+
+
+};
+
+// fun fact i made a typo naming the function and im leaving it here as my trademark
+// again ALL POINTERS RETURNED ARE VIRTUAL.
+
+typedef struct spilt_out{
+
+    bool success;
+    uintptr_t *new_table_ptr;
+    uintptr_t *old_table_ptr;
+    uint64_t error_code;
+    bool noop;
+
+    
+}spilt_out;
+
+
 //this function will need alot of revision and might explode later
 // i think its kinda fixed rn //// shouyld add more allignmnt checka and null checks, and also return a struct
 // okay fuck this im redoing the funciton
 
 
+//this function will have to be overhauled againadd a aparam desired map lvl to split to
 
-static uint64_t spilt_page(uintptr_t *root_table, uintptr_t virtual_adress){
+//now im starting the overhaul lets see how ts goes
 
-    if(root_table == NULL){return 0;}
-    if(virtual_adress == 0){return 0;}
+//f***ing finally fuck this function this has to be the most annoying thing i ever did in my life
+// f*** THIS FUNCTION OKAY? FINALLY FINALLYYYYYYYYYYYYYYYYYYYYYYYYYY DONE........
+//
+// FLAG CONTRACT / ASSUMPTIONS (IMPORTANT):
+// - This function is a *splitter* (it only creates intermediate tables or splits an existing large-page leaf).
+// - NOT_PRESENT stop_reason:
+//     - We allocate a new paging-structure page (new table) and link it into the current level.
+//     - `caller_flags` here means "TABLE/LINK FLAGS" for a pointer-to-next-table entry.
+//     - Required: PRESENT (bit 0) must be set.
+//     - Forbidden: PS (bit 7 at PDPT/PD levels) must be 0 (this must NOT create a large-page leaf).
+//     - Forbidden: address bits must be 0 (do not pass any physical address inside `caller_flags`).
+//     - The address field for the link entry always comes from `new_page.physical_adress`.
+// - LARGE_PAGE stop_reason:
+//     - We are splitting an existing *present* large-page leaf (1GiB or 2MiB).
+//     - Child leaf entries inherit the old leaf's flags to preserve the mapping semantics for the whole region.
+//     - After split, the parent entry is rewritten into a table-pointer entry (PS cleared).
+// - If you want to CHANGE permissions/caching/etc for the final mapping, do it when you write the final leaf
+//   entry in the mapper (e.g. `vmm_map_page()`), not by changing flags for neighboring entries in the split.
 
-    // root_table is a physical pointer; convert to virtual only when dereferencing
+//BUGS TO LOOK OUT FOR
 
-    walker_out walker_result = the_walking_pager2(root_table, virtual_adress);
-    if(walker_result.success == false){return 0;}
-
-    // Already split to 4KiB
-    if(walker_result.final_page_level == 4){return 11;}
-
-    // Split 2MiB -> 4KiB (already implemented)
-    if(walker_result.final_page_level == 3){
-        // 2MiB = 2097152 bytes
-        if(virtual_adress % 2097152 != 0 ){return 0;}
-        // walker_result.final_entry_pointer is a virtual pointer (from the_walking_pager2)
-        uintptr_t original_entry = *(walker_result.final_entry_pointer);
-        uintptr_t original_entry_nf = original_entry & ~0xFFF;
-        uintptr_t original_entry_flags = original_entry & 0xFFF;
-        free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
-        if(new_page.success == false){return 0;}
-        uintptr_t *new_page_vptr = new_page.pgtable_pointer; // new_page.pgtable_pointer is a virtual pointer
-        for(size_t i = 0; i < 512; i++){
-            uintptr_t subpage_phys = original_entry_nf + (i * 0x1000);
-            // Each entry: physical address of 4KiB subpage, with correct flags (large bit cleared)
-            new_page_vptr[i] = subpage_phys | (original_entry_flags & ~(1ULL << 7));
-        }
-        // Update parent PD entry to point to new PT (physical address, flags, large bit cleared)
-        // walker_result.final_entry_pointer is a virtual pointer, so this is correct
-        *(walker_result.final_entry_pointer) = new_page.physical_adress | (original_entry_flags & ~(1ULL << 7));
-        // Update walker_out to point to the new 4KiB entry for this VA
-        uintptr_t *new_pt_vptr = (uintptr_t *)phys_to_virt(new_page.physical_adress);
-
-        if (new_pt_vptr == NULL) { 
-        pmm_free_frame(new_page.physical_adress); 
-        return 0;} // new_page.physical_adress is a physical address
+//Flag inheritance issues:
+//You copy too many raw bits
+//No strict permission-only mask
+//PAT/PS semantics leak across levels
+//Depends too heavily on old entry format stability
+//Alignment issues to improve:
+//enforce parent base alignment to page size "childe_size = parent_size/512"
+//validate allocated page table alignment (4K)
+//ensure split range consistency (512 entries exact mapping)
+//optionally validate walker-provided base consistency
 
 
-        uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
-        walker_result.final_entry_pointer = &new_pt_vptr[index_in_pt];
-        walker_result.final_page_level = 4;
-        walker_result.page_size = 4096;
-        walker_result.physical_base_adress = (original_entry_nf + (index_in_pt * 0x1000));
-        return 1;
+
+
+
+
+
+
+
+static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uint64_t desired_spilt_lvl){
+
+    spilt_out result = {0};
+
+    uintptr_t *last_new_table_ptr = NULL;
+    uintptr_t *last_old_table_ptr = NULL;
+
+
+    // the pat is overlapping here will have to read more about this...
+    const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+    const uint64_t ADDR_MASK_2M = 0x000FFFFFFFE00000ULL;
+    const uint64_t ADDR_MASK_1G = 0x000FFFFFC0000000ULL;
+    const uint64_t BIT_PRESENT = 1ULL;
+    const uint64_t BIT_PS_OR_PTE_PAT = (1ULL << 7);
+    const uint64_t BIT_LARGE_PAT = (1ULL << 12);
+
+    if(root_table == NULL){return result;}
+    if(virtual_adress == 0 || virtual_adress % 4096 != 0){return result;}
+    if ((((int64_t)virtual_adress) >> 47) != 0 && (((int64_t)virtual_adress) >> 47) != -1) { return result; }
+    //non canonical va check idfk what this shit is
+    if(desired_spilt_lvl > 4 || desired_spilt_lvl == 1 || desired_spilt_lvl == 0){return result;}
+
+
+    walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
+    if(walker_result.success == false){return result;}
+
+    if(walker_result.final_page_level == desired_spilt_lvl){
+
+        result.noop = true;
+        result.success = true;
+        
+        return result;
     }
 
-    // Split 1GiB -> 2MiB (and recursively to 4KiB if needed)
-    if(walker_result.final_page_level == 2){
-        // 1GiB = 1073741824 bytes, 2MiB = 2097152 bytes
-        if(virtual_adress % 1073741824 != 0 ){return 0;}
-        uintptr_t original_entry = *(walker_result.final_entry_pointer);
-        uintptr_t original_entry_nf = original_entry & ~0xFFF;
-        uintptr_t original_entry_flags = original_entry & 0xFFF;
-        // Allocate a new PD (page directory) for 2MiB entries
-        free_page_frame_out new_pd = free_frame_for_new_page_structure_and_create_it2();
-        if(new_pd.success == false){return 0;}
-        uintptr_t *new_pd_vptr = new_pd.pgtable_pointer;
-        // Fill the new PD with 512 2MiB entries, mapping the 1GiB region
-        for(size_t i = 0; i < 512; i++){
-            uintptr_t subpage_phys = original_entry_nf + (i * 0x200000); // 2MiB per entry
-            // Each entry: physical address of 2MiB subpage, with correct flags (large bit set)
-            new_pd_vptr[i] = subpage_phys | (original_entry_flags | (1ULL << 7));
-        }
-        // Update parent PDPT entry to point to new PD (physical address, flags, large bit cleared)
-        *(walker_result.final_entry_pointer) = new_pd.physical_adress | (original_entry_flags & ~(1ULL << 7));
 
-        // Now, check if the relevant 2MiB entry is a large page (bit 7 set)
-        uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
-        uintptr_t *target_pd_entry = &new_pd_vptr[index_in_pd];
-        uintptr_t pd_entry_val = *target_pd_entry;
-        // Update walker_result to reflect the new 2MiB mapping
-        walker_result.final_entry_pointer = target_pd_entry;
-        walker_result.final_page_level = 3;
-        walker_result.page_size = 2097152;
-        walker_result.physical_base_adress = (original_entry_nf + (index_in_pd * 0x200000));
-
-        if((pd_entry_val & (1ULL << 7)) != 0) {
-            // The 2MiB entry is a large page, so recursively split it to 4KiB
-            // Alignment check for 2MiB
-            if((virtual_adress % 2097152) != 0) { return 0; }
-            spilt_page((uintptr_t *)new_pd.physical_adress, virtual_adress);
-            // After recursion, re-walk to update walker_result to the new 4KiB entry
-            walker_out new_walker = the_walking_pager2(root_table, virtual_adress);
-            if (!new_walker.success) { return 0; }
-            walker_result = new_walker;
-        }
-        return 1;
-    }
-
-    return 0;
-
-}
+    if(walker_result.final_page_level < desired_spilt_lvl){
 
 
+        while(walker_result.final_page_level != desired_spilt_lvl){
+
+            if(walker_result.stop_reason == NOT_PRESENT){
+
+                // make the present bit hardcoded not provided by the caller ((caller_flags & BIT_PRESENT)) == 0
+                // maybe cleaner only would it make much of a diff not really...
+               
+
+                free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
+
+                if(!new_page.success){return result;}
+
+                if(walker_result.final_entry_pointer == NULL){return result;}
+                if(walker_result.final_page_walked_ptr == NULL){return result;}
+
+                last_new_table_ptr = new_page.pgtable_pointer;
+                last_old_table_ptr = walker_result.final_page_walked_ptr;
+
+                uint64_t inherited_flags = walker_result.parent_flags;
+
+                uint64_t enforced_flags = inherited_flags;
+
+                if(virtual_adress < HIGHER_HALF_BASE){
+
+                    uint64_t us_bit = (1ULL << 2);
 
 
-
-
-
-typedef struct page_structure{
-
-    bool success;
-    uintptr_t v_final_entry_ptr;
-    uint64_t final_page_lvl;
-    uintptr_t final_table_adress;
-    uintptr_t v_final_table_adress;
-    uint64_t error_code;
-
-
-    
-}page_structure;
-
-
-
-page_structure create_page_struct_dynamic(
-    uintptr_t *root_table, 
-    uint64_t map_lvl_desired, 
-    uintptr_t virtual_adress, 
-    uint64_t flags){
-
-        page_structure result = {0};
-
-        if(root_table == NULL){return result;}
-        if(virtual_adress % map_lvl_desired != 0){return result;}
-
-
-        uint64_t index_in_pml4 = (virtual_adress >> 39) & 0x1FF;
-        uint64_t index_in_pdpt = (virtual_adress >> 30) & 0x1FF;
-        uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
-        uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF;
-
-        walker_out walker_result = the_walking_pager2(root_table, virtual_adress);
-
-        if((walker_result.final_page_level != map_lvl_desired)
-         && (walker_result.final_page_level < map_lvl_desired) 
-         && (walker_result.success == true)){
-             
-            if(!spilt_page(root_table, virtual_adress)){return result;}
-            result.final_page_lvl = map_lvl_desired;
-            result.success = true;
-
-            return result;
-
-
-        }
-
-        if((walker_result.table_here = false) && (walker_result.final_page_level != map_lvl_desired)){
-
-            while((!walker_result.success || walker_result.final_page_level != map_lvl_desired)){
-                //uint64_t index;
-
-                //if(walker_result.final_page_level == 2){
-                    //index = index_in_pdpt;
+                    enforced_flags = ((inherited_flags | BIT_PRESENT) | us_bit) & ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
                     
-                //}else if(walker_result.final_page_level == 3){
-                    //index = index_in_pd;
+                }
+                else{
+                 enforced_flags = (inherited_flags | BIT_PRESENT) & ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
+                }
+
                 
-                //}else if(walker_result.final_page_level == 4){
-                    //index = index_in_pt;
-                //}
 
-            free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
-            if (!new_page.success) return result;
+                
 
-            //walker_result.final_page_walked_ptr[index] = new_page.physical_adress | flags; this also works
+                *walker_result.final_entry_pointer = (new_page.physical_adress & ADDR_MASK_4K) | enforced_flags;
 
-            *walker_result.final_entry_pointer = new_page.physical_adress | flags;//this fucntion is no complete yet
 
-            walker_result = the_walking_pager2(root_table, virtual_adress);
+                walker_result = the_walking_pager2(root_table,virtual_adress);
+                if (!walker_result.success){ result.success = false; result.error_code = REWALK_FAILED; return result;}
 
+
+
+
+
+            }else if(walker_result.stop_reason == LARGE_PAGE){
+
+                    uint64_t child_size = walker_result.page_size/512;
+                    if((child_size != 2097152) && (child_size != 4096)){return result;}
+
+                    if(walker_result.final_entry_pointer == NULL){return result;}
+
+                    uintptr_t old_leaf_entry = *walker_result.final_entry_pointer;
+                    uint64_t leaf_addr_mask = 0;
+                    if(walker_result.page_size == (1ULL << 30)){
+                        leaf_addr_mask = ADDR_MASK_1G;
+                    }else if(walker_result.page_size == (1ULL << 21)){
+                        leaf_addr_mask = ADDR_MASK_2M;
+                    }else{
+                        return result;
+                    }
+
+                    uint64_t leaf_flags = old_leaf_entry & ~leaf_addr_mask;
+
+
+                
+
+                    free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
+                    if(!new_page.success){return result;}
+
+                    if(walker_result.final_page_walked_ptr == NULL){return result;}
+
+                    last_new_table_ptr = new_page.pgtable_pointer;
+                    last_old_table_ptr = walker_result.final_page_walked_ptr;
+
+                    uintptr_t parent_physical_base = walker_result.physical_base_adress; 
+
+                    //KEEP AN EYE FOR THIS L;ATER IF WE WANT TO ACCES THE ZERO AREA
+
+                    if (parent_physical_base == 0) {result.error_code = PARENT_PA_IS_0; return  result;}
+
+                    for(uint32_t i = 0; i < 512; i++){
+
+                        uint64_t flags = leaf_flags;
+
+                        if(child_size == 4096){
+                            uint64_t pat = (flags & BIT_LARGE_PAT) ? 1ULL : 0ULL;
+                            flags &= ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
+                            flags |= (pat << 7);
+                        }
+
+                        new_page.pgtable_pointer[i] = (parent_physical_base + i*child_size) | flags;
+
+                        
+
+
+                    }
+
+                    //(2) old_leaf_entry & ~ADDR_MASK_4K
+
+                    //For link flags, this assumes all address bits are masked correctly with 4K mask, which is usually fine because next-level tables are 4K aligned.
+
+                    //Just verify no architecture-specific high bits sneak through.
+
+                    //Minor thing.
+                    {
+                        uint64_t link_flags = (old_leaf_entry & ~ADDR_MASK_4K) & ~BIT_PS_OR_PTE_PAT;
+                        *walker_result.final_entry_pointer = (new_page.physical_adress & ADDR_MASK_4K) | link_flags;
+                        invlpg((void*)virtual_adress);
+                    }
+
+
+                 walker_result = the_walking_pager2(root_table,virtual_adress);
+
+                 if (!walker_result.success){ result.success = false; result.error_code = REWALK_FAILED; return result;}
+
+
+
+
+
+            }else{
+
+                result.error_code = UNDEFINED_ERROR;    
+                result.success = false;
+
+                return result;
             }
 
 
+
         }
 
+        result.success = true;
+        result.new_table_ptr = last_new_table_ptr;
+        result.old_table_ptr = last_old_table_ptr;
+        return result;
+
+    }
+
+    if(walker_result.final_page_level > desired_spilt_lvl){
+        result.success = true;
+        result.noop = true;
+        result.error_code = COELSENCE; 
+        return result;}
+
+
         
-
-
-
-        
-
-        
+        return result;
+    
 
 }
 
+
+
+
+
+
+
+
+
+enum map_error{
+    MAPPING_EXISTS_AT_DESIRED_LVL,
+    MAPPING_EXISTS_AT_LARGE_PAGE,
+    CANT_REMAP_TO_ANOTHER_ADRESS,
+    SPILT_ERROR,
+    REWALK_AFTER_SPLIT_ERROR,
+    COELSENCE,
+    UNEXPECTED_ERROR,
+
+};
 
 typedef struct map_out{
    bool success;
    uint64_t error_code;
    uintptr_t v_final_entry_ptr;
    uintptr_t physical_adress;
+   uint64_t flags;
+
 
 }map_out;
 
-//the split page behaviour will be added later allthough the helper exisits i dont belive its a 100% correct
-// since i dont understand it very well
+//also expand the splitter to take arbitrary split sizes (desired split lvl)
+//make sure already mapped pages are handled correctly
+// now i will add the helpers since i spent 2 days fixing them
+// the contract of this function is that it will fail if anything is mapped even if a large page is here 
 map_out vmm_map_page(
     uintptr_t virtual_adress,
     uintptr_t physical_adress, 
     uintptr_t *root_table, 
-    uint64_t mapping_size, 
-    uint64_t flags ){
+    uint64_t desired_map_lvl, 
+    uint64_t flags
+    
+                     ){
 
         map_out result = {0};
 
         if(root_table == NULL){return result;}
 
+        uint64_t mapping_size;
+
+        if(desired_map_lvl == 2){
+            mapping_size = 1073741824;
+        }else if(desired_map_lvl == 3){
+            mapping_size = 2097152;
+        }else if(desired_map_lvl == 4){
+            mapping_size = 4096;
+        }else{return result;}
+
+
+        const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+        const uint64_t ADDR_MASK_2M = 0x000FFFFFFFE00000ULL;
+        const uint64_t ADDR_MASK_1G = 0x000FFFFFC0000000ULL;
+        const uint64_t BIT_PRESENT = 1ULL;
+        const uint64_t BIT_PS_OR_PTE_PAT = (1ULL << 7);
+        const uint64_t BIT_LARGE_PAT = (1ULL << 12);
+
+        //add more allignmnen checks
+
         if(virtual_adress % mapping_size != 0 || physical_adress % mapping_size != 0){return result;}
-        if(mapping_size == 0){return result;}// u have to fix 5his
+        if ((((int64_t)virtual_adress) >> 47) != 0 && (((int64_t)virtual_adress) >> 47) != -1) { return result; }
+        if(desired_map_lvl == 0 || desired_map_lvl > 4 || desired_map_lvl == 1){return result;}
         if(flags == 0){return result;}// aslo this
 
+        walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
+        if(walker_result.success == false){return result;}
+
+        
+
+        // case 1, correct lvl mapping exists already           (*walker_result.final_entry_pointer & BIT_PRESENT)!= 0
+        if(walker_result.final_page_level == desired_map_lvl && walker_result.stop_reason != NOT_PRESENT) {
+
+            result.error_code = MAPPING_EXISTS_AT_DESIRED_LVL; 
+            result.success = false;
+            return result;
+        }
+
+        // CASE 2, correct lvl no mapping, just fill.
+        if(walker_result.final_page_level == desired_map_lvl && walker_result.stop_reason == NOT_PRESENT){
 
 
+            uint64_t entry_flags = flags| BIT_PRESENT;
+
+
+
+             if(desired_map_lvl != 4){
+                entry_flags |= BIT_PS_OR_PTE_PAT;
+            }
+
+            *walker_result.final_entry_pointer = physical_adress | entry_flags;
+            invlpg((void*)virtual_adress);
+
+
+            result.success = true;
+            result.v_final_entry_ptr = walker_result.final_entry_pointer;
+            result.physical_adress = physical_adress;
+            return result;
+
+
+        }
+
+        
+        if(walker_result.final_page_level < desired_map_lvl){
+
+            
+            //if (((*walker_result.final_entry_pointer & BIT_PS_OR_PTE_PAT) != 0) &&
+            //(walker_result.final_page_level != 4)
+               // && ((*walker_result.final_entry_pointer &  BIT_PRESENT) != 0)) {
+
+        // case 3: LARGE PAGE HIT CASE
+        // mapping exists and wrong lvl, just split to lvl(update structure)
+        if (walker_result.stop_reason == LARGE_PAGE) {
+
+            uint64_t mask;
+            uint64_t offset_mask;
+
+            if (walker_result.final_page_level == 3) {
+                mask = ADDR_MASK_2M;
+                offset_mask = 0x1FFFFF;
+            }
+            else if (walker_result.final_page_level == 2) {
+                mask = ADDR_MASK_1G;
+                offset_mask = 0x3FFFFFFF;
+            }
+            else {
+                return result;
+            }
+
+            uint64_t base = *walker_result.final_entry_pointer & mask;
+            uint64_t actual_pa = base + (virtual_adress & offset_mask);
+
+            //verifying that the split operation is applied to the correct VA→PA region instance so we dont silently split an unrelated region.
+            //this will fuck up the accedintally hit region(or sector of large page) flags and wont map correctly we will corrupt memory in specific the page
+            // table semantics not physical mem in short NOOOOOOO. (mapping identity corruption) (midlife crisis) imma kill myself soon tho..
+            if (actual_pa != physical_adress) {
+
+                result.error_code = CANT_REMAP_TO_ANOTHER_ADRESS;
+                return result;
+            }
+
+            
+            spilt_out new_mapping_structure = spilt_page(root_table, virtual_adress, desired_map_lvl);
+            if(new_mapping_structure.success == false){ result.error_code = SPILT_ERROR; return result;}
+
+            walker_out2 new_walk = the_walking_pager2(root_table, virtual_adress);
+            if(new_walk.success == false || new_walk.final_page_level != desired_map_lvl){ result.error_code = REWALK_FAILED;   return result;}  
+            
+             
+            uint64_t entry_flags = flags| BIT_PRESENT;
+
+            // question here for later should the flags be determined by lvl desired or by the walker.
+
+            
+            // case 4:
+            // are mapping exisits wrong lvl are we splitting to 4k? just for setting the 7th bit
+            // case 5:
+            // we are not going to 4k lvl so we dont set bit 7 to 0
+            if(desired_map_lvl != 4){
+                entry_flags |= BIT_PS_OR_PTE_PAT;
+            }
+
+            
+
+            *new_walk.final_entry_pointer = physical_adress | entry_flags;
+
+            result.v_final_entry_ptr = new_walk.final_entry_pointer;
+            result.physical_adress = physical_adress;
+            result.success = true;
+            result.flags = entry_flags;
+            return result;
+
+
+        }
+
+        // NOT PRESENT ENTRY HIT....
+        // case 6:
+        // wrong lvl no mapping present, create structure and map
+        //if((*walker_result.final_entry_pointer & BIT_PRESENT) == 0){
+
+        if(walker_result.stop_reason == NOT_PRESENT){
+
+            spilt_out new_mapping_structure = spilt_page(root_table, virtual_adress, desired_map_lvl);
+            if(new_mapping_structure.success == false){ result.error_code = SPILT_ERROR; return result;}
+
+            walker_out2 new_walk = the_walking_pager2(root_table, virtual_adress);
+            if(new_walk.success== false || new_walk.final_page_level != desired_map_lvl){  result.error_code = REWALK_FAILED;   return result;}
+
+            uint64_t entry_flags = flags| BIT_PRESENT;
+
+
+
+             if(desired_map_lvl != 4){
+                entry_flags |= BIT_PS_OR_PTE_PAT;
+            }
+
+            
+
+
+            *new_walk.final_entry_pointer = physical_adress | entry_flags;
+
+            result.v_final_entry_ptr = new_walk.final_entry_pointer;
+            result.physical_adress = physical_adress;
+            result.success = true;
+            result.flags = entry_flags;
+            return result;
+
+        }
+
+    }
+    //case 7:
+    // wether mapped or unmapped this will fail cuz we dont support mergeing small pages to large ones yet....
+    if(walker_result.final_page_level > desired_map_lvl){
+
+        result.error_code = COELSENCE;
+        result.success = false;
+        return result;
+
+    }
+
+    result.error_code = UNEXPECTED_ERROR;
+    result.success = false;
+    return result;
 
 
 }
 
+enum unmap_error{
+
+    UNMAPPING_AT_PML4 = 10,
+
+}unmap_error;
+
+typedef struct unmap_out{
+    bool success;
+    uintptr_t unmapped_pa;
+    uintptr_t *v_unmapped_pa_ptr;
+    uintptr_t unmapped_va;
+    uint64_t error_code;
+
+}unmap_out;
+
+
+unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
+
+    unmap_out result = {0};
+    if(root_table == NULL){return result;}
+
+    walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
+    if(!walker_result.success){return result;}
+
+    if(walker_result.final_page_level == 1 && walker_result.success){// this case will never happen unless we have a major bug
+
+        
+        result.success = false;
+        result.error_code = UNMAPPING_AT_PML4;
+        return result;
+
+    }
+    
+    if(walker_result.success && walker_result.stop_reason != NOT_PRESENT){
+    result.v_unmapped_pa_ptr = walker_result.final_entry_pointer;
+    result.unmapped_pa = *walker_result.final_entry_pointer;
+    result.unmapped_va = virtual_adress;
+    result.success = true;
+    *walker_result.final_entry_pointer = NULL;
+    invlpg((void*)virtual_adress);
+
+    
+
+    return result;
+    }
+
+    return result;
+
+    
+
+    
+
+}
+
+typedef struct vm_object{
+
+
+}vm_object;
+
+
+typedef struct vm_region{
+
+    uintptr_t va_start;
+    uintptr_t va_end; //exclusive end
+    size_t size_rounded;
+    size_t size_bytes;
+    uint64_t flags;//permissions
+    uint64_t backing; //anon, file, hardware etc..
+    uint32_t map_flags;
+    vm_object* object;
+    size_t object_base_offset;
+    uint64_t type; //stack. heap, whatever
+    uintptr_t *root_table;
+    vm_region *next;
+
+
+
+
+
+
+
+
+}vm_region;
+
+
+vm_region* reserve_region(size_t size, uint64_t flags, uintptr_t hint_va, uintptr_t *root_table ){
+
+
+}
+
+
+
+
+
+
+typedef struct map_region_out{
+    
+}map_region_out;
+
+
+map_region_out vmm_map_region(){
+
+
+
+}
