@@ -9,7 +9,7 @@ uint64_t vmm_init(uintptr_t *pgtables);
 
 
 //pretty obvious what this does, but incase ur a nutcase we are mapping a virtual page to a physical adress here
-uint64_t vmm_map_page(uintptr_t virtual_adress,
+map_out vmm_map_page(uintptr_t virtual_adress,
     uintptr_t physical_adress, 
     uintptr_t *root_table, 
     uint64_t mapping_size, 
@@ -19,7 +19,7 @@ uint64_t vmm_map_page(uintptr_t virtual_adress,
 //this will unmap a page from the physical adress, in case u are wondering why we are not passing any physical adress
 //here its bcz we want to keep abstarction clean and it will be handled internally cuz we surley will move from bitmap
 //to linked list in the pmm
-uint64_t vmm_unmap_page(uintptr_t virtual_adress);
+unmap_out vmm_unmap_page(uintptr_t virtual_adress);
 
 
 //NOT INTENDED FOR A NUTCASE
