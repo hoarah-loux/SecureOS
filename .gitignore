@@ -1,1 +1,33 @@
-osdev-toolchain/
+# General
+.DS_Store
+
+# Build artifacts
+/src/boot/build/
+build/
+*/build/
+
+# Object files and intermediates
+*.o
+*.obj
+*.elf
+*.a
+*.so
+
+# Makefiles
+Makefile
+**/Makefile
+*.mk
+
+# Disk images / ISOs
+*.iso
+*.img
+
+# Editor/project files
+.vscode/
+.idea/
+
+# Temporary files
+*~
+.cache/
+.tmp
+boot/Makefile
