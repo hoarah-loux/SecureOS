@@ -6,7 +6,7 @@
     ;   2) The first instructions GRUB jumps to (entry point)
     ;   3) The CPU bring-up sequence into 64-bit long mode
     ;   4) Early paging setup (identity map) + safety hardening (NX + WP)
-    ;   5) A call into the C kernel entry point: kernel_main(magic, info_ptr)
+    ;   5) A call into the C kernel entry point: kmain(magic, info_ptr)
     ;
     ; Important boot-protocol fact:
     ; - Even when GRUB is an x86_64-efi (UEFI) binary, Multiboot2 does NOT
@@ -54,7 +54,7 @@
     ; 3. Enable IA-32e paging + long mode + NX
     ; 4. Install a known-good GDT
     ; 5. Set up a valid stack + clear BSS
-    ; 6. Call kernel_main(magic, info_ptr)
+    ; 6. Call kmain(magic, info_ptr)
     ; ============================================================
 
     ; Tell NASM to assemble instructions as 32-bit.
@@ -66,12 +66,12 @@
     GLOBAL _start
 
     ; Symbols resolved from other compilation units / the linker script.
-    ; - `kernel_main` is the C entry point we call after CPU setup.
+    ; - `kmain` is the C entry point we call after CPU setup.
     ; - `stack_top` is the top address of the reserved early stack.
     ; - `__bss_start`/`__bss_end` bound the BSS region to clear to zero.
     ; - `__kernel_text_start`/`__kernel_text_end` bound the executable code
     ;   region so we can selectively clear NX only for code pages.
-    EXTERN kernel_main
+    EXTERN kmain
     EXTERN stack_top
     EXTERN __bss_start
     EXTERN __bss_end
@@ -712,15 +712,15 @@ long_mode_entry:
         ; Store zero bytes repeatedly.
         rep stosb
 
-        ; Pass (magic, info_ptr) to kernel_main for later parsing.
+        ; Pass (magic, info_ptr) to kmain for later parsing.
         ; SysV AMD64 ABI: rdi, rsi are first two integer args.
-        ; Call kernel_main(magic, info_ptr).
+        ; Call kmain(magic, info_ptr).
         ; - SysV AMD64 ABI argument registers:
         ;   - RDI = 1st integer/pointer argument
         ;   - RSI = 2nd integer/pointer argument
         mov edi, r12d
         mov esi, r13d
-        call kernel_main
+        call kmain
 
     .hang:
         ; If we ever reach here, stop forever.
