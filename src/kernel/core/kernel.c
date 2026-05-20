@@ -11,44 +11,15 @@
 
 #include <stdint.h>
 
+// ASSAF YOU DUMBASS NEXT TIME JUST INCLUDE THE HEADER FILE AS IT NO NEED FOR TA7ANOK AND INCLUDING ONLYYYYYY THE REQUIRED STRUCTS FROM THE HEADER AND 
+// AND THEN USING SOME UNKNOWN NUMBERS LIKE 6 OR 3 WHEN SEARCHING THE TAG TYPES
+
+#include "multiboot2.h"
 #include "core/serial.h"
 
 /* ---------------- Multiboot2 tag parsing (minimal) ---------------- */
 
-struct mb2_tag {
-    uint32_t type;
-    uint32_t size;
-} __attribute__((packed));
-
-struct mb2_tag_framebuffer {
-    uint32_t type;
-    uint32_t size;
-    uint64_t framebuffer_addr;
-    uint32_t framebuffer_pitch;
-    uint32_t framebuffer_width;
-    uint32_t framebuffer_height;
-    uint8_t framebuffer_bpp;
-    uint8_t framebuffer_type;
-    uint16_t reserved;
-    /* followed by color info depending on framebuffer_type */
-} __attribute__((packed));
-
-struct mb2_tag_mmap {
-    uint32_t type;
-    uint32_t size;
-    uint32_t entry_size;
-    uint32_t entry_version;
-    /* followed by entries */
-} __attribute__((packed));
-
-struct mb2_mmap_entry {
-    uint64_t addr;
-    uint64_t len;
-    uint32_t type;
-    uint32_t reserved;
-} __attribute__((packed));
-
-static const struct mb2_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_type) {
+static const struct multiboot_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_type) {
     const uint8_t *base = (const uint8_t *)(uintptr_t)mb2_info_ptr;
     if (!base) {
         return 0;
@@ -63,8 +34,8 @@ static const struct mb2_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_t
     }
     const uint8_t *p = base + 8; /* skip total_size + reserved */
 
-    while (p + sizeof(struct mb2_tag) <= end) {
-        const struct mb2_tag *tag = (const struct mb2_tag *)(const void *)p;
+    while (p + sizeof(struct multiboot_tag) <= end) {
+        const struct multiboot_tag *tag = (const struct multiboot_tag *)(const void *)p;
         if (tag->type == 0) {
             break;
         }
@@ -72,7 +43,7 @@ static const struct mb2_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_t
             return tag;
         }
         /* tags are 8-byte aligned */
-        if (tag->size < sizeof(struct mb2_tag)) {
+        if (tag->size < sizeof(struct multiboot_tag)) {
             break;
         }
         uint32_t next = (tag->size + 7u) & ~7u;
@@ -86,21 +57,21 @@ static const struct mb2_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_t
 
 /* ---------------- Framebuffer text (tiny built-in font) ---------------- */
 
-static void fb_putpixel(const struct mb2_tag_framebuffer *fb, uint32_t x, uint32_t y, uint32_t rgb) {
-    if (!fb || x >= fb->framebuffer_width || y >= fb->framebuffer_height) {
+static void fb_putpixel(const struct multiboot_tag_framebuffer *fb, uint32_t x, uint32_t y, uint32_t rgb) {
+    if (!fb || x >= fb->common.framebuffer_width || y >= fb->common.framebuffer_height) {
         return;
     }
-    uint8_t *base = (uint8_t *)(uintptr_t)fb->framebuffer_addr;
-    uint8_t *row = base + (uint64_t)y * fb->framebuffer_pitch;
+    uint8_t *base = (uint8_t *)(uintptr_t)fb->common.framebuffer_addr;
+    uint8_t *row = base + (uint64_t)y * fb->common.framebuffer_pitch;
 
-    if (fb->framebuffer_bpp == 32) {
+    if (fb->common.framebuffer_bpp == 32) {
         ((uint32_t *)(void *)row)[x] = rgb;
-    } else if (fb->framebuffer_bpp == 24) {
+    } else if (fb->common.framebuffer_bpp == 24) {
         uint8_t *px = row + x * 3;
         px[0] = (uint8_t)(rgb & 0xFF);
         px[1] = (uint8_t)((rgb >> 8) & 0xFF);
         px[2] = (uint8_t)((rgb >> 16) & 0xFF);
-    } else if (fb->framebuffer_bpp == 16) {
+    } else if (fb->common.framebuffer_bpp == 16) {
         /* 5:6:5 */
         uint16_t r = (uint16_t)((rgb >> 19) & 0x1F);
         uint16_t g = (uint16_t)((rgb >> 10) & 0x3F);
@@ -138,7 +109,7 @@ static const uint8_t *font8x8_glyph(char c) {
     }
 }
 
-static void fb_draw_char(const struct mb2_tag_framebuffer *fb, uint32_t x, uint32_t y, char c, uint32_t rgb) {
+static void fb_draw_char(const struct multiboot_tag_framebuffer *fb, uint32_t x, uint32_t y, char c, uint32_t rgb) {
     const uint8_t *g = font8x8_glyph(c);
     for (uint32_t row = 0; row < 8; row++) {
         uint8_t bits = g[row];
@@ -150,7 +121,7 @@ static void fb_draw_char(const struct mb2_tag_framebuffer *fb, uint32_t x, uint3
     }
 }
 
-static void fb_draw_string(const struct mb2_tag_framebuffer *fb, uint32_t x, uint32_t y, const char *s, uint32_t rgb) {
+static void fb_draw_string(const struct multiboot_tag_framebuffer *fb, uint32_t x, uint32_t y, const char *s, uint32_t rgb) {
     uint32_t cx = x;
     while (*s) {
         if (*s == '\n') {
@@ -181,18 +152,18 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     serial_write_string("\r\n");
 
     /* Draw to the Multiboot2 framebuffer (this is what shows in the QEMU window under UEFI). */
-    const struct mb2_tag_framebuffer *fb = (const struct mb2_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, 8);
+    const struct multiboot_tag_framebuffer *fb = (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
     if (fb) {
-        if (fb->size < sizeof(*fb)) {
+        if (fb->common.size < sizeof(*fb)) {
             serial_write_string("[SecureOS] framebuffer tag too small\r\n");
             fb = 0;
         }
     }
 
     /* Validate Multiboot2 E820 memory map (tag type 6) with a few sample entries. */
-    const struct mb2_tag_mmap *mmap = (const struct mb2_tag_mmap *)mb2_find_tag(mb2_info_ptr, 6);
-    if (mmap && mmap->size >= sizeof(*mmap) && mmap->entry_size >= sizeof(struct mb2_mmap_entry)) {
-        const uint8_t *p = (const uint8_t *)(const void *)mmap + sizeof(*mmap);
+    const struct multiboot_tag_mmap *mmap = (const struct multiboot_tag_mmap *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_MMAP);
+    if (mmap && mmap->size >= sizeof(*mmap) && mmap->entry_size >= sizeof(struct multiboot_mmap_entry)) {
+        const uint8_t *p = (const uint8_t *)(const void *)mmap->entries;
         const uint8_t *end = (const uint8_t *)(const void *)mmap + mmap->size;
 
         serial_write_string("[SecureOS] mb2 mmap: entry_size=0x");
@@ -202,7 +173,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         serial_write_string("\r\n");
 
         for (int i = 0; i < 6 && p + mmap->entry_size <= end; i++) {
-            const struct mb2_mmap_entry *e = (const struct mb2_mmap_entry *)(const void *)p;
+            const struct multiboot_mmap_entry *e = (const struct multiboot_mmap_entry *)(const void *)p;
             serial_write_string("[SecureOS] mmap[");
             serial_write_hex32((uint32_t)i);
             serial_write_string("]: base=0x");
@@ -219,16 +190,44 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     }
     if (fb) {
         serial_write_string("[SecureOS] framebuffer addr=0x");
-        serial_write_hex32((uint32_t)(fb->framebuffer_addr & 0xFFFFFFFFu));
+        serial_write_hex32((uint32_t)(fb->common.framebuffer_addr & 0xFFFFFFFFu));
         serial_write_string("\r\n");
         /* type 1 = RGB; other types (indexed) need a palette. */
-        if (fb->framebuffer_type == 1 && (fb->framebuffer_bpp == 32 || fb->framebuffer_bpp == 24 || fb->framebuffer_bpp == 16)) {
+        if (fb->common.framebuffer_type == 1 && (fb->common.framebuffer_bpp == 32 || fb->common.framebuffer_bpp == 24 || fb->common.framebuffer_bpp == 16)) {
             fb_draw_string(fb, 16, 16, "KERNEL RUNNING!", 0x00FFFFFFu);
         } else {
             serial_write_string("[SecureOS] framebuffer format unsupported\r\n");
         }
     } else {
         serial_write_string("[SecureOS] framebuffer tag missing (type 8)\r\n");
+    }
+
+    // LOAD THE INITRD MODULE AND PRINT IT TO SERIAL
+    struct multiboot_tag_module *initrd = (struct multiboot_tag_module*)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_MODULE);
+    if (initrd) {
+        serial_write_string("[SecureOS] initrd module: start=0x");
+        serial_write_hex32(initrd->mod_start);
+        serial_write_string(" end=0x");
+        serial_write_hex32(initrd->mod_end);
+        serial_write_string(" cmdline=");
+        serial_write_string(initrd->cmdline);
+        serial_write_string("\r\n");
+    } else {
+        serial_write_string("[SecureOS] initrd module tag missing (type 3)\r\n");
+    }
+
+    // attempt to read the bytes from the initrd->mod_start to initrd->mod_end and print them to serial
+    if (initrd) {
+        uint32_t size = initrd->mod_end - initrd->mod_start;
+        serial_write_string("[SecureOS] initrd content (hex):\r\n");
+        for (uint32_t i = 0; i < size && i < 256; i++) {
+            uint8_t byte = *((uint8_t *)(uintptr_t)(initrd->mod_start + i));
+            serial_write_char(byte);
+            if ((i + 1) % 16 == 0) {
+                serial_write_string("\r\n");
+            }
+        }
+        serial_write_string("\r\n");
     }
 
     /* Optional VGA write (may not be visible under UEFI GRUB). */
