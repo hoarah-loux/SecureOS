@@ -42,7 +42,7 @@
 ; 1. Provide executable code (.text)
 ; 2. Set up a valid stack pointer (RSP)
 ; 3. Prepare the environment for C code
-; 4. Jump into kernel_main()
+; 4. Jump into kmain()
 ; ============================================================
 
 ; Assemble the header/entry as 32-bit.
@@ -53,7 +53,7 @@ BITS 32
 GLOBAL _start
 
 ; External symbols resolved at link time.
-EXTERN kernel_main
+EXTERN kmain
 EXTERN stack_top
 EXTERN __bss_start
 EXTERN __bss_end
@@ -275,10 +275,10 @@ long_mode_entry:
     ; ========================================================
 
     ; Call the C kernel entry.
-    call kernel_main
+    call kmain
 
     ; ========================================================
-    ; IF kernel_main RETURNS → HALT FOREVER
+    ; IF kmain RETURNS → HALT FOREVER
     ; ========================================================
     cli                       ; Disable interrupts
 .hang:
