@@ -20,12 +20,12 @@
 /*
  * Main kernel entry point.
  * Called from src/boot/grub/entry64_mb2.asm as:
- *   kernel_main(magic, info_ptr)
+ *   kmain(magic, info_ptr)
  * with SysV AMD64 ABI args in RDI/RSI.
  */
-void kernel_main(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
+void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     serial_init();
-    serial_write_string("[SecureOS] kernel_main reached\r\n");
+    serial_write_string("[SecureOS] kmain reached\r\n");
     serial_write_string("[SecureOS] kernel mb2_magic=0x");
     serial_write_hex32(mb2_magic);
     serial_write_string("\r\n");
