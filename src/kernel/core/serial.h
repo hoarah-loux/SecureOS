@@ -7,3 +7,4 @@ void serial_write_char(char c);
 void serial_write_string(const char *s);
 void serial_write_hex32(uint32_t value);
 void serial_write_hex64(uint64_t value);
+int serial_printf(const char *fmt, ...);
