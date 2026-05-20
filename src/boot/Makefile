@@ -121,6 +121,8 @@ ASM_SRC = $(BOOT_DIR)/grub/entry64_mb2.asm
 # - $(wildcard ...) entries are optional and won't error if the file doesn't exist yet.
 KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/kernel.c \
+	$(KERNEL_DIR)/core/framebuffer.c \
+	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
 	# $(wildcard $(KERNEL_DIR)/mm/alloc/pmm.c)
 
@@ -273,8 +275,9 @@ run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(INITRD_IMAGE)
 $(INITRD_IMAGE):
 	@echo "==> Creating initrd..."
 	@mkdir -p $(dir $@)
-	@echo "INITRD HELLO" > $@
-	@# tar -cf $@ -C $(INITRD_ROOT) .
+	@mkdir -p $(INITRD_ROOT)
+	@echo "IT WORKS" > $(INITRD_ROOT)/pwned.txt
+	@tar -cf $@ -C $(INITRD_ROOT) .
 
 # Declare “phony” targets.
 # - A phony target is not a real file; it should always run when requested.
