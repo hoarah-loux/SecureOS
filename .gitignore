@@ -13,11 +13,6 @@ build/
 *.a
 *.so
 
-# Makefiles
-Makefile
-**/Makefile
-*.mk
-
 # Disk images / ISOs
 *.iso
 *.img
