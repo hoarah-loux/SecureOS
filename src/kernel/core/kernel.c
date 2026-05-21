@@ -16,6 +16,56 @@
 #include "core/framebuffer.h"
 #include "core/multiboot2_utils.h"
 #include "../stdlib/hexdump.h"
+#include "../fs/tar.h"
+
+static void mb2_dump_tags(uint32_t mb2_info_ptr) {
+    const uint8_t *base = (const uint8_t *)(uintptr_t)mb2_info_ptr;
+    if (!base) {
+        serial_write_string("[SecureOS] mb2 tags: info_ptr is null\r\n");
+        return;
+    }
+
+    uint32_t total_size = *(const uint32_t *)(const void *)base;
+    if (total_size < 8) {
+        serial_write_string("[SecureOS] mb2 tags: total_size invalid\r\n");
+        return;
+    }
+
+    const uint8_t *end = base + total_size;
+    if (end < base) {
+        serial_write_string("[SecureOS] mb2 tags: total_size overflow\r\n");
+        return;
+    }
+
+    serial_write_string("[SecureOS] mb2 tags dump (type:size):\r\n");
+
+    const uint8_t *p = base + 8; /* skip total_size + reserved */
+    while (p + sizeof(struct multiboot_tag) <= end) {
+        const struct multiboot_tag *tag = (const struct multiboot_tag *)(const void *)p;
+        if (tag->type == 0) {
+            serial_write_string("[SecureOS] tag=0 size=8 (end)\r\n");
+            break;
+        }
+
+        serial_write_string("[SecureOS] tag=");
+        serial_write_hex32(tag->type);
+        serial_write_string(" size=");
+        serial_write_hex32(tag->size);
+        serial_write_string("\r\n");
+
+        if (tag->size < sizeof(struct multiboot_tag)) {
+            serial_write_string("[SecureOS] mb2 tags: invalid tag size\r\n");
+            break;
+        }
+
+        uint32_t next = (tag->size + 7u) & ~7u;
+        if (next == 0 || p + next > end) {
+            serial_write_string("[SecureOS] mb2 tags: tag overrun\r\n");
+            break;
+        }
+        p += next;
+    }
+}
 
 /*
  * Main kernel entry point.
@@ -33,10 +83,12 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     serial_write_hex32(mb2_info_ptr);
     serial_write_string("\r\n");
 
+    mb2_dump_tags(mb2_info_ptr);
+
     /* Draw to the Multiboot2 framebuffer (this is what shows in the QEMU window under UEFI). */
     const struct multiboot_tag_framebuffer *fb = (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
     if (fb) {
-        if (fb->common.size < sizeof(*fb)) {
+        if (fb->common.size < sizeof(struct multiboot_tag_framebuffer_common)) {
             serial_write_string("[SecureOS] framebuffer tag too small\r\n");
             fb = 0;
         }
@@ -103,7 +155,9 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         uint32_t size = initrd->mod_end - initrd->mod_start;
         serial_write_string("[SecureOS] initrd content (hex):\n");
         // hexdump the first 256 bytes of the initrd content to serial
-        hexdump((const void *)(uintptr_t)initrd->mod_start, size);
+        parse_headers(initrd->mod_start);
+        tar_print_file(initrd->mod_start, "./pwned.txt");
+        tar_print_file(initrd->mod_start, "./doesnotexist.txt");
     }
 
     /* Optional VGA write (may not be visible under UEFI GRUB). */
