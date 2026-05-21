@@ -124,6 +124,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
+	$(KERNEL_DIR)/fs/tar.c \
 	# $(wildcard $(KERNEL_DIR)/mm/alloc/pmm.c)
 
 # Linker script.
