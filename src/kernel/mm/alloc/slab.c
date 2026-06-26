@@ -168,7 +168,7 @@ void* slab_alloc(size_t size){
     slab *s= cache_used->slabs_list;
 
 
-    hoorah:
+    hell:
     
     if(s->free_count > 0){
 
@@ -190,13 +190,13 @@ void* slab_alloc(size_t size){
             if(s->next == NULL){return NULL;}
             s = s->next;
 
-        goto hoorah;
+        goto hell;
 
         }
 
         s = s->next;
 
-        goto hoorah; 
+        goto hell; 
 
 
 

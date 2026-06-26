@@ -1,6 +1,7 @@
 #include "vmm.h"
 #include "serial.h"
 #include "pmm.h"
+#include "heap.h"
 
 
 //redundant but looks cool
@@ -8,8 +9,10 @@ typedef uint8_t bool;
 #define true 1
 #define false 0
 #define LOW_BASE 0x100000
-#define HIGHER_HALF_BASE 0xFFFFFFFF80000000
+#define HIGHER_HALF_BASE 0xFFFFFFFF80000000 //this is the kernels base
+#define PHYS_MAP_BASE 0xFFFF800000000000ULL
 uint64_t MAX_PHYS;
+uint64_t BUDDY_MAX_PHYS;
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -43,6 +46,7 @@ uint64_t vmm_init(uintptr_t *pgtables){
     toptable = NULL;
     adress_toptable = 0;
     MAX_PHYS = pmm_total_map_bytes();
+    BUDDY_MAX_PHYS = 0; //update this later
     
 
 
@@ -321,6 +325,10 @@ typedef struct free_page_frame_out{
 //the physical address returned by PMM stays the same kind of value
 //but the usable C pointer to touch that page must come from a physical-to-virtual translation step
 
+
+//VERY IMPORTANT:::::::
+//before transition the bitmap is used to get usbale pointers bcz the bitmap is
+//capped to 4gib, after the transition we use the buddy normally bcz its not capped.
 static free_page_frame_out free_frame_for_new_page_structure_and_create_it(void){
 
     free_page_frame_out result = {0};
@@ -672,6 +680,39 @@ static uint64_t copy_mapping_dynamic_over_range(
 
 }
 
+//this root is from the first 4gib (from the bitmap not hte buddy)
+static uint64_t poplulate_phys_map(uintptr_t *new_root){
+
+    if(new_root == NULL){return 0;}
+
+    //we will round up the physmap this wont matter bcz
+    //the pmm will never hand those frames this is for convinence
+
+    uintptr_t aligned_end = 
+    (BUDDY_MAX_PHYS + (2ULL * 1024 * 1024) - 1) & ~((2ULL * 1024 * 1024) - 1);
+
+    //now we need to loop over all mem and call the helper
+    //mapping all mem in 2mib pages.
+
+    uint64_t step_size = 2097152ULL;
+    
+    for(uintptr_t pa = 0; pa < aligned_end; pa += step_size){
+
+        uintptr_t va = PHYS_MAP_BASE + pa;
+        uint64_t rw_and_kernel_flags_enable = (1ULL << 1);
+
+
+        if(!populate2m_into_table(new_root,va, pa, rw_and_kernel_flags_enable)){return 0;}
+
+
+    }
+
+    return 1;
+
+
+}
+
+
 
 
 static uintptr_t cr3_switch_t(uintptr_t new_root_table_phys){
@@ -714,6 +755,7 @@ uintptr_t dest_va_start = HIGHER_HALF_BASE + (_kernel_start - LOW_BASE);
 
 
 if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
+if(!poplulate_phys_map(new_root)){return 0;}
 
 cr3_switch_t(new_root_phys);
 
@@ -736,12 +778,14 @@ static void invlpg(void *va) {
 
 
 //this fucntion looks very unsafe idfk
+//okay now this is fixed we are corrctly getting vas from the physmap
 static uintptr_t phys_to_virt(uintptr_t physical_adress){
 
     if(physical_adress == 0){return 0;}
-    if (physical_adress < LOW_BASE || physical_adress >= MAX_PHYS){return 0;}
+    if (physical_adress >= BUDDY_MAX_PHYS){return 0;}
     
-    uintptr_t va = physical_adress + (HIGHER_HALF_BASE - LOW_BASE);
+    uintptr_t va = physical_adress + PHYS_MAP_BASE;
+    if(va < PHYS_MAP_BASE){return 0;}
 
     return va;
 
@@ -1657,10 +1701,44 @@ typedef struct create_vm_space_out{
 create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 
     create_vm_space_out result = {0};
-    
+    if(kernel_root == NULL){return result;}
     
     free_page_frame_out new_pml4 = free_frame_for_new_page_structure_and_create_it2();
     if(!new_pml4.success){ result.error_code = PML4_ALLOC_FAIL; return result;}
+    
+    vm_space *new_space = kcalloc(1,sizeof(vm_space));
+
+    if(new_space == NULL){
+        pmm_free_frame(new_pml4.physical_adress);
+        result.success = false;
+        result.error_code = PML4_ALLOC_FAIL;
+        return result;
+    }
+    
+    new_space->pml4_phys = new_pml4.physical_adress;
+    new_space->pml4_phys_ptr = new_pml4.pgtable_pointer;
+    new_space->pml4_ptr = (uintptr_t *)phys_to_virt(new_pml4.physical_adress);
+    
+    //copy the kernel mappings
+    //the trick here is that we are copiyng only the top pointers bcz
+    //these already point to the rest of the hieratchy 
+    //(amazing spelling i know)
+    int ker_index = (HIGHER_HALF_BASE >> 39) & 0x1FF;
+
+    for(int i = ker_index; i <= 511; i++){
+
+        new_pml4.pgtable_pointer[i] = kernel_root[i];
+     
+
+    }
+    new_space->heap_region = NULL;
+    new_space->stack_region = NULL;
+    new_space->vm_region_list_head = NULL;
+
+    new_space->kernel_base = 0;//fill this 
+    new_space->kernel_limit = 0; //and this too
+    new_space->user_base = 0;
+    new_space->user_limit = 0; //also fill this
     
 
     
