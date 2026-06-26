@@ -197,6 +197,19 @@ SECTIONS
         *(.stack*)
     } :data
 
+    /*
+     * Early kernel heap reservation (RW, NOLOAD):
+     *   - Fixed-size bootstrap heap inside the kernel image.
+     *   - PMM will treat it as used because it is part of the image.
+     *   - Later you can switch to a dynamic heap that grows on demand.
+     */
+    . = ALIGN(0x200000);
+    .kheap (NOLOAD) : {
+        __kheap_start = .;
+        . += 0x01800000; /* 24 MiB */
+        __kheap_end = .;
+    } :data
+
     /* Mark the start and end of the kernel image for PMM reservation */
     _kernel_start = __kernel_text_start;
     _kernel_end = .;

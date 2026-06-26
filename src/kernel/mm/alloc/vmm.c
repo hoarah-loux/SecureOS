@@ -1606,7 +1606,66 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
 typedef struct vm_object{
 
 
+        uint64_t type; //file, anon, hardware etc..
+        uint64_t size_bytes;
+        uint64_t flags; //shared, private, cow, shared, pinned,writeback
+        uint64_t ref_count; // num of regions referencing this object, important for freeing the object and its resources when no longer used
+        uintptr_t phys_base; //base of the physical memory backing this object, can be 0 for non-physically backed objects like swap or file backed objects
+        uintptr_t file; //pointer to file struct if file backed, can be NULL for anon or hardware objects
+        uint64_t file_offset; //offset in the file if file backed, ignored otherwise
+        //add spinlock
+        uintptr_t *ref_list_region;
+        uintptr_t *ref_list_space;
+
+
 }vm_object;
+
+
+typedef struct vm_space{
+
+    uintptr_t pml4_phys;
+    uintptr_t *pml4_phys_ptr;
+    uintptr_t *pml4_ptr;
+    vm_region *vm_region_list_head;
+    //add spinlock later
+    uintptr_t user_base;
+    uintptr_t user_limit;
+    uintptr_t kernel_base;
+    uintptr_t kernel_limit;
+    vm_region *stack_region;
+    vm_region *heap_region;
+    uint64_t flags; //usr or kernel
+
+
+}vm_space;
+
+enum create_vm_space_error{
+
+    PML4_ALLOC_FAIL,
+
+}create_vm_space_error;
+
+typedef struct create_vm_space_out{
+
+    bool success;
+    vm_space *space;
+    uint64_t error_code;
+
+}create_vm_space_out;
+
+
+create_vm_space_out create_vm_space(uintptr_t *kernel_root){
+
+    create_vm_space_out result = {0};
+    
+    
+    free_page_frame_out new_pml4 = free_frame_for_new_page_structure_and_create_it2();
+    if(!new_pml4.success){ result.error_code = PML4_ALLOC_FAIL; return result;}
+    
+
+    
+
+}
 
 
 typedef struct vm_region{
@@ -1615,23 +1674,21 @@ typedef struct vm_region{
     uintptr_t va_end; //exclusive end
     size_t size_rounded;
     size_t size_bytes;
-    uint64_t flags;//permissions
+    uint64_t permissions;//page tbale permissions
     uint64_t backing; //anon, file, hardware etc..
-    uint32_t map_flags;
+    uint32_t map_flags;//shared, private, fixed, grow down
     vm_object* object;
     size_t object_base_offset;
     uint64_t type; //stack. heap, whatever
-    uintptr_t *root_table;
     vm_region *next;
-
-
-
-
-
-
+    vm_region *prev;
+    uint64_t region_id;
 
 
 }vm_region;
+
+
+
 
 
 vm_region* reserve_region(size_t size, uint64_t flags, uintptr_t hint_va, uintptr_t *root_table ){
