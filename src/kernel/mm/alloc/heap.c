@@ -68,9 +68,12 @@ void* kcalloc(size_t count, size_t size){
 
     unsigned char *p = (unsigned char *)mem;
 
+    // zero initialize the allocated memory
     for(size_t i = 0; i < total; i++){
         p[i] = 0;
     }
+
+    mem = (void*)p;
 
     return mem;
 
@@ -78,33 +81,11 @@ void* kcalloc(size_t count, size_t size){
 
 uint64_t kfree(void* ptr){
 
-    if(is_initialized == false){return 1;}
+    if(is_initialized == false){return 0;}
 
-    if(ptr == NULL){return 1;} // noop
+    if(ptr == NULL){return 0;} // noop
 
     return slab_free(ptr);
 
 }
 
-void* kcalloc(size_t count, size_t size){
-
-    if(is_initialized == false){return NULL;}
-
-    if(count == 0 || size == 0){return NULL;}
-
-    
-
-    size_t total_size = count * size;
-
-    void* mem = kmalloc(total_size);
-
-    if(mem == NULL){return NULL;}
-
-    // zero initialize the allocated memory
-    for(size_t i = 0; i < total_size; i++){
-        ((uint8_t*)mem)[i] = 0;
-    }
-
-    return mem;
-
-}

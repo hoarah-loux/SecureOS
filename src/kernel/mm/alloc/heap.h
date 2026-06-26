@@ -20,7 +20,7 @@ void* kcalloc(size_t count, size_t size);
 void* krealloc(void* ptr, size_t new_size);
 
 // Free a previously allocated heap block.
-void kfree(void* ptr);
+uint64_t kfree(void* ptr);
 
 // Optional heap stats helpers for debugging.
 size_t kheap_free_bytes(void);
