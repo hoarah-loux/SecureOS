@@ -124,6 +124,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
+	$(KERNEL_DIR)/fs/ide_pio.c \
 	$(KERNEL_DIR)/fs/fat.c \
 	$(KERNEL_DIR)/fs/fat32_cluster.c \
 	$(KERNEL_DIR)/fs/fat32_dir.c \
@@ -156,6 +157,9 @@ KERNEL_ELF = $(BUILD_DIR)/secureos.elf
 
 # Path to the FAT32 disk image build artifact.
 FAT32_IMAGE = $(BUILD_DIR)/secureos.fat32.img
+
+# QEMU drive string for the FAT32 image.
+FAT32_DRIVE = -drive file=$(FAT32_IMAGE),format=raw,if=ide,index=0,media=disk
 
 # Path to the final FAT32 image that will be placed in the ISO.
 FAT32_FILE = $(ISO_DIR)/boot/secureos.fat32.img
@@ -218,15 +222,13 @@ $(KERNEL_ELF): $(ASM_OBJ) $(KERNEL_OBJS) $(LINKER_SCRIPT)
 
 # Create the bootable ISO image.
 # - grub-mkrescue collects GRUB modules and our staged tree and emits an ISO.
-$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(FAT32_IMAGE)
+$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG)
 	# Create directories inside the staged ISO tree.
 	mkdir -p $(ISO_DIR)/boot/grub
 	# Copy the built kernel to the path referenced by grub.cfg.
 	cp $(KERNEL_ELF) $(ISO_DIR)/boot/secureos.elf
 	# Copy the GRUB configuration file.
 	cp $(GRUB_CFG) $(ISO_DIR)/boot/grub/grub.cfg
-	# Copy the FAT32 image into the staged ISO tree so GRUB can load it as a module.
-	cp $(FAT32_IMAGE) $(FAT32_FILE)
 	$(GRUB_MKRESCUE) $(GRUB_MKRESCUE_FLAGS) -o $(ISO_FILE) $(ISO_DIR)
 	@echo "=== Build Complete ==="
 	@echo "Bootable ISO created: $(ISO_FILE)"
@@ -242,8 +244,8 @@ clean:
 
 # Run the built ISO in QEMU (default firmware).
 # - This is convenient, but for UEFI you typically want the run-uefi targets.
-run: $(ISO_FILE)
-	qemu-system-x86_64 -cdrom $(ISO_FILE) -m 2048
+run: $(ISO_FILE) $(FAT32_IMAGE)
+	qemu-system-x86_64 -cdrom $(ISO_FILE) $(FAT32_DRIVE) -m 2048
 
 # ---------------- QEMU UEFI (OVMF) run targets ----------------
 
@@ -265,17 +267,19 @@ $(OVMF_VARS_COPY): | $(BUILD_DIR)
 
 # Run the ISO in QEMU using UEFI firmware (OVMF).
 # QEMU options explained:
-# - `-machine q35` selects the Q35 chipset model (modern PC platform).
+# - `-machine pc` selects the classic PC chipset model with legacy IDE.
 # - `-drive if=pflash,...` attaches a “persistent flash” device for UEFI.
 #   - First pflash drive is the read-only firmware code.
 #   - Second pflash drive is the writable variables store.
 # - `-cdrom` attaches the ISO as a virtual CD/DVD drive.
-run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY)
+run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	qemu-system-x86_64 \
-		-machine q35 \
+		-machine pc \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
-		-cdrom $(ISO_FILE)
+		-boot order=d \
+		-cdrom $(ISO_FILE) \
+		$(FAT32_DRIVE) \
 		-m 2048
 
 # Run the UEFI boot with serial redirected to the host terminal.
@@ -283,10 +287,12 @@ run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY)
 # - This is the most reliable early debug channel under UEFI.
 run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	qemu-system-x86_64 \
-		-machine q35 \
+		-machine pc \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
+		-boot order=d \
 		-cdrom $(ISO_FILE) \
+		$(FAT32_DRIVE) \
 		-serial stdio \
 		-m 2048
 

@@ -25,6 +25,7 @@ struct block_device {
     uint64_t sector_count;
     void *context;
     const block_device_ops_t *ops;
+    uint64_t backend_storage[4];
     block_memory_backend_t memory_backend;
 };
 
