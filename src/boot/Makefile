@@ -124,6 +124,11 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
+	$(KERNEL_DIR)/fs/fat.c \
+	$(KERNEL_DIR)/fs/fat32_cluster.c \
+	$(KERNEL_DIR)/fs/fat32_dir.c \
+	$(KERNEL_DIR)/fs/fat32_fs.c \
+	$(KERNEL_DIR)/fs/block_device.c \
 	$(KERNEL_DIR)/fs/tar.c \
 	# $(wildcard $(KERNEL_DIR)/mm/alloc/pmm.c)
 
@@ -147,16 +152,29 @@ KERNEL_OBJS = $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/kernel/%.o,$(KERNEL_SRCS
 # Final linked kernel image (ELF) placed in the build directory.
 KERNEL_ELF = $(BUILD_DIR)/secureos.elf
 
-# ---------------- Initrd (Initial Ramdisk) ----------------
+# ---------------- FAT32 disk image ----------------
 
-# Path to the initrd build artifact.
-INITRD_IMAGE = $(BUILD_DIR)/secureos.initrd
+# Path to the FAT32 disk image build artifact.
+FAT32_IMAGE = $(BUILD_DIR)/secureos.fat32.img
 
-# Path to the final initrd file that will be placed in the ISO.
-INITRD_FILE = $(ISO_DIR)/boot/secureos.initrd
+# Path to the final FAT32 image that will be placed in the ISO.
+FAT32_FILE = $(ISO_DIR)/boot/secureos.fat32.img
 
-# Staging directory for files that will go into the initrd.
-INITRD_ROOT = $(BUILD_DIR)/initrd_root
+# Staging directory for files that will be copied into the FAT32 image.
+FAT32_ROOT = $(BUILD_DIR)/fat32_root
+
+# Size of the FAT32 image in bytes.
+FAT32_IMAGE_BYTES = 67108864
+
+# Image label used by mkfs.fat.
+FAT32_VOLUME_LABEL = SECUREOS
+
+# Tool used to format the raw image.
+MKFS_FAT = mkfs.fat
+
+# mtools helpers for populating the image.
+MCOPY = mcopy
+MMD = mmd
 
 # Final bootable ISO image placed at project root.
 # - The name includes “uefi” to emphasize it’s built for UEFI GRUB.
@@ -200,15 +218,15 @@ $(KERNEL_ELF): $(ASM_OBJ) $(KERNEL_OBJS) $(LINKER_SCRIPT)
 
 # Create the bootable ISO image.
 # - grub-mkrescue collects GRUB modules and our staged tree and emits an ISO.
-$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(INITRD_IMAGE)
+$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(FAT32_IMAGE)
 	# Create directories inside the staged ISO tree.
 	mkdir -p $(ISO_DIR)/boot/grub
 	# Copy the built kernel to the path referenced by grub.cfg.
 	cp $(KERNEL_ELF) $(ISO_DIR)/boot/secureos.elf
 	# Copy the GRUB configuration file.
 	cp $(GRUB_CFG) $(ISO_DIR)/boot/grub/grub.cfg
-	# Copy the initrd into the staged ISO tree so GRUB can load it as a module.
-	cp $(INITRD_IMAGE) $(INITRD_FILE)
+	# Copy the FAT32 image into the staged ISO tree so GRUB can load it as a module.
+	cp $(FAT32_IMAGE) $(FAT32_FILE)
 	$(GRUB_MKRESCUE) $(GRUB_MKRESCUE_FLAGS) -o $(ISO_FILE) $(ISO_DIR)
 	@echo "=== Build Complete ==="
 	@echo "Bootable ISO created: $(ISO_FILE)"
@@ -225,7 +243,7 @@ clean:
 # Run the built ISO in QEMU (default firmware).
 # - This is convenient, but for UEFI you typically want the run-uefi targets.
 run: $(ISO_FILE)
-	qemu-system-x86_64 -cdrom $(ISO_FILE)
+	qemu-system-x86_64 -cdrom $(ISO_FILE) -m 2048
 
 # ---------------- QEMU UEFI (OVMF) run targets ----------------
 
@@ -258,27 +276,37 @@ run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY)
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
 		-cdrom $(ISO_FILE)
+		-m 2048
 
 # Run the UEFI boot with serial redirected to the host terminal.
 # - `-serial stdio` routes the guest COM1 serial port to QEMU standard I/O.
 # - This is the most reliable early debug channel under UEFI.
-run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(INITRD_IMAGE)
+run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	qemu-system-x86_64 \
 		-machine q35 \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
 		-cdrom $(ISO_FILE) \
-		-serial stdio
+		-serial stdio \
+		-m 2048
 
-# ---------------- Initrd (Initial Ramdisk) ----------------
+# ---------------- FAT32 image build ----------------
 
-# Rule to build the initrd.
-$(INITRD_IMAGE):
-	@echo "==> Creating initrd..."
+# Rule to build the FAT32 image.
+$(FAT32_IMAGE):
+	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
-	@mkdir -p $(INITRD_ROOT)
-	@echo "IT WORKS" > $(INITRD_ROOT)/pwned.txt
-	@tar -cf $@ -C $(INITRD_ROOT) .
+	@mkdir -p $(FAT32_ROOT)/docs
+	@mkdir -p $(FAT32_ROOT)/boot
+	@echo "This is SecureOS FAT32 storage." > $(FAT32_ROOT)/README.TXT
+	@echo "IT WORKS" > $(FAT32_ROOT)/boot/pwned.txt
+	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
+	truncate -s $(FAT32_IMAGE_BYTES) $@
+	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
+	$(MMD) -i $@ ::/boot ::/docs
+	$(MCOPY) -i $@ $(FAT32_ROOT)/README.TXT ::/README.TXT
+	$(MCOPY) -i $@ $(FAT32_ROOT)/boot/pwned.txt ::/boot/PWNED.TXT
+	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
 
 # Declare “phony” targets.
 # - A phony target is not a real file; it should always run when requested.
