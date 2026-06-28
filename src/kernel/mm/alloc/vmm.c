@@ -15,8 +15,9 @@ typedef uint8_t bool;
 #define PHYS_MAP_BASE 0xFFFF800000000000ULL //slot 256 in the pml4
 #define HIGHER_HALF_BASE_ 0xFFFF800000000000ULL // slot 256 in the pml4
 #define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
-uint64_t MAX_PHYS;
-uint64_t BUDDY_MAX_PHYS;
+uint64_t MAX_PHYS; //first 4gib
+uint64_t BUDDY_MAX_PHYS;// all ram
+
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -49,8 +50,8 @@ uint64_t vmm_init(uintptr_t *pgtables){
     is_initialized = false;
     toptable = NULL;
     adress_toptable = 0;
-    MAX_PHYS = pmm_total_map_bytes();
-    BUDDY_MAX_PHYS = 0; //update this later
+    MAX_PHYS = 0x100000000UL;
+    BUDDY_MAX_PHYS = pmm_max_phys_addr();//update this later
     
 
 
@@ -117,6 +118,10 @@ typedef struct walker_out{
     uintptr_t *final_page_walked_ptr;
     bool table_here;
     uint64_t error_code; //10 for present bit = 0
+    uintptr_t pml4_entry;
+    uintptr_t pdpt_entry;
+    uintptr_t pd_entry;
+    uintptr_t pt_entry;
     
 }walker_out;
 
@@ -164,6 +169,7 @@ typedef struct walker_out{
         return result;
     }
 
+    result.pml4_entry = pml4_entry;
 
     uintptr_t pdpt_adress = pml4_entry & ~0xFFF;
 
@@ -171,6 +177,7 @@ typedef struct walker_out{
 
     uintptr_t pdpt_entry = curr[index_in_pdpt];
     uintptr_t *pdpt_entry_adress = &curr[index_in_pdpt];
+    result.pdpt_entry = pdpt_entry;
 
     if(((pdpt_entry & 1) == 0) || pdpt_entry == 0){
 
@@ -191,6 +198,7 @@ typedef struct walker_out{
         result.page_size = 1048576; //1gib in kib
         uintptr_t physical_base = final_entry_value & ~((1ULL << 30) - 1);
         result.physical_base_adress = physical_base;
+        
 
         return result;
 
@@ -204,6 +212,7 @@ typedef struct walker_out{
 
     uintptr_t pd_entry = curr[index_in_pd];
     uintptr_t *pd_entry_adress = &curr[index_in_pd];
+    result.pd_entry = pd_entry;
     
 
     if(((pd_entry & 1) == 0) || pd_entry == 0){
@@ -235,6 +244,7 @@ typedef struct walker_out{
 
     uintptr_t pt_entry = curr[index_in_pt];
     uintptr_t *pt_entry_adress = &curr[index_in_pt];
+    result.pt_entry = pt_entry;
 
     if(((pt_entry & 1) == 0) || pt_entry == 0){
 
@@ -389,8 +399,25 @@ static free_page_frame_out vmm_create_root_table(void){
 
 }
 
+static uint64_t strip_flags_pt(uintptr_t entry) {
+const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+return (uint64_t)entry & ~ADDR_MASK_4K;
+}
 
-static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_adress, uintptr_t physical_adress, uint64_t flags){
+static uint64_t strip_flags_non_pt(uintptr_t entry) {
+const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+const uint64_t BIT_PS = (1ULL << 7); // PS for PDE/PDPTE link entries
+const uint64_t BIT_PAT_LARGE = (1ULL << 12); // PAT for 2MiB/1GiB leaf format
+uint64_t flags = (uint64_t)entry & ~ADDR_MASK_4K;
+flags &= ~(BIT_PS | BIT_PAT_LARGE);
+return flags;
+}
+
+
+
+
+static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_adress, 
+    uintptr_t physical_adress, uint64_t pml4_e_flags, uint64_t pdpt_e_flags, uint64_t pd_e_flags){
 
     if(is_initialized == false){return 0;}
 
@@ -398,14 +425,17 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
     if(virtual_adress % 2097152 != 0){return 0;}
 
-    if(physical_adress % 2097152 != 0){return 0;}
+    
+    
+
+    
 
     //add if not alligned align them.
 
     uint64_t index_in_pml4 = (virtual_adress >> 39) & 0x1FF;
     uint64_t index_in_pdpt = (virtual_adress >> 30) & 0x1FF;
     uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
-    uint64_t table_flags = (1ULL << 0) | (1ULL << 1);
+    
     uintptr_t pml4_entry = root_table[index_in_pml4];
 
     if((pml4_entry & 1) == 0 || pml4_entry == 0){
@@ -413,7 +443,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
         free_page_frame_out new_pdpt_table_metadata = free_frame_for_new_page_structure_and_create_it();
         if(new_pdpt_table_metadata.success == false){return 0;}
         //u have to write to the actual table pointer not to the local variable this is very important.
-        root_table[index_in_pml4] = new_pdpt_table_metadata.physical_adress | table_flags;
+        root_table[index_in_pml4] = new_pdpt_table_metadata.physical_adress | pml4_e_flags;
         pml4_entry = root_table[index_in_pml4];
         root_table = new_pdpt_table_metadata.pgtable_pointer;
     }else{
@@ -424,7 +454,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
         free_page_frame_out new_pd_table_metadata = free_frame_for_new_page_structure_and_create_it();
         if(new_pd_table_metadata.success == false){return 0;}
-        root_table[index_in_pdpt] = new_pd_table_metadata.physical_adress | table_flags;
+        root_table[index_in_pdpt] = new_pd_table_metadata.physical_adress | pdpt_e_flags;
         pdpt_entry = root_table[index_in_pdpt];
         root_table = new_pd_table_metadata.pgtable_pointer;
 
@@ -450,7 +480,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
         return 0;
     }
 
-    root_table[index_in_pd] = physical_adress | flags | (1ULL << 0) | (1ULL << 7); //write the final 2mib pd entry using the physical base plus present plus large page bit
+    root_table[index_in_pd] = physical_adress | pd_e_flags; //write the final 2mib pd entry using the physical base plus present plus large page bit
 
     return 1; //the full 2mib population path succeeded
 
@@ -459,7 +489,8 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
 }
 //add flag checks
 
-static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_adress, uintptr_t physical_adress, uint64_t flags ){
+static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_adress, 
+    uintptr_t physical_adress, uint64_t pml4_e_flags, uint64_t pdpt_e_flags, uint64_t pd_e_flags, uint64_t pt_e_flags){
 
     if(is_initialized == false){return 0;}
 
@@ -467,13 +498,13 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
     if(virtual_adress % 4096 != 0){return 0;}
 
-    if(physical_adress % 4096 != 0){return 0;}
+    
 
     uint64_t index_in_pml4 = (virtual_adress >> 39) & 0x1FF;
     uint64_t index_in_pdpt = (virtual_adress >> 30) & 0x1FF;
     uint64_t index_in_pd = (virtual_adress >> 21) & 0x1FF;
     uint64_t index_in_pt = (virtual_adress >> 12) & 0x1FF; //this is the pt index because the final 4k leaf lives in the pt level
-    uint64_t table_flags = (1ULL << 0) | (1ULL << 1);
+    
 
     uintptr_t pml4_entry = root_table[index_in_pml4];
 
@@ -481,7 +512,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
         free_page_frame_out pdpt_metadata = free_frame_for_new_page_structure_and_create_it();
         if(pdpt_metadata.success == false){return 0;}
-        root_table[index_in_pml4] = pdpt_metadata.physical_adress | table_flags;
+        root_table[index_in_pml4] = pdpt_metadata.physical_adress | pml4_e_flags;
         pml4_entry = root_table[index_in_pml4];
         root_table = pdpt_metadata.pgtable_pointer;
 
@@ -501,7 +532,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
         free_page_frame_out pd_metadata = free_frame_for_new_page_structure_and_create_it(); //allocate a pd page if the pdpt slot is empty
         if(pd_metadata.success == false){return 0;} //stop if the new pd page could not be created
-        root_table[index_in_pdpt] = pd_metadata.physical_adress | table_flags; //link the new pd page into the real pdpt entry with table flags
+        root_table[index_in_pdpt] = pd_metadata.physical_adress | pdpt_e_flags; //link the new pd page into the real pdpt entry with table flags
         pdpt_entry = root_table[index_in_pdpt]; //refresh the local copy so it matches the real pdpt entry we just wrote
         root_table = pd_metadata.pgtable_pointer; //descend into the new pd page so the next level can be filled
 
@@ -520,7 +551,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
         free_page_frame_out pt_metadata = free_frame_for_new_page_structure_and_create_it(); //allocate a pt page if the pd slot is empty
         if(pt_metadata.success == false){return 0;} //stop if the new pt page could not be created
-        root_table[index_in_pd] = pt_metadata.physical_adress | table_flags; //link the new pt page into the real pd entry with table flags
+        root_table[index_in_pd] = pt_metadata.physical_adress | pd_e_flags; //link the new pt page into the real pd entry with table flags
         pd_entry = root_table[index_in_pd]; //refresh the local copy so it matches the real pd entry we just wrote
         root_table = pt_metadata.pgtable_pointer; //descend into the new pt page so the final 4k leaf can be written
 
@@ -537,7 +568,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
     if((pt_entry & 1) != 0 && pt_entry != 0){return 0;} //if a pt entry already exists here do not overwrite the mapping
 
-    root_table[index_in_pt] = physical_adress | flags | (1ULL << 0); //write the final 4k pt entry using the physical base plus the present bit
+    root_table[index_in_pt] = physical_adress | pt_e_flags; //write the final 4k pt entry using the physical base plus the present bit
 
     return 1; //the full 4k population path succeeded
 
@@ -559,13 +590,17 @@ static uint64_t copy_mapping_dynamic(uintptr_t *src_table, uintptr_t src_va, uin
     uintptr_t source_final_entry_val = * walker_out.final_entry_pointer;
 
     //extract source flags
-    uintptr_t source_phys = walker_out.physical_base_adress; 
-    uint64_t src_flags = source_final_entry_val & 0xFFF;
+    
+    
+    uint64_t pml4e_flags = strip_flags_non_pt(walker_out.pml4_entry);
+    uint64_t pdpte_flags = strip_flags_non_pt(walker_out.pdpt_entry);
+    uint64_t pde_flags = strip_flags_non_pt(walker_out.pd_entry);
+    uint64_t pte_flags = strip_flags_pt(walker_out.pt_entry);
     
 
     if(final_walker_out_lvl == 3){
 
-        if(populate2m_into_table(dest_table, dest_va, source_phys, src_flags) == 0 ){return 0;}
+        if(populate2m_into_table(dest_table, dest_va, source_final_entry_val ,pml4e_flags, pdpte_flags, pde_flags ) == 0 ){return 0;}
 
         
 
@@ -573,7 +608,7 @@ static uint64_t copy_mapping_dynamic(uintptr_t *src_table, uintptr_t src_va, uin
         
     }else if(final_walker_out_lvl == 4){
 
-        if(populate4k_into_table(dest_table, dest_va, source_phys, src_flags) == 0){return 0;}
+        if(populate4k_into_table(dest_table, dest_va, source_final_entry_val, pml4e_flags, pdpte_flags, pde_flags, pte_flags) == 0){return 0;}
 
         
         
@@ -693,7 +728,7 @@ static uint64_t poplulate_phys_map(uintptr_t *new_root){
     //the pmm will never hand those frames this is for convinence
 
     uintptr_t aligned_end = 
-    (BUDDY_MAX_PHYS + (2ULL * 1024 * 1024) - 1) & ~((2ULL * 1024 * 1024) - 1);
+    ((uintptr_t)BUDDY_MAX_PHYS + (2ULL * 1024 * 1024) - 1) & ~((2ULL * 1024 * 1024) - 1);
 
     //now we need to loop over all mem and call the helper
     //mapping all mem in 2mib pages.
@@ -703,10 +738,13 @@ static uint64_t poplulate_phys_map(uintptr_t *new_root){
     for(uintptr_t pa = 0; pa < aligned_end; pa += step_size){
 
         uintptr_t va = PHYS_MAP_BASE + pa;
-        uint64_t rw_and_kernel_flags_enable = (1ULL << 1);
+        uint64_t rw_and_kernel_flags_enable_and_present = (1ULL << 0) | (1ULL << 1);      // P | RW
+        uint64_t rw_and_kernel_flags_enable_and_present_and_large_page =
+        (1ULL << 0) | (1ULL << 1) | (1ULL << 7);                                       // P | RW | PS
 
 
-        if(!populate2m_into_table(new_root,va, pa, rw_and_kernel_flags_enable)){return 0;}
+        if(!populate2m_into_table(new_root,va, pa, rw_and_kernel_flags_enable_and_present, 
+            rw_and_kernel_flags_enable_and_present, rw_and_kernel_flags_enable_and_present_and_large_page)){return 0;}
 
 
     }
@@ -748,7 +786,7 @@ uint64_t transition(uintptr_t *old_root){
     
 
     free_page_frame_out page_metdata = vmm_create_root_table();
-    if(page_metdata.success == false){return 0;}
+    if(page_metdata.success == false) return 0;
     uintptr_t *new_root = page_metdata.pgtable_pointer;
     uintptr_t new_root_phys = page_metdata.physical_adress;
 
@@ -759,7 +797,7 @@ uint64_t transition(uintptr_t *old_root){
 
 
     if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
-    if(!poplulate_phys_map(new_root)){return 0;}
+    if(!poplulate_phys_map(new_root)) return 0;
 
     cr3_switch_t(new_root_phys);
 
@@ -786,7 +824,7 @@ static void invlpg(void *va) {
 static uintptr_t phys_to_virt(uintptr_t physical_adress){
 
     if(physical_adress == 0){return 0;}
-    if (physical_adress >= BUDDY_MAX_PHYS){return 0;}
+    if (physical_adress >= (uintptr_t)BUDDY_MAX_PHYS){return 0;}
     
     uintptr_t va = physical_adress + PHYS_MAP_BASE;
     if(va < PHYS_MAP_BASE){return 0;}
@@ -1659,8 +1697,10 @@ typedef struct vm_object{
         uint64_t flags; //shared, private, cow, shared, pinned,writeback
         uint64_t ref_count; // num of regions referencing this object, important for freeing the object and its resources when no longer used
         uintptr_t phys_base; //base of the physical memory backing this object, can be 0 for non-physically backed objects like swap or file backed objects
-        uintptr_t file; //pointer to file struct if file backed, can be NULL for anon or hardware objects
-        uint64_t file_offset; //offset in the file if file backed, ignored otherwise
+        void* backing_ctx; //pointer to file struct if file backed,and pointer to the actual hardware if hardware backed, can be NULL for anon 
+        //this is a poinetr to an inode for example
+
+
         //add spinlock
         uintptr_t *ref_list_region;
         uintptr_t *ref_list_space;
@@ -1674,7 +1714,7 @@ typedef struct vm_space{
     uintptr_t pml4_phys;
     uintptr_t *pml4_phys_ptr;
     uintptr_t *pml4_ptr;
-    vm_region *vm_region_list_head;
+    vm_region *vm_region;
     //add spinlock later
     uintptr_t user_base;
     uintptr_t user_limit;
@@ -1682,6 +1722,7 @@ typedef struct vm_space{
     uintptr_t kernel_limit;
     vm_region *stack_region;
     vm_region *heap_region;
+    bool is_kernel;
     
     uintptr_t kernel_adress_space_base;
 
@@ -1719,7 +1760,9 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
         result.error_code = PML4_ALLOC_FAIL;
         return result;
     }
-    
+
+
+    new_space->is_kernel = false;
     new_space->pml4_phys = new_pml4.physical_adress;
     new_space->pml4_phys_ptr = new_pml4.pgtable_pointer;
     new_space->pml4_ptr = (uintptr_t *)phys_to_virt(new_pml4.physical_adress);
@@ -1732,6 +1775,7 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 
     //DONT FORGET !!!!!!!!!!!!!!!!!!!!!!!!!!!!
     //add flag enforcment for kernel pages, and user pages.
+    //just set all low pages to US = 1, maybe here maybe in region idfk
 
     for(int i = ker_index; i <= 511; i++){
 
@@ -1741,7 +1785,7 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
     }
     new_space->heap_region = NULL;
     new_space->stack_region = NULL;
-    new_space->vm_region_list_head = NULL;
+    new_space->vm_region = NULL;
 
     new_space->kernel_base = KERNEL_IMAGE_BASE;//fill this 
     new_space->kernel_limit = UINTPTR_MAX; //and this too
@@ -1761,6 +1805,18 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 }
 
 
+enum map_flags_region{
+
+    GROW_DOWN,
+    FIXED,
+    PRIVATE,
+    TOPDOWN,
+    SHARED,
+
+
+}map_flags_region;
+
+
 typedef struct vm_region{
 
     uintptr_t va_start;
@@ -1768,9 +1824,8 @@ typedef struct vm_region{
     size_t size_rounded;
     size_t size_bytes;
     uint64_t permissions;//page tbale permissions
-    uint64_t backing; //anon, file, hardware etc..
+    vm_object* object; //anon, file, hardware etc..
     uint32_t map_flags;//shared, private, fixed, grow down
-    vm_object* object;
     size_t object_base_offset;
     uint64_t type; //stack. heap, whatever
     vm_region *next;
@@ -1780,11 +1835,85 @@ typedef struct vm_region{
 
 }vm_region;
 
+enum reserve_region_error{
+
+    FIXED_OVERLAP_ERROR,
+
+
+}reserve_region_error;
+
+typedef struct reserve_region_out{
+    bool success;
+    vm_space* space_ptr;
+    vm_region* region_ptr;
+    uint64_t error_code;
+
+}reserve_region_out;
+
+typedef struct reserve_region_request{
+    size_t size;
+    uint64_t type;
+    vm_object* object;
+    uint64_t perms;
+    uint64_t map_flags;
+    uintptr_t hint_va;
+    size_t backing_offset;
+
+
+
+}reserve_region_request;
 
 
 
 
-vm_region* reserve_region(size_t size, uint64_t flags, uintptr_t hint_va, uintptr_t *root_table ){
+reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
+
+    reserve_region_out result = {0};
+
+    vm_region* region = kcalloc( 1, sizeof(vm_region));
+
+    if(space == NULL || req == NULL){result;}
+
+    if(req->size == 0){result;}
+    //overflow guard
+    uintptr_t legal_limit;
+    uintptr_t legal_base;
+
+    if(space->is_kernel == false){
+        legal_limit = HIGHER_HALF_BASE_;
+        legal_base = 0;
+
+    }else{
+        legal_limit = UINTPTR_MAX;
+        legal_base = HIGHER_HALF_BASE_;
+
+    }
+
+    if(req->map_flags == FIXED){
+
+        if(req->hint_va % 4096 != 0){
+            kfree(region);
+            return result;
+        }
+
+        while(space->vm_region->next != NULL){
+
+            if(((space->vm_region->va_start) < (req->hint_va + req->size)) && (req->hint_va < (space->vm_region->va_end))){
+                
+                result.success = false;
+                result.error_code =FIXED_OVERLAP_ERROR; 
+                return result;
+            }
+            space->vm_region = space->vm_region->next;
+
+        }
+
+        
+
+    }
+
+
+
 
 
 }
