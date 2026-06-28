@@ -9,8 +9,12 @@ typedef uint8_t bool;
 #define true 1
 #define false 0
 #define LOW_BASE 0x100000
-#define HIGHER_HALF_BASE 0xFFFFFFFF80000000 //this is the kernels base
-#define PHYS_MAP_BASE 0xFFFF800000000000ULL
+
+//all these are virtual addrs
+
+#define PHYS_MAP_BASE 0xFFFF800000000000ULL //slot 256 in the pml4
+#define HIGHER_HALF_BASE_ 0xFFFF800000000000ULL // slot 256 in the pml4
+#define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
 uint64_t MAX_PHYS;
 uint64_t BUDDY_MAX_PHYS;
 
@@ -743,24 +747,24 @@ uint64_t transition(uintptr_t *old_root){
 
     
 
-free_page_frame_out page_metdata = vmm_create_root_table();
-if(page_metdata.success == false){return 0;}
-uintptr_t *new_root = page_metdata.pgtable_pointer;
-uintptr_t new_root_phys = page_metdata.physical_adress;
+    free_page_frame_out page_metdata = vmm_create_root_table();
+    if(page_metdata.success == false){return 0;}
+    uintptr_t *new_root = page_metdata.pgtable_pointer;
+    uintptr_t new_root_phys = page_metdata.physical_adress;
 
-uintptr_t src_start_va =(uintptr_t)& _kernel_start;
-uintptr_t src_end_va = (uintptr_t)&_kernel_end;
+    uintptr_t src_start_va =(uintptr_t)& _kernel_start;
+    uintptr_t src_end_va = (uintptr_t)&_kernel_end;
 
-uintptr_t dest_va_start = HIGHER_HALF_BASE + (_kernel_start - LOW_BASE);
+    uintptr_t dest_va_start = KERNEL_IMAGE_BASE + (_kernel_start - LOW_BASE);
 
 
-if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
-if(!poplulate_phys_map(new_root)){return 0;}
+    if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
+    if(!poplulate_phys_map(new_root)){return 0;}
 
-cr3_switch_t(new_root_phys);
+    cr3_switch_t(new_root_phys);
 
-toptable = new_root;
-adress_toptable = new_root_phys;
+    toptable = new_root;
+    adress_toptable = new_root_phys;
 
 return 1;
 
@@ -845,7 +849,7 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
     walker_out2 result = {0};
 
     if(root_table == NULL){return result;}
-    if(virtual_adress == 0){return result;}
+    
     if ((((int64_t)virtual_adress) >> 47) != 0 && (((int64_t)virtual_adress) >> 47) != -1) { return result; }
     //non canonical va check idfk what this shit is
 
@@ -1227,7 +1231,7 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
 
                 uint64_t enforced_flags = inherited_flags;
 
-                if(virtual_adress < HIGHER_HALF_BASE){
+                if(virtual_adress < HIGHER_HALF_BASE_){
 
                     uint64_t us_bit = (1ULL << 2);
 
@@ -1678,7 +1682,8 @@ typedef struct vm_space{
     uintptr_t kernel_limit;
     vm_region *stack_region;
     vm_region *heap_region;
-    uint64_t flags; //usr or kernel
+    
+    uintptr_t kernel_adress_space_base;
 
 
 }vm_space;
@@ -1723,7 +1728,10 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
     //the trick here is that we are copiyng only the top pointers bcz
     //these already point to the rest of the hieratchy 
     //(amazing spelling i know)
-    int ker_index = (HIGHER_HALF_BASE >> 39) & 0x1FF;
+    int ker_index = (HIGHER_HALF_BASE_ >> 39) & 0x1FF;
+
+    //DONT FORGET !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    //add flag enforcment for kernel pages, and user pages.
 
     for(int i = ker_index; i <= 511; i++){
 
@@ -1735,10 +1743,17 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
     new_space->stack_region = NULL;
     new_space->vm_region_list_head = NULL;
 
-    new_space->kernel_base = 0;//fill this 
-    new_space->kernel_limit = 0; //and this too
+    new_space->kernel_base = KERNEL_IMAGE_BASE;//fill this 
+    new_space->kernel_limit = UINTPTR_MAX; //and this too
     new_space->user_base = 0;
-    new_space->user_limit = 0; //also fill this
+    new_space->user_limit = HIGHER_HALF_BASE_; //also fill this
+    new_space->kernel_adress_space_base = HIGHER_HALF_BASE_;
+
+    
+    result.space = (vm_space *)new_space;
+    result.success = true;
+
+    return result;
     
 
     
