@@ -26,14 +26,16 @@ static uint64_t pmm_max_phys_end = 0;
 static size_t pmm_managed_frame_count = frame_count;
 static size_t pmm_managed_bitmap_size = BITMAP_SIZE;
 
+uintptr_t _pmm_alloc_frame_range(uintptr_t start_addr, uintptr_t end_addr);
+
 void* memset_me(void* ptr, int value, size_t size){
 
     unsigned char *p = (unsigned char *)ptr;
-    unsigned char value = (unsigned char)value;
+    unsigned char fill = (unsigned char)value;
     unsigned char *end = p + size;
 
     while(p < end){
-        *p = value;
+        *p = fill;
          p++;
 
     }
@@ -43,7 +45,7 @@ void* memset_me(void* ptr, int value, size_t size){
         //p[i]= value;
     //}
 
-    //return ptr;
+    return ptr;
    
 }
 
@@ -68,7 +70,7 @@ static uintptr_t get_frame(uint8_t *bitmap, size_t bitmap_size) {
 
 
 
-void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end) {
+void pmm_init(uint32_t mb2_info_ptr, uintptr_t kernel_start, uintptr_t kernel_end) {
 
     // Start with all frames as used; we'll clear usable frames after map parsing.
     memset_me(bitmap, 0xff, (size_t)BITMAP_SIZE);
@@ -153,7 +155,7 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
     // -=- CRITICAL RESERVATIONS -=-
 
     // 1. Reserve Kernel frames
-    _pmm_alloc_frame_range(_kernel_start, _kernel_end);
+    _pmm_alloc_frame_range(kernel_start, kernel_end);
 
     // 2. Reserve MB2 Info structure (so it's not overwritten by buddy nodes)
     _pmm_alloc_frame_range(mb2_info_ptr, mb2_info_ptr + mb2_total_size);
@@ -165,7 +167,7 @@ void pmm_init(uint32_t mb2_info_ptr, uint8_t _kernel_start, uint8_t _kernel_end)
     // 4. Set up the Buddy Metadata (frame_metadata)
     // We store this 4 KiB after the kernel end.
     // to align use the ALIGN_UP macro
-    uintptr_t metadata_addr = ALIGN_UP((uintptr_t)_kernel_end, frame_size);
+    uintptr_t metadata_addr = ALIGN_UP(kernel_end, frame_size);
     frame_metadata = (struct frame*)metadata_addr;
     uintptr_t metadata_size = pmm_managed_frame_count * sizeof(struct frame);
 
