@@ -51,5 +51,3 @@ uint64_t pmm_total_map_bytes(void);
 
 // calculate address from bitmap index and bit position, return 0 if out of bounds
 uintptr_t get_frame_address(size_t byte_index, size_t bit_index);
-
-

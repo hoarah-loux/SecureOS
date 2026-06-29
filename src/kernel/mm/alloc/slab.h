@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // Slab allocator API built on top of a fixed heap region.
 // This allocates fixed-size objects from size-class caches.

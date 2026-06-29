@@ -1,10 +1,7 @@
-#include "buddy.h"
 #include "heap.h"
 #include "vmm.h"
 #include "pmm.h"
-#include "serial.h"
 #include "slab.h"
-#include "vmm.c"
 
 static uintptr_t heap_start_addr;
 static uintptr_t heap_end_addr;
