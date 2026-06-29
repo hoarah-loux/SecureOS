@@ -3,6 +3,7 @@
 
 // list of free blocks
 static struct buddy_node* free_lists[MAX_ORDER];
+static size_t managed_frames;
 
 // List of all frames, indexed by frame number
 struct frame* frame_metadata = NULL; // we set this shit in pmm.c to the actual mem address (very cursed)
@@ -25,8 +26,14 @@ void buddy_init(uintptr_t base, size_t size, struct frame* frames) {
     // Initialize buddy allocator structures here
     mem_base_addr = base;
     frame_metadata = frames;
+    managed_frames = size / MIN_BLOCK_SIZE;
+
+    for (size_t i = 0; i < MAX_ORDER; i++) {
+        free_lists[i] = NULL;
+    }
+
     // Initialize all frames as free
-    for (size_t i = 0; i < size / MIN_BLOCK_SIZE; i++) {
+    for (size_t i = 0; i < managed_frames; i++) {
         frame_metadata[i].flags = 0; // 0 = free
         frame_metadata[i].order = 0;
     }
@@ -106,9 +113,56 @@ static uintptr_t get_buddy_addr(uintptr_t addr, size_t order) {
     return mem_base_addr + buddy_relative_addr;
 }
 
+static int remove_from_free_list(size_t order, uintptr_t target) {
+    struct buddy_node** curr = &free_lists[order];
+
+    while (*curr != NULL) {
+        if ((uintptr_t)*curr == target) {
+            *curr = (*curr)->next;
+            return 1;
+        }
+        curr = &((*curr)->next);
+    }
+
+    return 0;
+}
+
+static int in_free_list(size_t order, uintptr_t target) {
+    struct buddy_node* curr = free_lists[order];
+
+    while (curr != NULL) {
+        if ((uintptr_t)curr == target) {
+            return 1;
+        }
+        curr = curr->next;
+    }
+
+    return 0;
+}
+
 void buddy_free_blocks(uintptr_t addr, size_t order) {
+    if (order >= MAX_ORDER) {
+        return;
+    }
+
+    if (addr < mem_base_addr || ((addr - mem_base_addr) % MIN_BLOCK_SIZE) != 0) {
+        return;
+    }
+
+    size_t frame_idx = (addr - mem_base_addr) / MIN_BLOCK_SIZE;
+    if (frame_idx >= managed_frames) {
+        return;
+    }
+
+    if (in_free_list(order, addr)) {
+        return;
+    }
+
     if (order >= MAX_ORDER - 1) {
         // Add to the highest possible free list and stop
+        frame_metadata[frame_idx].flags = 0;
+        frame_metadata[frame_idx].order = (uint8_t)order;
+
         struct buddy_node* node = (struct buddy_node*)addr;
         node->next = free_lists[order];
         free_lists[order] = node;
@@ -116,25 +170,47 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
     }
 
     uintptr_t buddy_addr = get_buddy_addr(addr, order);
+    if (buddy_addr < mem_base_addr || ((buddy_addr - mem_base_addr) % MIN_BLOCK_SIZE) != 0) {
+        frame_metadata[frame_idx].flags = 0;
+        frame_metadata[frame_idx].order = (uint8_t)order;
+
+        struct buddy_node* node = (struct buddy_node*)addr;
+        node->next = free_lists[order];
+        free_lists[order] = node;
+        return;
+    }
+
     size_t buddy_index = (buddy_addr - mem_base_addr) / MIN_BLOCK_SIZE;
+    if (buddy_index >= managed_frames) {
+        frame_metadata[frame_idx].flags = 0;
+        frame_metadata[frame_idx].order = (uint8_t)order;
+
+        struct buddy_node* node = (struct buddy_node*)addr;
+        node->next = free_lists[order];
+        free_lists[order] = node;
+        return;
+    }
 
     // Check if the buddy is free AND of the same order
     // A block can only merge if its buddy is also free and not part of a larger allocation
     if (frame_metadata[buddy_index].flags == 0 && frame_metadata[buddy_index].order == order) {
-        
-        // --- COALESCING ---
-        // 1. Remove buddy from its current free list
-        struct buddy_node** curr = &free_lists[order];
-        while (*curr != NULL) {
-            if ((uintptr_t)*curr == buddy_addr) {
-                *curr = (*curr)->next;
-                break;
-            }
-            curr = &((*curr)->next);
+
+        // Only merge if the buddy is really present in the order free list.
+        if (!remove_from_free_list(order, buddy_addr)) {
+            frame_metadata[frame_idx].flags = 0;
+            frame_metadata[frame_idx].order = (uint8_t)order;
+
+            struct buddy_node* node = (struct buddy_node*)addr;
+            node->next = free_lists[order];
+            free_lists[order] = node;
+            return;
         }
 
         // 2. Determine the start of the combined block (the lower address)
         uintptr_t merged_addr = (addr < buddy_addr) ? addr : buddy_addr;
+        size_t merged_index = (merged_addr - mem_base_addr) / MIN_BLOCK_SIZE;
+        frame_metadata[merged_index].flags = 0;
+        frame_metadata[merged_index].order = (uint8_t)(order + 1);
 
         // 3. Recursively free the larger merged block
         buddy_free_blocks(merged_addr, order + 1);
