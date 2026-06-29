@@ -99,7 +99,7 @@ ASMFLAGS = -f elf64
 #     Do not emit position-independent code/executable; we link at fixed VAs.
 # - `-Wall -Wextra`:
 #     Enable common and extra warnings.
-CFLAGS = -ffreestanding -O0 -nostdlib -m64 -mno-red-zone -mcmodel=kernel \
+CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone -mcmodel=kernel \
 		 -mno-mmx -mno-sse -mno-sse2 -fno-pic -fno-pie -Wall -Wextra \
 		 -I$(KERNEL_DIR)
 
@@ -124,14 +124,18 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
+	$(KERNEL_DIR)/mm/alloc/pmm.c \
+	$(KERNEL_DIR)/mm/alloc/buddy.c \
+	$(KERNEL_DIR)/mm/alloc/slab.c \
+	$(KERNEL_DIR)/mm/alloc/heap.c \
+	$(KERNEL_DIR)/mm/alloc/vmm.c \
 	$(KERNEL_DIR)/fs/ide_pio.c \
 	$(KERNEL_DIR)/fs/fat.c \
 	$(KERNEL_DIR)/fs/fat32_cluster.c \
 	$(KERNEL_DIR)/fs/fat32_dir.c \
 	$(KERNEL_DIR)/fs/fat32_fs.c \
 	$(KERNEL_DIR)/fs/block_device.c \
-	$(KERNEL_DIR)/fs/tar.c \
-	# $(wildcard $(KERNEL_DIR)/mm/alloc/pmm.c)
+	$(KERNEL_DIR)/fs/tar.c
 
 # Linker script.
 LINKER_SCRIPT = $(BOOT_DIR)/grub/linker.ld
@@ -296,6 +300,20 @@ run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-serial stdio \
 		-m 2048
 
+# Force debug-friendly compile flags for this target and its prerequisites.
+run-debug: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
+	qemu-system-x86_64 \
+		-machine pc \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
+		-boot order=d \
+		-cdrom $(ISO_FILE) \
+		$(FAT32_DRIVE) \
+		-serial stdio \
+		-m 2048 \
+		-s -S
+
+
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
@@ -316,4 +334,4 @@ $(FAT32_IMAGE):
 
 # Declare “phony” targets.
 # - A phony target is not a real file; it should always run when requested.
-.PHONY: all clean run run-uefi run-uefi-serial
+.PHONY: all clean run run-uefi run-uefi-serial run-debug
