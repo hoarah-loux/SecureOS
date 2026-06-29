@@ -21,6 +21,9 @@ extern uint8_t _kernel_end[];
 extern uint64_t transition(uintptr_t *old_root);
 extern uintptr_t vmm_query_page2(uintptr_t virtual_adress);
 
+#define KERNEL_IMAGE_BASE_VA 0xFFFFFFFF80000000ULL
+#define TWO_MIB_PAGE_MASK (~((uintptr_t)0x1FFFFF))
+
 static uintptr_t read_cr3_root_phys(void) {
     uintptr_t cr3 = 0;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3) :: "memory");
@@ -105,6 +108,12 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     vmm_print_test_result("vmm_init", init_ok == 1);
 
     uintptr_t kmain_va = (uintptr_t)&kmain;
+    uintptr_t kernel_low_window_start_va = ((uintptr_t)&_kernel_start) & TWO_MIB_PAGE_MASK;
+    uintptr_t kmain_higher_half_va = 0;
+    if (kmain_va >= kernel_low_window_start_va) {
+        kmain_higher_half_va = (uintptr_t)(KERNEL_IMAGE_BASE_VA + (kmain_va - kernel_low_window_start_va));
+    }
+
     uintptr_t before_transition_pa = (uintptr_t)vmm_query_page(kmain_va);
 
     serial_write_string("[VMM] kmain VA=0x");
@@ -117,16 +126,24 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
 
-    uintptr_t after_transition_pa = vmm_query_page2(kmain_va);
-    serial_write_string("[VMM] kmain VA=0x");
-    serial_write_hex64(kmain_va);
-    serial_write_string(" post-transition PA(query2)=0x");
-    serial_write_hex64(after_transition_pa);
+    serial_write_string("[VMM] kmain higher-half VA=0x");
+    serial_write_hex64(kmain_higher_half_va);
     serial_write_string("\r\n");
-    vmm_print_test_result("query kmain via vmm_query_page2", after_transition_pa != 0);
 
-    if (before_transition_pa != 0 && after_transition_pa != 0) {
-        vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_pa);
+    uintptr_t after_transition_high_pa = 0;
+    if (kmain_higher_half_va != 0) {
+        after_transition_high_pa = vmm_query_page2(kmain_higher_half_va + 8);
+    }
+
+    serial_write_string("[VMM] kmain higher-half VA=0x");
+    serial_write_hex64(kmain_higher_half_va);
+    serial_write_string(" post-transition PA(query2, high)=0x");
+    serial_write_hex64(after_transition_high_pa);
+    serial_write_string("\r\n");
+    vmm_print_test_result("query kmain higher-half via vmm_query_page2", after_transition_high_pa != 0);
+
+    if (before_transition_pa != 0 && after_transition_high_pa != 0) {
+        vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_high_pa);
     }
 
     const struct multiboot_tag_framebuffer *fb = (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);

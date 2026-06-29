@@ -753,7 +753,7 @@ uint64_t transition(uintptr_t *old_root){
     uintptr_t *new_root = page_metdata.pgtable_pointer;
     uintptr_t new_root_phys = page_metdata.physical_adress;
 
-    uintptr_t src_start_va =(uintptr_t)& _kernel_start;
+    uintptr_t src_start_va =((uintptr_t)&_kernel_start) & ~((uintptr_t)0x1FFFFF);
     uintptr_t src_end_va = (((uintptr_t)&_kernel_end) + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
 
     //uintptr_t dest_va_start = KERNEL_IMAGE_BASE + (_kernel_start - LOW_BASE); check this shit
