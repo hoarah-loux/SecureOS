@@ -12,6 +12,20 @@
 #include "fs/block_device.h"
 #include "fs/ide_pio.h"
 #include "fs/fat32_fs.h"
+#include "mm/alloc/pmm.h"
+#include "mm/alloc/vmm.h"
+
+extern uint8_t _kernel_start[];
+extern uint8_t _kernel_end[];
+
+extern uint64_t transition(uintptr_t *old_root);
+extern uintptr_t vmm_query_page2(uintptr_t virtual_adress);
+
+static uintptr_t read_cr3_root_phys(void) {
+    uintptr_t cr3 = 0;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3) :: "memory");
+    return cr3 & ~((uintptr_t)0xFFF);
+}
 
 static int serial_print_dir_entry(const fat32_dir_entry_view_t *entry, void *context) {
     (void)context;
@@ -51,6 +65,12 @@ static void fat32_print_test_result(const char *name, int passed) {
     serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
 }
 
+static void vmm_print_test_result(const char *name, int passed) {
+    serial_write_string("[VMM] test ");
+    serial_write_string(name);
+    serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
+}
+
 static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
     if (!fb) {
         return;
@@ -76,6 +96,38 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     serial_write_string("[SecureOS] kernel mb2_info_ptr=0x");
     serial_write_hex32(mb2_info_ptr);
     serial_write_string("\r\n");
+
+    serial_write_string("[VMM] initializing PMM/VMM test path\r\n");
+    pmm_init(mb2_info_ptr, (uintptr_t)&_kernel_start, (uintptr_t)&_kernel_end);
+
+    uintptr_t *boot_root = (uintptr_t *)read_cr3_root_phys();
+    uint64_t init_ok = vmm_init(boot_root);
+    vmm_print_test_result("vmm_init", init_ok == 1);
+
+    uintptr_t kmain_va = (uintptr_t)&kmain;
+    uintptr_t before_transition_pa = (uintptr_t)vmm_query_page(kmain_va);
+
+    serial_write_string("[VMM] kmain VA=0x");
+    serial_write_hex64(kmain_va);
+    serial_write_string(" pre-transition PA=0x");
+    serial_write_hex64(before_transition_pa);
+    serial_write_string("\r\n");
+    vmm_print_test_result("query kmain via vmm_query_page", before_transition_pa != 0);
+
+    uint64_t transition_ok = transition(boot_root);
+    vmm_print_test_result("transition", transition_ok == 1);
+
+    uintptr_t after_transition_pa = vmm_query_page2(kmain_va);
+    serial_write_string("[VMM] kmain VA=0x");
+    serial_write_hex64(kmain_va);
+    serial_write_string(" post-transition PA(query2)=0x");
+    serial_write_hex64(after_transition_pa);
+    serial_write_string("\r\n");
+    vmm_print_test_result("query kmain via vmm_query_page2", after_transition_pa != 0);
+
+    if (before_transition_pa != 0 && after_transition_pa != 0) {
+        vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_pa);
+    }
 
     const struct multiboot_tag_framebuffer *fb = (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
     if (fb && fb->common.size < sizeof(struct multiboot_tag_framebuffer_common)) {

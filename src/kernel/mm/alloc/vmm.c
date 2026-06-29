@@ -1,13 +1,6 @@
 #include "vmm.h"
-#include "serial.h"
-#include "pmm.h"
-#include "heap.h"
-
 
 //redundant but looks cool
-typedef uint8_t bool;
-#define true 1
-#define false 0
 #define LOW_BASE 0x100000
 
 //all these are virtual addrs
@@ -107,23 +100,7 @@ uint64_t vmm_init(uintptr_t *pgtables){
 }
 
 
-//this struct is the output of the walker funciton
-typedef struct walker_out{
 
-    bool success;
-    uintptr_t *final_entry_pointer;
-    uint64_t final_page_level;
-    uintptr_t physical_base_adress;
-    uint64_t page_size;
-    uintptr_t *final_page_walked_ptr;
-    bool table_here;
-    uint64_t error_code; //10 for present bit = 0
-    uintptr_t pml4_entry;
-    uintptr_t pdpt_entry;
-    uintptr_t pd_entry;
-    uintptr_t pt_entry;
-    
-}walker_out;
 
 //we will treat these as trasntion private functiuons the main puropuse is a phase 1 vmm which switches from the old 
 // bootstrap tables to new ones, them some of these functions might be updated or even reimplemnbted
@@ -318,14 +295,7 @@ uintptr_t vmm_query_page(uintptr_t virtual_adress){
 }
 
 
-typedef struct free_page_frame_out{
 
-    bool success;
-    uintptr_t *pgtable_pointer;
-    uintptr_t physical_adress;
-
-
-}free_page_frame_out;
 
 // since any new page created isnt a part of the kernel image so we will have to reserve frames for it in the pmm
 // they are created at runtime so they arent marked as used so we ned to do that 
@@ -765,15 +735,8 @@ static uintptr_t cr3_switch_t(uintptr_t new_root_table_phys){
 
 
     //this part will need to be wrapped if we are going to port to rspi
-    asm volatile(
-
-        "mov %%cr3, %0\n\t"
-        "mov %1, %%cr3\n\t"
-        :"=r"(old_table_phys)
-        :"r"(new_root_table_phys)
-        :"memory"
-
-    );
+    asm volatile("mov %%cr3, %0" : "=r "(old_table_phys) :: "memory");
+    asm volatile("mov %0, %%cr3" :: "r"(new_root_table_phys) : "memory");
 
 return old_table_phys;
 
@@ -791,12 +754,12 @@ uint64_t transition(uintptr_t *old_root){
     uintptr_t new_root_phys = page_metdata.physical_adress;
 
     uintptr_t src_start_va =(uintptr_t)& _kernel_start;
-    uintptr_t src_end_va = (uintptr_t)&_kernel_end;
+    uintptr_t src_end_va = (((uintptr_t)&_kernel_end) + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
 
-    uintptr_t dest_va_start = KERNEL_IMAGE_BASE + (_kernel_start - LOW_BASE);
+    //uintptr_t dest_va_start = KERNEL_IMAGE_BASE + (_kernel_start - LOW_BASE); check this shit
 
-
-    if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, dest_va_start)) return 0;
+    if(!copy_mapping_dynamic_over_range(old_root,src_start_va, src_end_va, new_root, src_start_va)) return 0;
+    if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, KERNEL_IMAGE_BASE)) return 0;
     if(!poplulate_phys_map(new_root)) return 0;
 
     cr3_switch_t(new_root_phys);
@@ -833,40 +796,6 @@ static uintptr_t phys_to_virt(uintptr_t physical_adress){
 
 
 }
-
-enum walker_error{
-
-    STOP_AT_PML4,
-
-
-};
-
-enum walker_stop_reson{
-    NOT_PRESENT,
-    LARGE_PAGE,
-    WALK_COMPLETEST,
-
-};
-
-typedef struct walker_out2{
-
-    bool success;
-    uintptr_t *final_entry_pointer;
-    uint64_t final_page_level;
-    uintptr_t physical_base_adress;
-    uint64_t page_size;
-    uintptr_t *final_page_walked_ptr;
-    uint64_t stop_reason;
-    uint64_t parent_flags;
-    uintptr_t *parent_table_ptr;
-    uintptr_t parent_entry;
-    uint64_t parent_lvl;
-   
-    uint64_t error_code;
-
-
-}walker_out2;
-
 
 // We are redefining constraints and sucess for this walker and refactoring the full next phase, for clarity and 
 // debug ease cuz its a nightmare now.
@@ -916,8 +845,8 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
         
         result.final_page_walked_ptr = curr;
         result.final_entry_pointer = pml4_entry_adress;
-        result.physical_base_adress = NULL;
-        result.page_size = NULL;
+        result.physical_base_adress = (uintptr_t)NULL;
+        result.page_size = (uint64_t)NULL;
         result.final_page_level = 1;
         result.success = true;
         result.error_code = STOP_AT_PML4;
@@ -942,8 +871,8 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
         result.final_page_level = 2;
         result.final_page_walked_ptr = curr;
         result.final_entry_pointer = pdpt_entry_adress;
-        result.physical_base_adress = NULL;
-        result.page_size = NULL;
+        result.physical_base_adress = (uintptr_t)NULL;
+        result.page_size = (uintptr_t)NULL;
         result.success = true;
         result.parent_flags = pml4_entry & ~ADDR_MASK_4K;
         result.parent_entry = pml4_entry;
@@ -998,8 +927,8 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
         result.final_page_level = 3;
         result.final_page_walked_ptr = curr;
         result.final_entry_pointer = pd_entry_adress;
-        result.physical_base_adress = NULL;
-        result.page_size = NULL;
+        result.physical_base_adress = (uintptr_t)NULL;
+        result.page_size = (uint64_t)NULL;
         result.success = true;
         result.parent_flags = pdpt_entry & ~ADDR_MASK_4K;
          result.parent_entry = pdpt_entry;
@@ -1047,8 +976,8 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
         result.final_page_level = 4;
         result.final_page_walked_ptr = curr;
         result.final_entry_pointer = pt_entry_adress;
-        result.physical_base_adress = NULL;
-        result.page_size = NULL;
+        result.physical_base_adress = (uintptr_t)NULL;
+        result.page_size = (uint64_t)NULL;
         result.success = true;
         result.parent_flags = pd_entry & ~ADDR_MASK_4K;
         result.parent_entry = pd_entry;
@@ -1133,31 +1062,62 @@ static free_page_frame_out free_frame_for_new_page_structure_and_create_it2(void
 }
 
 
-enum spilt_error{
-    
-    NO_FLAG_PROVIDED_FOR_NP_CASE,
-    INVALID_FLAGS_FOR_NP_CASE,
-    COELSENCE, //coalesce i didnt know how to spell it
-    UNDEFINED_ERROR,
-    REWALK_FAILED,
-    PARENT_PA_IS_0,
+uintptr_t vmm_query_page2(uintptr_t virtual_adress){
+
+    if(is_initialized == false){
+        return 0;
+    }
+
+    walker_out2 walker_result = the_walking_pager2(toptable, virtual_adress);
+
+    if(walker_result.success == 0){
+        return 0;
+    }
+
+    uintptr_t physical_base_adress = walker_result.physical_base_adress;
+    uint64_t final_page_level = walker_result.final_page_level;
+
+    if(final_page_level == 2){
+
+        uint64_t offset = virtual_adress & ((1ULL << 30) - 1);
+        uintptr_t exact_physical_adress = offset + physical_base_adress;
+
+        return exact_physical_adress;
+
+    }
+
+    if(final_page_level == 3){
+
+        uint64_t offset = virtual_adress & ((1ULL << 21) - 1);
+        uintptr_t exact_physical_adress = offset + physical_base_adress;
+
+        return exact_physical_adress;
 
 
-};
+    }
+
+
+    if(final_page_level == 4){
+
+        uint64_t offset = virtual_adress & ((1ULL << 12) - 1);
+        uintptr_t exact_physical_adress = offset + physical_base_adress;
+
+        return exact_physical_adress;
+    }
+
+
+    return 0;
+
+
+}
+
+
+
 
 // fun fact i made a typo naming the function and im leaving it here as my trademark
 // again ALL POINTERS RETURNED ARE VIRTUAL.
 
-typedef struct spilt_out{
 
-    bool success;
-    uintptr_t *new_table_ptr;
-    uintptr_t *old_table_ptr;
-    uint64_t error_code;
-    bool noop;
-
-    
-}spilt_out;
 
 
 //this function will need alot of revision and might explode later
@@ -1410,26 +1370,7 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
 
 
 
-enum map_error{
-    MAPPING_EXISTS_AT_DESIRED_LVL,
-    MAPPING_EXISTS_AT_LARGE_PAGE,
-    CANT_REMAP_TO_ANOTHER_ADRESS,
-    SPILT_ERROR,
-    REWALK_AFTER_SPLIT_ERROR,
-    COELSENCE,
-    UNEXPECTED_ERROR,
 
-};
-
-typedef struct map_out{
-   bool success;
-   uint64_t error_code;
-   uintptr_t v_final_entry_ptr;
-   uintptr_t physical_adress;
-   uint64_t flags;
-
-
-}map_out;
 
 //also expand the splitter to take arbitrary split sizes (desired split lvl)
 //make sure already mapped pages are handled correctly
@@ -1635,21 +1576,6 @@ map_out vmm_map_page(
 
 }
 
-enum unmap_error{
-
-    UNMAPPING_AT_PML4 = 10,
-
-}unmap_error;
-
-typedef struct unmap_out{
-    bool success;
-    uintptr_t unmapped_pa;
-    uintptr_t *v_unmapped_pa_ptr;
-    uintptr_t unmapped_va;
-    uint64_t error_code;
-
-}unmap_out;
-
 
 unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
 
@@ -1673,7 +1599,7 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
     result.unmapped_pa = *walker_result.final_entry_pointer;
     result.unmapped_va = virtual_adress;
     result.success = true;
-    *walker_result.final_entry_pointer = NULL;
+    *walker_result.final_entry_pointer = (uintptr_t)NULL;
     invlpg((void*)virtual_adress);
 
     
@@ -1689,59 +1615,6 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
 
 }
 
-typedef struct vm_object{
-
-
-        uint64_t type; //file, anon, hardware etc..
-        uint64_t size_bytes;
-        uint64_t flags; //shared, private, cow, shared, pinned,writeback
-        uint64_t ref_count; // num of regions referencing this object, important for freeing the object and its resources when no longer used
-        uintptr_t phys_base; //base of the physical memory backing this object, can be 0 for non-physically backed objects like swap or file backed objects
-        void* backing_ctx; //pointer to file struct if file backed,and pointer to the actual hardware if hardware backed, can be NULL for anon 
-        //this is a poinetr to an inode for example
-
-
-        //add spinlock
-        uintptr_t *ref_list_region;
-        uintptr_t *ref_list_space;
-
-
-}vm_object;
-
-
-typedef struct vm_space{
-
-    uintptr_t pml4_phys;
-    uintptr_t *pml4_phys_ptr;
-    uintptr_t *pml4_ptr;
-    vm_region *vm_region;
-    //add spinlock later
-    uintptr_t user_base;
-    uintptr_t user_limit;
-    uintptr_t kernel_base;
-    uintptr_t kernel_limit;
-    vm_region *stack_region;
-    vm_region *heap_region;
-    bool is_kernel;
-    
-    uintptr_t kernel_adress_space_base;
-
-
-}vm_space;
-
-enum create_vm_space_error{
-
-    PML4_ALLOC_FAIL,
-
-}create_vm_space_error;
-
-typedef struct create_vm_space_out{
-
-    bool success;
-    vm_space *space;
-    uint64_t error_code;
-
-}create_vm_space_out;
 
 
 create_vm_space_out create_vm_space(uintptr_t *kernel_root){
@@ -1805,65 +1678,6 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 }
 
 
-enum map_flags_region{
-
-    GROW_DOWN,
-    FIXED,
-    PRIVATE,
-    TOPDOWN,
-    SHARED,
-
-
-}map_flags_region;
-
-
-typedef struct vm_region{
-
-    uintptr_t va_start;
-    uintptr_t va_end; //exclusive end
-    size_t size_rounded;
-    size_t size_bytes;
-    uint64_t permissions;//page tbale permissions
-    vm_object* object; //anon, file, hardware etc..
-    uint32_t map_flags;//shared, private, fixed, grow down
-    size_t object_base_offset;
-    uint64_t type; //stack. heap, whatever
-    vm_region *next;
-    vm_region *prev;
-    uint64_t region_id;
-
-
-}vm_region;
-
-enum reserve_region_error{
-
-    FIXED_OVERLAP_ERROR,
-
-
-}reserve_region_error;
-
-typedef struct reserve_region_out{
-    bool success;
-    vm_space* space_ptr;
-    vm_region* region_ptr;
-    uint64_t error_code;
-
-}reserve_region_out;
-
-typedef struct reserve_region_request{
-    size_t size;
-    uint64_t type;
-    vm_object* object;
-    uint64_t perms;
-    uint64_t map_flags;
-    uintptr_t hint_va;
-    size_t backing_offset;
-
-
-
-}reserve_region_request;
-
-
 
 
 reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
@@ -1918,18 +1732,3 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
 }
 
-
-
-
-
-
-typedef struct map_region_out{
-    
-}map_region_out;
-
-
-map_region_out vmm_map_region(){
-
-
-
-}
