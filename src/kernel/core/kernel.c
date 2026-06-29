@@ -20,6 +20,7 @@ extern uint8_t _kernel_end[];
 
 extern uint64_t transition(uintptr_t *old_root);
 extern uintptr_t vmm_query_page2(uintptr_t virtual_adress);
+extern uintptr_t _pmm_free_frame(uintptr_t address_to_free);
 
 #define KERNEL_IMAGE_BASE_VA 0xFFFFFFFF80000000ULL
 #define TWO_MIB_PAGE_MASK (~((uintptr_t)0x1FFFFF))
@@ -74,6 +75,47 @@ static void vmm_print_test_result(const char *name, int passed) {
     serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
 }
 
+static void pmm_print_test_result(const char *name, int passed) {
+    serial_write_string("[PMM] test ");
+    serial_write_string(name);
+    serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
+}
+
+static void run_bitmap_pmm_tests(void) {
+    serial_write_string("[PMM] running bitmap allocator tests (_pmm_*)\r\n");
+    pmm_debug_bitmap_window(0x10, 4);
+
+    uintptr_t frame_a = _pmm_alloc_frame();
+    uintptr_t frame_b = _pmm_alloc_frame();
+
+    pmm_print_test_result("bitmap alloc #1 non-zero", frame_a != 0);
+    pmm_print_test_result("bitmap alloc #2 non-zero", frame_b != 0);
+    pmm_print_test_result("bitmap alloc unique", frame_a != 0 && frame_b != 0 && frame_a != frame_b);
+
+    if (frame_a == 0 && frame_b != 0) {
+        serial_write_string("[PMM] warning: first alloc returned 0 but second succeeded; frame 0 handling is likely broken\r\n");
+    }
+
+    if (frame_a != 0) {
+        uintptr_t free_a = _pmm_free_frame(frame_a);
+        pmm_print_test_result("bitmap free #1", free_a == 1);
+
+        uintptr_t frame_c = _pmm_alloc_frame();
+        pmm_print_test_result("bitmap alloc after free", frame_c == frame_a);
+
+        if (frame_c != 0) {
+            pmm_print_test_result("bitmap free recycled", _pmm_free_frame(frame_c) == 1);
+        }
+    }
+
+    if (frame_b != 0) {
+        pmm_print_test_result("bitmap free #2", _pmm_free_frame(frame_b) == 1);
+    }
+
+    uintptr_t invalid_free = _pmm_free_frame((uintptr_t)(pmm_max_phys_addr() + 4096));
+    pmm_print_test_result("bitmap reject invalid free", invalid_free == 0);
+}
+
 static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
     if (!fb) {
         return;
@@ -102,6 +144,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     serial_write_string("[VMM] initializing PMM/VMM test path\r\n");
     pmm_init(mb2_info_ptr, (uintptr_t)&_kernel_start, (uintptr_t)&_kernel_end);
+    run_bitmap_pmm_tests();
 
     uintptr_t *boot_root = (uintptr_t *)read_cr3_root_phys();
     uint64_t init_ok = vmm_init(boot_root);
@@ -132,7 +175,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     uintptr_t after_transition_high_pa = 0;
     if (kmain_higher_half_va != 0) {
-        after_transition_high_pa = vmm_query_page2(kmain_higher_half_va + 8);
+        after_transition_high_pa = vmm_query_page2(kmain_higher_half_va);
     }
 
     serial_write_string("[VMM] kmain higher-half VA=0x");
@@ -146,6 +189,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_high_pa);
     }
 
+    #if 0
     const struct multiboot_tag_framebuffer *fb = (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
     if (fb && fb->common.size < sizeof(struct multiboot_tag_framebuffer_common)) {
         serial_write_string("[SecureOS] framebuffer tag too small\r\n");
@@ -310,6 +354,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         vga[i * 2] = msg[i];
         vga[i * 2 + 1] = 0x0F;
     }
+        #endif
 
     while (1) {
         __asm__ volatile("hlt");

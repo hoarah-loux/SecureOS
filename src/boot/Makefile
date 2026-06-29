@@ -37,6 +37,9 @@ BOOT_DIR = $(PROJECT_ROOT)/src/boot
 # Kernel source root directory.
 KERNEL_DIR = $(PROJECT_ROOT)/src/kernel
 
+# SecureOS source root directory.
+SRC_DIR = $(PROJECT_ROOT)/src
+
 # Where we place intermediate build artifacts (object files, staged ISO tree).
 BUILD_DIR = $(BOOT_DIR)/build
 
@@ -101,7 +104,7 @@ ASMFLAGS = -f elf64
 #     Enable common and extra warnings.
 CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone -mcmodel=kernel \
 		 -mno-mmx -mno-sse -mno-sse2 -fno-pic -fno-pie -Wall -Wextra \
-		 -I$(KERNEL_DIR)
+		 -I$(KERNEL_DIR) -I$(SRC_DIR)
 
 # Linker flags.
 # - `-T <script>`:

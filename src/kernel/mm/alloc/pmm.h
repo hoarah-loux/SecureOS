@@ -49,5 +49,8 @@ uint64_t pmm_max_phys_addr(void);
 // total bytes covered by the MB2 mmap entries (all types)
 uint64_t pmm_total_map_bytes(void);
 
+// debug helper: print bitmap bytes with frame and physical address ranges
+void pmm_debug_bitmap_window(size_t start_byte, size_t byte_count);
+
 // calculate address from bitmap index and bit position, return 0 if out of bounds
 uintptr_t get_frame_address(size_t byte_index, size_t bit_index);

@@ -1,5 +1,7 @@
 #include "pmm.h"
 #include "buddy.h"
+#include "core/serial.h"
+#include "stdlib/hexdump.h"
 
 #include <string.h>
 
@@ -155,7 +157,7 @@ void pmm_init(uint32_t mb2_info_ptr, uintptr_t kernel_start, uintptr_t kernel_en
     // -=- CRITICAL RESERVATIONS -=-
 
     // 1. Reserve Kernel frames
-    _pmm_alloc_frame_range(kernel_start, kernel_end);
+    _pmm_alloc_frame_range(0x0, kernel_end);
 
     // 2. Reserve MB2 Info structure (so it's not overwritten by buddy nodes)
     _pmm_alloc_frame_range(mb2_info_ptr, mb2_info_ptr + mb2_total_size);
@@ -292,6 +294,51 @@ uint64_t pmm_max_phys_addr(void){
 
 uint64_t pmm_total_map_bytes(void){
     return pmm_total_mmap_bytes;
+}
+
+void pmm_debug_bitmap_window(size_t start_byte, size_t byte_count) {
+    if (pmm_managed_bitmap_size == 0 || pmm_managed_frame_count == 0) {
+        serial_write_string("[PMM] bitmap debug: empty managed bitmap\r\n");
+        return;
+    }
+
+    if (start_byte >= pmm_managed_bitmap_size) {
+        serial_printf("[PMM] bitmap debug: start 0x%zx out of range (size=0x%zx)\r\n", start_byte, pmm_managed_bitmap_size);
+        return;
+    }
+
+    size_t end_byte = start_byte + byte_count;
+    if (end_byte < start_byte || end_byte > pmm_managed_bitmap_size) {
+        end_byte = pmm_managed_bitmap_size;
+    }
+
+    serial_printf("[PMM] bitmap window: bytes [0x%zx..0x%zx)\r\n", start_byte, end_byte);
+
+    for (size_t i = start_byte; i < end_byte; i++) {
+        uint8_t byte = bitmap[i];
+        size_t first_frame = i * 8;
+        size_t last_frame = first_frame + 7;
+
+        if (first_frame >= pmm_managed_frame_count) {
+            break;
+        }
+        if (last_frame >= pmm_managed_frame_count) {
+            last_frame = pmm_managed_frame_count - 1;
+        }
+
+        unsigned long long first_phys = (unsigned long long)((uintptr_t)first_frame * frame_size);
+        unsigned long long last_phys = (unsigned long long)((uintptr_t)last_frame * frame_size);
+
+        serial_printf(
+            "[PMM] bm[0x%04zx]=0x%02x frames[%zu..%zu] phys[0x%llx..0x%llx]\r\n",
+            i,
+            (unsigned)byte,
+            first_frame,
+            last_frame,
+            first_phys,
+            last_phys
+        );
+    }
 }
 
 // calculate address from bitmap index and bit position, return 0 if out of bounds
