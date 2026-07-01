@@ -1658,7 +1658,7 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
     }
     new_space->heap_region = NULL;
     new_space->stack_region = NULL;
-    new_space->vm_region = NULL;
+    new_space->vm_region_list = NULL;
 
     new_space->kernel_base = KERNEL_IMAGE_BASE;//fill this 
     new_space->kernel_limit = UINTPTR_MAX; //and this too
@@ -1678,7 +1678,7 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 }
 
 
-
+//this is why secure os is th emost secure ever
 
 reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
@@ -1686,9 +1686,9 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     vm_region* region = kcalloc( 1, sizeof(vm_region));
 
-    if(space == NULL || req == NULL){result;}
+    if(space == NULL || req == NULL){return result;}
 
-    if(req->size == 0){result;}
+    if(req->size == 0){return result;}
     //overflow guard
     uintptr_t legal_limit;
     uintptr_t legal_base;
@@ -1705,24 +1705,110 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     if(req->map_flags == FIXED){
 
+        if(req->hint_va > legal_limit)return result;
+
         if(req->hint_va % 4096 != 0){
             kfree(region);
             return result;
         }
 
-        while(space->vm_region->next != NULL){
+        
+        region->va_start = req->hint_va;
+        region->va_end = (req->hint_va + req->size); // add alligning it
 
-            if(((space->vm_region->va_start) < (req->hint_va + req->size)) && (req->hint_va < (space->vm_region->va_end))){
+        vm_region* general_cursor = space->vm_region_list;
+        if(general_cursor == NULL){ goto insert_to_list;}
+
+        while(general_cursor != NULL){
+
+            if(((general_cursor->va_start) < (req->hint_va + req->size)) && (req->hint_va < (general_cursor->va_end))){
                 
                 result.success = false;
-                result.error_code =FIXED_OVERLAP_ERROR; 
+                result.error_code = FIXED_OVERLAP_ERROR; 
                 return result;
             }
-            space->vm_region = space->vm_region->next;
+            
+            general_cursor = general_cursor->next;
+           
+
+        }
+
+        insert_to_list:
+
+        vm_region* curr = space->vm_region_list;
+        vm_region* prev = NULL;
+
+        // Find sorted insertion point: prev < new <= curr
+        while(curr != NULL && curr->va_start < region->va_start){
+            prev = curr;
+            curr = curr->next;
+        }
+
+        // Stitch new node between prev and curr
+        region->prev = prev;
+        region->next = curr;
+
+        // If prev is NULL, insertion happened at the head
+        if(prev == NULL){
+            space->vm_region_list = region;
+        }else{
+            prev->next = region;
+        }
+
+        if(curr != NULL){
+            curr->prev = region;
+        }
+
+        
+
+        result.success = true;
+        result.region_ptr = (vm_region *) region;
+        result.space_ptr = (vm_space *) space;
+
+        return result;
+
+
+        
+
+    }else{
+
+        if(req->map_flags == TOPDOWN){
+
+            vm_region* cursor2 = space->vm_region_list;
+
+            while(cursor2 != NULL){
+
+            if(((space->vm_region_list->va_start) < (legal_limit)) && (legal_limit - req->size < (space->vm_region_list->va_end))){
+
+
+                
+                
+            }
+
+            space->vm_region_list = space->vm_region_list->next;
+
+        }
+
+            region->va_start = legal_limit - req->size;
+            region->va_end = legal_limit;
+            
+    
+        }else{
+
+
+
+
 
         }
 
         
+
+
+
+
+
+
+
 
     }
 

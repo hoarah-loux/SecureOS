@@ -163,7 +163,7 @@ typedef struct vm_space{
     uintptr_t pml4_phys;
     uintptr_t *pml4_phys_ptr;
     uintptr_t *pml4_ptr;
-    vm_region *vm_region;
+    vm_region *vm_region_list;
     //add spinlock later
     uintptr_t user_base;
     uintptr_t user_limit;
