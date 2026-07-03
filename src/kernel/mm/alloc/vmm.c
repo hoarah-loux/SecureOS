@@ -99,6 +99,35 @@ uint64_t vmm_init(uintptr_t *pgtables){
 
 }
 
+static uintptr_t align_up_u(uintptr_t value, uintptr_t alignment){
+    if(alignment == 0){return value;}
+
+    uintptr_t mask = alignment - 1;
+    if((alignment & mask) != 0){return value;}
+    if(value > (UINTPTR_MAX - mask)){return 0;}
+
+    return (value + mask) & ~mask;
+}
+
+static uintptr_t align_down_u(uintptr_t value, uintptr_t alignment){
+    if(alignment == 0){return value;}
+
+    uintptr_t mask = alignment - 1;
+    if((alignment & mask) != 0){return value;}
+
+    return value & ~mask;
+}
+
+static size_t align_size_up(size_t value, size_t alignment){
+    if(alignment == 0){return value;}
+
+    size_t mask = alignment - 1;
+    if((alignment & mask) != 0){return value;}
+    if(value > (SIZE_MAX - mask)){return 0;}
+
+    return (value + mask) & ~mask;
+}
+
 
 
 
@@ -1070,9 +1099,11 @@ uintptr_t vmm_query_page2(uintptr_t virtual_adress){
 
     walker_out2 walker_result = the_walking_pager2(toptable, virtual_adress);
 
-    if(walker_result.success == 0){
+    if(walker_result.success == 0 ){
         return 0;
     }
+
+    
 
     uintptr_t physical_base_adress = walker_result.physical_base_adress;
     uint64_t final_page_level = walker_result.final_page_level;
@@ -1683,12 +1714,21 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     reserve_region_out result = {0};
+    if(space == NULL || req == NULL){return result;}
+    if(req->size == 0){return result;}
+
+    if ((req->map_flags & FIXED) && (req->map_flags & TOPDOWN)) return result;
+    if ((req->map_flags & PRIVATE) && (req->map_flags & SHARED)) return result;
+
+    size_t req_real_size = req->size;
+
+    req->size = align_size_up(req->size, 4096);
+    
 
     vm_region* region = kcalloc( 1, sizeof(vm_region));
+    if(region == NULL) return result;
 
-    if(space == NULL || req == NULL){return result;}
-
-    if(req->size == 0){return result;}
+    
     //overflow guard
     uintptr_t legal_limit;
     uintptr_t legal_base;
@@ -1698,23 +1738,33 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         legal_base = 0;
 
     }else{
-        legal_limit = UINTPTR_MAX;
+        legal_limit = align_down_u(UINTPTR_MAX, 4096);
         legal_base = HIGHER_HALF_BASE_;
 
     }
 
-    if(req->map_flags == FIXED){
+    if(legal_limit < legal_base){kfree(region); return result;}
+    size_t available_range = legal_limit - legal_base;
+    if(req->size > available_range){kfree(region); return result;}
 
-        if(req->hint_va > legal_limit)return result;
+    uintptr_t min_end_from_base = legal_base + req->size;
+    if(min_end_from_base < legal_base){kfree(region); return result;} // overflow guard
+    if(legal_limit < min_end_from_base){kfree(region); return result;} // underflow guard
+
+    if(req->map_flags & FIXED){
+
+        if(req->hint_va >= legal_limit || req->hint_va < legal_base){kfree(region); return result;}
+        if(req->size > (legal_limit - req->hint_va)){kfree(region); return result;}
+        
 
         if(req->hint_va % 4096 != 0){
             kfree(region);
             return result;
         }
-
+         
         
         region->va_start = req->hint_va;
-        region->va_end = (req->hint_va + req->size); // add alligning it
+        region->va_end = align_up_u((req->hint_va + req->size), 4096); 
 
         vm_region* general_cursor = space->vm_region_list;
         if(general_cursor == NULL){ goto insert_to_list;}
@@ -1725,6 +1775,7 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
                 
                 result.success = false;
                 result.error_code = FIXED_OVERLAP_ERROR; 
+                kfree(region);
                 return result;
             }
             
@@ -1737,6 +1788,8 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
         vm_region* curr = space->vm_region_list;
         vm_region* prev = NULL;
+
+        
 
         // Find sorted insertion point: prev < new <= curr
         while(curr != NULL && curr->va_start < region->va_start){
@@ -1772,34 +1825,123 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     }else{
 
-        if(req->map_flags == TOPDOWN){
+        if(req->map_flags & TOPDOWN){
 
             vm_region* cursor2 = space->vm_region_list;
 
-            while(cursor2 != NULL){
-
-            if(((space->vm_region_list->va_start) < (legal_limit)) && (legal_limit - req->size < (space->vm_region_list->va_end))){
+            uintptr_t prefered_start_va = align_down_u(legal_limit - req->size, 4096); 
 
 
-                
-                
+            // best case first travesre to end of list and check if last element has a valid gap from its end to limit
+            if(cursor2 == NULL){
+
+                region->va_start = prefered_start_va;
+                region->va_end = prefered_start_va + req->size;
+                goto insert_to_list;
+
+
             }
+            while(cursor2 != NULL){
+                if(cursor2->next == NULL){
 
-            space->vm_region_list = space->vm_region_list->next;
+                    if(((cursor2->va_start) < (legal_limit)) && (prefered_start_va < (cursor2->va_end))){
+                        vm_region* back_cursor = cursor2;
 
-        }
 
-            region->va_start = legal_limit - req->size;
-            region->va_end = legal_limit;
+                        while(back_cursor != NULL){
+
+                            if(back_cursor->prev == NULL){
+                                if(back_cursor->va_start < legal_base){
+                                    result.success = false;
+                                    result.error_code = TOPDOWN_ALLOC_ERROR;
+                                    kfree(region);
+                                    return result;
+                                } // underflow guard
+
+                                uintptr_t min_topdown_end = legal_base + req->size;
+                                if(min_topdown_end < legal_base){
+                                    result.success = false;
+                                    result.error_code = TOPDOWN_ALLOC_ERROR;
+                                    kfree(region);
+                                    return result;
+                                } // overflow guard
+
+                                size_t gap = back_cursor->va_start - legal_base;
+                                if(gap >= req->size){
+                                    region->va_end = back_cursor->va_start;
+                                    region->va_start = (back_cursor->va_start - req->size);
+                                    goto insert_to_list;
+                                }else{
+
+                                    result.success = false;
+                                    result.error_code = TOPDOWN_ALLOC_ERROR;
+                                    kfree(region);
+                                    return result;
+                                }
+
+                            }else{
+
+                                if(back_cursor->va_start < back_cursor->prev->va_end){
+                                    result.success = false;
+                                    result.error_code = TOPDOWN_ALLOC_ERROR;
+                                    kfree(region);
+                                    return result;
+                                } // underflow guard
+
+                                uintptr_t min_topdown_end = back_cursor->prev->va_end + req->size;
+                                if(min_topdown_end < back_cursor->prev->va_end){
+                                    result.success = false;
+                                    result.error_code = TOPDOWN_ALLOC_ERROR;
+                                    kfree(region);
+                                    return result;
+                                } // overflow guard
+
+                                if((back_cursor->va_start - back_cursor->prev->va_end) < req->size ){
+                                    //gap is too small
+
+                                    back_cursor = back_cursor->prev;
+                                }else{
+                                    //found a gap
+                                    region->va_start = (back_cursor->va_start - req->size);
+                                    region->va_end = back_cursor->va_start;
+                                    goto insert_to_list;
+
+
+                                }
+                            }
+
+                        }
+
+                        result.success = false;
+                        result.error_code = TOPDOWN_ALLOC_ERROR;
+                        kfree(region);
+                        return result;
+
+
+                    }else{
+
+                        //no overlap
+                        region->va_start = prefered_start_va;
+                        region->va_end = prefered_start_va + req->size;
+                        goto insert_to_list;
+
+                    }
+                    
+                }
+
+                cursor2 = cursor2->next;
+
+             }
+
+            result.success = false;
+            result.error_code = TOPDOWN_ALLOC_ERROR;
+            kfree(region);
+            return result;
+
+            
             
     
-        }else{
-
-
-
-
-
-        }
+        
 
         
 
@@ -1810,11 +1952,87 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
 
 
+        }else{
+
+            vm_region* index = space->vm_region_list;
+
+            if (index != NULL){
+
+                size_t gap_at_start = index->va_start - legal_base;
+                if(gap_at_start >= req->size){
+                    region->va_start = legal_base;
+                    region->va_end = legal_base + req->size;
+                    goto insert_to_list;
+
+                }
+            
+                while(index != NULL){
+
+                    if(index->next == NULL){
+
+                        //verify if the gap at the end is enough
+                        size_t gap_at_end = legal_limit - index->va_end;
+                        if(gap_at_end < req->size){
+
+                            result.success = false;
+                            result.error_code = FIRSTFIT_NO_SPACE_ERROR;
+                            kfree(region);
+                            return result;
+
+
+                        }
+
+                        region->va_start = index->va_end;
+                        region->va_end = index->va_end + req->size;
+
+                        goto insert_to_list;
+                    }
+
+                    size_t gap = index->next->va_start - index->va_end;
+                    if(gap >= req->size){
+
+                        region->va_end = index->va_end + req->size;
+                        region->va_start = index->va_end;
+                        goto insert_to_list;
+
+
+                    }
+
+                    index = index->next;
+
+                
+
+
+
+                
+
+
+                
+
+                }
+
+            }else{
+            region->va_start = legal_base;
+            region->va_end = legal_base + req->size;    
+            goto insert_to_list;
+
+            }
+
+            result.success = false;
+            result.error_code = FIRSTFIT_NO_SPACE_ERROR;
+            kfree(region);
+            return result;
+
+            
+        }
+
+
     }
 
-
-
-
-
 }
+
+// i would like to say a word from the bottom of my heart to this file,
+// fuck you and fuck this os shit, idfk what got into my mind starting this,
+// i understand now why terry davis lost his mind doing this shit or
+// why a mentally ill person is the only person to think to create amth like this shit
 

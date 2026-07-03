@@ -154,6 +154,7 @@ typedef struct vm_region{
     struct vm_region *next;
     struct vm_region *prev;
     uint64_t region_id;
+    
 
 
 }vm_region;
@@ -196,11 +197,14 @@ typedef struct create_vm_space_out{
 
 enum map_flags_region{
 
-    GROW_DOWN,
-    FIXED,
-    PRIVATE,
-    TOPDOWN,
-    SHARED,
+   
+    NONE   = 0,
+    FIXED  = 1u << 0,
+    TOPDOWN= 1u << 1,
+    PRIVATE= 1u << 2,
+    SHARED = 1u << 3,
+    GROWDOWN = 1u << 4,
+
 
 
 };
@@ -211,6 +215,8 @@ enum map_flags_region{
 enum reserve_region_error{
 
     FIXED_OVERLAP_ERROR,
+    TOPDOWN_ALLOC_ERROR,
+    FIRSTFIT_NO_SPACE_ERROR,
 
 
 };
