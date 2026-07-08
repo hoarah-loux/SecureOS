@@ -3,6 +3,8 @@
 #include "idt.h"
 #include "kernel/interrupts/handlers.h"
 
+extern void page_fault_isr(void);
+
 
 
 
@@ -16,7 +18,7 @@ void idt_init(){
 idtp.limit = sizeof(struct idt_entry) * 256 - 1;
 idtp.base  = (uint64_t)&idt;
 
-set_idt_entry(14, (uintptr_t)page_fault_handler);
+set_idt_entry(14, (uintptr_t)page_fault_isr);
 
 load_idt(&idtp);
 

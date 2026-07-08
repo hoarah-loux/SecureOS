@@ -22,6 +22,7 @@ static uintptr_t adress_toptable;
 static bool is_initialized = false;
 
 
+
 //VERY IMPORTANT:
 // after the transition is done all inputs are physical and outputs are virtual.....
 
@@ -1766,6 +1767,18 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         region->va_start = req->hint_va;
         region->va_end = align_up_u((req->hint_va + req->size), 4096); 
 
+        if(req->hint_va == legal_base){
+            //the guearded start will be the same as start 
+            
+        }else if((req->hint_va + req->size) == legal_limit){
+
+            //the guarded end is going to be the same as the end
+
+
+
+
+        }
+
         vm_region* general_cursor = space->vm_region_list;
         if(general_cursor == NULL){ goto insert_to_list;}
 
@@ -1829,18 +1842,34 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
             vm_region* cursor2 = space->vm_region_list;
 
-            uintptr_t prefered_start_va = align_down_u(legal_limit - req->size, 4096); 
+            uintptr_t prefered_start_va = align_down_u(legal_limit - req->size, 4096);
+            uintptr_t prefered_start_va_g;
+            
+            if(prefered_start_va == legal_base){
+                prefered_start_va_g = prefered_start_va;
+
+            }else{
+
+                prefered_start_va_g = prefered_start_va - 4096;
+
+            }
 
 
             // best case first travesre to end of list and check if last element has a valid gap from its end to limit
             if(cursor2 == NULL){
 
                 region->va_start = prefered_start_va;
+                region->va_start_guarded = prefered_start_va_g;
+
+
                 region->va_end = prefered_start_va + req->size;
+                region->va_end_guarded = region->va_end + 4096;
+
                 goto insert_to_list;
 
 
             }
+
             while(cursor2 != NULL){
                 if(cursor2->next == NULL){
 

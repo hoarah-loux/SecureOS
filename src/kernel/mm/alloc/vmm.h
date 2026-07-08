@@ -6,6 +6,9 @@
 #include "heap.h"
 
 
+
+
+
 //this struct is the output of the walker funciton
 typedef struct walker_out{
 
@@ -144,6 +147,8 @@ typedef struct vm_region{
 
     uintptr_t va_start;
     uintptr_t va_end; //exclusive end
+    uintptr_t va_start_guarded;
+    uintptr_t va_end_guarded;
     size_t size_rounded;
     size_t size_bytes;
     uint64_t permissions;//page tbale permissions
