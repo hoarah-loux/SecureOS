@@ -295,14 +295,14 @@ uint64_t transition(uintptr_t *old_root);
 
 uint64_t vmm_query_page2(uintptr_t virtual_adress);
 
+uintptr_t phys_to_virt(uintptr_t physical_adress);
+
 
 // THIS CREATES A PAGE TABLE WOOOWWW. and returns a pointer to its adress
 uintptr_t* vmm_create_page_table(void);
 
 //this takes a pointer to a page adress and DESTROYS it woooowwww
 void vmm_destroy_page_table(uintptr_t *page_table);
-
-create_vm_space_out create_vm_space(uintptr_t* k_root);
 
 
 //the further functions here are non essentials but make our vmm much more powerful

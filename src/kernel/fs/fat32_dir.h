@@ -18,4 +18,15 @@ int fat32_dir_iterate(const fat32_mount_t *mount, uint32_t start_cluster,
 int fat32_dir_find(const fat32_mount_t *mount, uint32_t start_cluster,
                    const char *name, fat32_dir_entry_view_t *out_entry);
 
+int fat32_dir_update_file_metadata(fat32_mount_t *mount, uint32_t start_cluster,
+                                   const char *name, uint32_t first_cluster,
+                                   uint32_t file_size);
+
+int fat32_dir_create_file_entry(fat32_mount_t *mount, uint32_t start_cluster,
+                                const char *name, uint32_t first_cluster,
+                                uint32_t file_size, uint8_t attributes);
+
+int fat32_dir_delete_entry(fat32_mount_t *mount, uint32_t start_cluster,
+                           const char *name);
+
 #endif /* FAT32_DIR_H */
