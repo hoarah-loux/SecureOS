@@ -814,7 +814,7 @@ static void invlpg(void *va) {
 
 //this fucntion looks very unsafe idfk
 //okay now this is fixed we are corrctly getting vas from the physmap
-static uintptr_t phys_to_virt(uintptr_t physical_adress){
+uintptr_t phys_to_virt(uintptr_t physical_adress){
 
     if(physical_adress == 0){return 0;}
     if (physical_adress >= (uintptr_t)BUDDY_MAX_PHYS){return 0;}

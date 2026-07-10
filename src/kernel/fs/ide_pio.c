@@ -13,6 +13,8 @@ enum {
     IDE_STATUS_DF = 0x20,
     IDE_STATUS_BSY = 0x80,
     IDE_CMD_READ_SECTORS = 0x20,
+    IDE_CMD_WRITE_SECTORS = 0x30,
+    IDE_CMD_CACHE_FLUSH = 0xE7,
     IDE_CMD_IDENTIFY = 0xEC,
 };
 
@@ -35,6 +37,11 @@ static inline uint8_t inb(uint16_t port) {
 
 static inline void insw(uint16_t port, void *buffer, uint32_t word_count) {
     __asm__ volatile("rep insw" : "+D"(buffer), "+c"(word_count) : "d"(port) : "memory");
+}
+
+static inline void outsw(uint16_t port, const void *buffer, uint32_t word_count) {
+    const void *src = buffer;
+    __asm__ volatile("rep outsw" : "+S"(src), "+c"(word_count) : "d"(port) : "memory");
 }
 
 static void ide_io_wait(uint16_t control_base) {
@@ -66,6 +73,21 @@ static int ide_wait_for_drq(ide_pio_backend_t *backend) {
         if ((status & IDE_STATUS_DRQ) != 0) {
             return 0;
         }
+    }
+
+    return -1;
+}
+
+static int ide_wait_for_complete(ide_pio_backend_t *backend) {
+    for (uint32_t attempt = 0; attempt < 1000000u; attempt++) {
+        uint8_t status = inb((uint16_t)(backend->io_base + 7));
+        if ((status & IDE_STATUS_BSY) != 0) {
+            continue;
+        }
+        if ((status & (IDE_STATUS_ERR | IDE_STATUS_DF)) != 0) {
+            return -1;
+        }
+        return 0;
     }
 
     return -1;
@@ -148,8 +170,56 @@ static int ide_pio_read(void *context, uint64_t sector, uint32_t count, uint8_t 
     return 0;
 }
 
+static int ide_pio_write(void *context, uint64_t sector, uint32_t count, const uint8_t *buffer) {
+    ide_pio_backend_t *backend = (ide_pio_backend_t *)context;
+
+    if (!backend || !buffer) {
+        return -1;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (backend->sector_count != 0) {
+        if (sector >= backend->sector_count || count > backend->sector_count - sector) {
+            return -1;
+        }
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t lba = sector + i;
+
+        outb((uint16_t)(backend->io_base + 6), (uint8_t)(backend->device_select | (uint8_t)((lba >> 24) & 0x0Fu)));
+        outb((uint16_t)(backend->io_base + 2), 1);
+        outb((uint16_t)(backend->io_base + 3), (uint8_t)(lba & 0xFFu));
+        outb((uint16_t)(backend->io_base + 4), (uint8_t)((lba >> 8) & 0xFFu));
+        outb((uint16_t)(backend->io_base + 5), (uint8_t)((lba >> 16) & 0xFFu));
+        outb((uint16_t)(backend->io_base + 7), IDE_CMD_WRITE_SECTORS);
+
+        if (ide_wait_for_drq(backend) != 0) {
+            return -1;
+        }
+
+        outsw(backend->io_base, buffer + ((uint64_t)i * IDE_SECTOR_SIZE), IDE_SECTOR_SIZE / 2u);
+        ide_io_wait(backend->control_base);
+
+        if (ide_wait_for_complete(backend) != 0) {
+            return -1;
+        }
+    }
+
+    outb((uint16_t)(backend->io_base + 7), IDE_CMD_CACHE_FLUSH);
+    if (ide_wait_for_complete(backend) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static const block_device_ops_t ide_pio_device_ops = {
     .read = ide_pio_read,
+    .write = ide_pio_write,
 };
 
 static int ide_try_probe(block_device_t *device, const char *name, uint16_t io_base, uint16_t control_base, uint8_t device_select) {
