@@ -305,6 +305,8 @@ uintptr_t* vmm_create_page_table(void);
 void vmm_destroy_page_table(uintptr_t *page_table);
 
 
+create_vm_space_out create_vm_space(uintptr_t *k_root);
+
 //the further functions here are non essentials but make our vmm much more powerful
 
 

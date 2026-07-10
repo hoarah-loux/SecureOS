@@ -78,7 +78,7 @@ enum p_flags{
     PROC_F_REAPED   = 1u << 4,
     PROC_F_ORPHANED = 1u << 5, // parent is gone and process is orphaned
     PROC_F_TRACED   = 1u << 6, // reserved for debugging/trace control
-   
+    PROC_F_USER     = 1u << 7,
 };
 
 
@@ -91,9 +91,29 @@ enum destroy_proc_error{
 
 };
 
+typedef struct  proc_exit_out{
 
-create_proc_out create_proc();
+    bool success;
+    uint64_t error_code;
 
-destroy_proc_out destroy_proc();
+}proc_exit_out;
+
+enum proc_destroy_error{
+    
+    ALREADY_REAPED,
+    INVALID_ARGS,
+    
+
+};
+
+
+
+create_proc_out create_proc(bool k);
+
+destroy_proc_out destroy_proc(proc *p);
+
+proc_exit_out proc_exit(proc *p);
+
+
 
 
