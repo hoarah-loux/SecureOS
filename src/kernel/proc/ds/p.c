@@ -2,7 +2,7 @@
 
 uintptr_t *k_root;
 
-create_proc_out create_proc(){
+create_proc_out create_proc(bool k){
 
     create_proc_out result = {0};
     //allocate a proc struct on the kheap
@@ -30,7 +30,9 @@ create_proc_out create_proc(){
     p->thread_tail = NULL;
 
     p->state = NEW;
-    p->flags = PROC_F_KERNEL;
+    if(k == true){p->flags = PROC_F_KERNEL;}
+    else{p->flags = PROC_F_USER;}
+    
     p->refcount = 1;
     p->lock = 0;
     p->thread_count = 0;
@@ -134,3 +136,29 @@ destroy_proc_out destroy_proc(proc *p){
 }
 
 
+
+proc_exit_out proc_exit(proc *p){
+
+    proc_exit_out result = {0};
+
+    if(p == NULL){return result;}
+
+    if(p->flags & PROC_F_REAPED){
+        result.error_code  = ALREADY_REAPED;
+        result.success = false;
+        return result;
+
+    }
+
+    p->flags = p->flags & PROC_F_EXITING;
+    p->state = TERMINATED;
+    p->flags = p->flags & PROC_F_REAPABLE;
+    p->exit_status = 0;
+    
+
+
+
+
+
+
+}
