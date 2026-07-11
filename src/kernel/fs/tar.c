@@ -1,6 +1,6 @@
-#include "tar.h"
-#include "../../stdlib/string.h"
-#include "../core/serial.h"
+#include <tar.h>
+#include <string.h>
+#include <serial.h>
 
 #define TAR_BLOCK_SIZE 512
 

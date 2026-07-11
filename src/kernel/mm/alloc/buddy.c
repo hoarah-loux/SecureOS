@@ -1,4 +1,4 @@
-#include "buddy.h"
+#include <buddy.h>
 
 
 // list of free blocks

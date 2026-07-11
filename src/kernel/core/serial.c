@@ -1,6 +1,6 @@
 #include <stddef.h>
 #include <stdarg.h>
-#include "core/serial.h"
+#include <serial.h>
 
 enum {
     COM1 = 0x3F8,

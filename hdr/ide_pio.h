@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "fs/block_device.h"
+#include <block_device.h>
 
 int block_device_init_ide_primary_master(block_device_t *device, const char *name);
 

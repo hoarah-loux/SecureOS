@@ -1,4 +1,4 @@
-#include "core/multiboot2_utils.h"
+#include <multiboot2_utils.h>
 
 const struct multiboot_tag *mb2_find_tag(uint32_t mb2_info_ptr, uint32_t want_type) {
     const uint8_t *base = (const uint8_t *)(uintptr_t)mb2_info_ptr;

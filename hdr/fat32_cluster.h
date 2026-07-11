@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "fs/fat.h"
+#include <fat.h>
 
 /* FAT32 cluster helpers:
  * - cluster-to-sector translation

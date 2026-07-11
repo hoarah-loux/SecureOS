@@ -1,6 +1,6 @@
-#include "fs/ide_pio.h"
+#include <ide_pio.h>
 
-#include "core/serial.h"
+#include <serial.h>
 
 enum {
     IDE_PRIMARY_IO_BASE = 0x1F0,

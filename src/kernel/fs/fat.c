@@ -1,4 +1,4 @@
-#include "fs/fat.h"
+#include <fat.h>
 
 static uint32_t read_u32(const uint8_t *buffer, uint32_t offset) {
     return (uint32_t)buffer[offset]

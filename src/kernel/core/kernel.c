@@ -5,15 +5,19 @@
 
 #include <stdint.h>
 
-#include "multiboot2.h"
-#include "core/serial.h"
-#include "core/framebuffer.h"
-#include "core/multiboot2_utils.h"
-#include "fs/block_device.h"
-#include "fs/ide_pio.h"
-#include "fs/fat32_fs.h"
-#include "mm/alloc/pmm.h"
-#include "mm/alloc/vmm.h"
+#include <multiboot2.h>
+#include <serial.h>
+#include <framebuffer.h>
+#include <multiboot2_utils.h>
+#include <idt.h>
+#include <block_device.h>
+#include <ide_pio.h>
+#include <fat32_fs.h>
+#include <pic.h>
+#include <keyboard.h>
+#include <pmm.h>
+#include <vmm.h>
+#include <shell.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -31,9 +35,8 @@ static uintptr_t read_cr3_root_phys(void) {
     return cr3 & ~((uintptr_t)0xFFF);
 }
 
-static int serial_print_dir_entry(const fat32_dir_entry_view_t *entry, void *context) {
+static int serial_print_dir_entry(const fat32_dir_entry_view_t *entry, void* context) {
     (void)context;
-
     serial_write_string("[FAT32] dir: ");
     serial_write_string(entry->name);
     serial_write_string(" cluster=0x");
@@ -152,6 +155,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     serial_init();
     serial_write_string("[SecureOS] kmain reached\r\n");
+    idt_init();
+    pic_init_for_keyboard();
+    __asm__ volatile("sti" ::: "memory");
+    serial_write_string("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active\r\n");
     serial_write_string("[SecureOS] kernel mb2_magic=0x");
     serial_write_hex32(mb2_magic);
     serial_write_string("\r\n");
@@ -424,7 +431,33 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         vga[i * 2 + 1] = 0x0F;
     }
 
+    shell_ctx_t shell_ctx = {0};
+    shell_init(&shell_ctx, &mount);
+    serial_write_string("[SSH] SecureShell initialized\r\n");
+    serial_write_string("[KBD] debug keypress loop active\r\n");
+
     while (1) {
+        char* line_buffer = (char*)0x800000;
+        int line_len = keyboard_getline(line_buffer, 256);
+        if (line_len > 0) {
+            line_buffer[line_len] = '\0';
+            serial_write_string("[SSH] input: ");
+            serial_write_string(line_buffer);
+            serial_write_string("\r\n");
+
+            char* argv[16] = {0};
+            size_t argc = shell_split_args(line_buffer, argv, 16);
+            shell_ctx.argc = argc;
+            shell_ctx.argv = argv;
+
+            int shell_result = shell_eval(&shell_ctx);
+            if (shell_result == 0) {
+                serial_write_string("[SSH] exiting shell\r\n");
+                break;
+            }
+
+        }
+
         __asm__ volatile("hlt");
     }
 }

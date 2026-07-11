@@ -1,4 +1,4 @@
-#include "p.h"
+#include <p.h>
 
 uintptr_t *k_root;
 

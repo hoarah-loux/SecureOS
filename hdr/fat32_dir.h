@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "fs/fat.h"
+#include <fat.h>
 
 /* FAT32 directory traversal helpers:
  * - read a directory cluster chain
