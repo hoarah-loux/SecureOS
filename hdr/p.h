@@ -98,7 +98,7 @@ typedef struct  proc_exit_out{
 
 }proc_exit_out;
 
-enum proc_destroy_error{
+enum proc_exit_error{
     
     ALREADY_REAPED,
     INVALID_ARGS,
