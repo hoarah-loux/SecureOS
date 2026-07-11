@@ -10,11 +10,11 @@
 size_t hexdump(const void *data, size_t size) {
     const uint8_t *bytes = (const uint8_t *)data;
     for (size_t offset = 0; offset < size; offset += 16) {
-        serial_printf("%08x  ", (uint32_t)offset);
+        printk("%08x  ", (uint32_t)offset);
 
         for (size_t i = 0; i < 16; i++) {
             if (offset + i < size) {
-                serial_printf("%02x ", bytes[offset + i]);
+                printk("%02x ", bytes[offset + i]);
             } else {
                 serial_write_string("   ");
             }

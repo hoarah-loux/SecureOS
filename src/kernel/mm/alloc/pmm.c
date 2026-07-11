@@ -303,7 +303,7 @@ void pmm_debug_bitmap_window(size_t start_byte, size_t byte_count) {
     }
 
     if (start_byte >= pmm_managed_bitmap_size) {
-        serial_printf("[PMM] bitmap debug: start 0x%zx out of range (size=0x%zx)\r\n", start_byte, pmm_managed_bitmap_size);
+        printk("[PMM] bitmap debug: start 0x%zx out of range (size=0x%zx)\r\n", start_byte, pmm_managed_bitmap_size);
         return;
     }
 
@@ -312,7 +312,7 @@ void pmm_debug_bitmap_window(size_t start_byte, size_t byte_count) {
         end_byte = pmm_managed_bitmap_size;
     }
 
-    serial_printf("[PMM] bitmap window: bytes [0x%zx..0x%zx)\r\n", start_byte, end_byte);
+    printk("[PMM] bitmap window: bytes [0x%zx..0x%zx)\r\n", start_byte, end_byte);
 
     for (size_t i = start_byte; i < end_byte; i++) {
         uint8_t byte = bitmap[i];
@@ -329,7 +329,7 @@ void pmm_debug_bitmap_window(size_t start_byte, size_t byte_count) {
         unsigned long long first_phys = (unsigned long long)((uintptr_t)first_frame * frame_size);
         unsigned long long last_phys = (unsigned long long)((uintptr_t)last_frame * frame_size);
 
-        serial_printf(
+        printk(
             "[PMM] bm[0x%04zx]=0x%02x frames[%zu..%zu] phys[0x%llx..0x%llx]\r\n",
             i,
             (unsigned)byte,

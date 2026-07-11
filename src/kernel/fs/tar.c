@@ -21,9 +21,9 @@ static int is_ustar_header(const uint8_t *p) {
 static void dump_bytes(const uint8_t *p, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         if ((i % 16) == 0) {
-            serial_printf("\n%04X: ", i);
+            printk("\n%04X: ", i);
         }
-        serial_printf("%02X ", p[i]);
+        printk("%02X ", p[i]);
     }
     serial_write_string("\r\n");
 }
@@ -63,12 +63,12 @@ uint32_t parse_headers(uintptr_t tar_start) {
         tar_header_t *header = (tar_header_t *)block;
 
         if (is_zero_block(block)) {
-            serial_printf("[TAR] end of archive at offset %u\n", offset);
+            printk("[TAR] end of archive at offset %u\n", offset);
             break;
         }
 
         if (!is_ustar_header(block)) {
-            serial_printf("[TAR] invalid header at offset %u (missing ustar magic)\n", offset);
+            printk("[TAR] invalid header at offset %u (missing ustar magic)\n", offset);
             dump_bytes(block, 64);
             break;
         }
@@ -76,22 +76,22 @@ uint32_t parse_headers(uintptr_t tar_start) {
         uint32_t file_size = o2d(header->size);
         uint32_t total_size = ((file_size + 511) / 512 + 1) * 512; // file size rounded up to next 512 byte block, plus header block
 
-        serial_printf("[TAR] File: %s\n", header->filename);
-        serial_printf("[TAR] Size: %u bytes\n", file_size);
-        serial_printf("[TAR] Mode: %s\n", header->mode);
-        serial_printf("[TAR] UID: %s\n", header->uid);
-        serial_printf("[TAR] GID: %s\n", header->gid);
-        serial_printf("[TAR] MTime: %s\n", header->mtime);
-        serial_printf("[TAR] ChkSum: %s\n", header->chksum);
-        serial_printf("[TAR] TypeFlag: %c\n", header->typeflag);
-        serial_printf("[TAR] Offset: %u bytes\n", offset);
-        serial_printf("[TAR] Next header starts at: 0x%08X\n", (uint32_t)(tar_start + offset + total_size));
+        printk("[TAR] File: %s\n", header->filename);
+        printk("[TAR] Size: %u bytes\n", file_size);
+        printk("[TAR] Mode: %s\n", header->mode);
+        printk("[TAR] UID: %s\n", header->uid);
+        printk("[TAR] GID: %s\n", header->gid);
+        printk("[TAR] MTime: %s\n", header->mtime);
+        printk("[TAR] ChkSum: %s\n", header->chksum);
+        printk("[TAR] TypeFlag: %c\n", header->typeflag);
+        printk("[TAR] Offset: %u bytes\n", offset);
+        printk("[TAR] Next header starts at: 0x%08X\n", (uint32_t)(tar_start + offset + total_size));
 
         offset += total_size;
         file_count++;
     }
 
-    serial_printf("[TAR] files parsed: %u\n", file_count);
+    printk("[TAR] files parsed: %u\n", file_count);
     return offset;
 }
 
@@ -104,12 +104,12 @@ int tar_print_file(uintptr_t tar_start, const char *name) {
         tar_header_t *header = (tar_header_t *)block;
 
         if (is_zero_block(block)) {
-            serial_printf("[TAR] file not found: %s\n", name);
+            printk("[TAR] file not found: %s\n", name);
             return 0;
         }
 
         if (!is_ustar_header(block)) {
-            serial_printf("[TAR] invalid header at offset %u (missing ustar magic)\n", offset);
+            printk("[TAR] invalid header at offset %u (missing ustar magic)\n", offset);
             dump_bytes(block, 64);
             return 0;
         }
@@ -119,7 +119,7 @@ int tar_print_file(uintptr_t tar_start, const char *name) {
 
         if (!strcmp(header->filename, name)) {
             const uint8_t *data = block + TAR_BLOCK_SIZE;
-            serial_printf("[TAR] reading %s (%u bytes)\n", header->filename, file_size);
+            printk("[TAR] reading %s (%u bytes)\n", header->filename, file_size);
             dump_text_bytes(data, file_size);
             return 1;
         }
