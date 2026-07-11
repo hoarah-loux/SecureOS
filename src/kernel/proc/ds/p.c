@@ -150,11 +150,38 @@ proc_exit_out proc_exit(proc *p){
 
     }
 
-    p->flags = p->flags & PROC_F_EXITING;
+    p->flags |= PROC_F_EXITING;
     p->state = TERMINATED;
-    p->flags = p->flags & PROC_F_REAPABLE;
+    p->flags |= PROC_F_REAPABLE;
     p->exit_status = 0;
     
+    proc *child_cursor = p->child_head;
+
+    while(child_cursor != NULL){
+
+        child_cursor->parent = NULL;
+        child_cursor->flags |= PROC_F_ORPHANED;
+        child_cursor = child_cursor->sibling_next;
+         
+    }
+
+    if(p->parent != NULL){
+
+        if(p->sibling_prev != NULL){
+
+            p->sibling_prev->sibling_next = p->sibling_next;
+        }
+    
+        if(p->sibling_next != NULL){
+
+            p->sibling_next->sibling_prev = p->sibling_prev;
+        }
+
+    }
+
+    
+
+
 
 
 
