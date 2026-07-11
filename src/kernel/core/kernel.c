@@ -37,15 +37,15 @@ static uintptr_t read_cr3_root_phys(void) {
 
 static int serial_print_dir_entry(const fat32_dir_entry_view_t *entry, void* context) {
     (void)context;
-    serial_write_string("[FAT32] dir: ");
-    serial_write_string(entry->name);
-    serial_write_string(" cluster=0x");
+    printk("[FAT32] dir: ");
+    printk(entry->name);
+    printk(" cluster=0x");
     serial_write_hex32(entry->first_cluster);
-    serial_write_string(" size=0x");
+    printk(" size=0x");
     serial_write_hex32(entry->file_size);
-    serial_write_string(" attr=0x");
+    printk(" attr=0x");
     serial_write_hex32(entry->attributes);
-    serial_write_string("\r\n");
+    printk("\r\n");
     return 0;
 }
 
@@ -81,25 +81,25 @@ static int buffer_equals(const uint8_t *buffer, uint32_t buffer_size, const uint
 }
 
 static void fat32_print_test_result(const char *name, int passed) {
-    serial_write_string("[FAT32] test ");
-    serial_write_string(name);
-    serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
+    printk("[FAT32] test ");
+    printk(name);
+    printk(passed ? ": PASS\r\n" : ": FAIL\r\n");
 }
 
 static void vmm_print_test_result(const char *name, int passed) {
-    serial_write_string("[VMM] test ");
-    serial_write_string(name);
-    serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
+    printk("[VMM] test ");
+    printk(name);
+    printk(passed ? ": PASS\r\n" : ": FAIL\r\n");
 }
 
 static void pmm_print_test_result(const char *name, int passed) {
-    serial_write_string("[PMM] test ");
-    serial_write_string(name);
-    serial_write_string(passed ? ": PASS\r\n" : ": FAIL\r\n");
+    printk("[PMM] test ");
+    printk(name);
+    printk(passed ? ": PASS\r\n" : ": FAIL\r\n");
 }
 
 static void run_bitmap_pmm_tests(void) {
-    serial_write_string("[PMM] running bitmap allocator tests (_pmm_*)\r\n");
+    printk("[PMM] running bitmap allocator tests (_pmm_*)\r\n");
     pmm_debug_bitmap_window(0x10, 4);
 
     uintptr_t frame_a = _pmm_alloc_frame();
@@ -110,7 +110,7 @@ static void run_bitmap_pmm_tests(void) {
     pmm_print_test_result("bitmap alloc unique", frame_a != 0 && frame_b != 0 && frame_a != frame_b);
 
     if (frame_a == 0 && frame_b != 0) {
-        serial_write_string("[PMM] warning: first alloc returned 0 but second succeeded; frame 0 handling is likely broken\r\n");
+        printk("[PMM] warning: first alloc returned 0 but second succeeded; frame 0 handling is likely broken\r\n");
     }
 
     if (frame_a != 0) {
@@ -154,17 +154,17 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     int fb_snapshot_valid = 0;
 
     serial_init();
-    serial_write_string("[SecureOS] kmain reached\r\n");
+    printk("[SecureOS] kmain reached\r\n");
     idt_init();
     pic_init_for_keyboard();
     __asm__ volatile("sti" ::: "memory");
-    serial_write_string("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active\r\n");
-    serial_write_string("[SecureOS] kernel mb2_magic=0x");
+    printk("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active\r\n");
+    printk("[SecureOS] kernel mb2_magic=0x");
     serial_write_hex32(mb2_magic);
-    serial_write_string("\r\n");
-    serial_write_string("[SecureOS] kernel mb2_info_ptr=0x");
+    printk("\r\n");
+    printk("[SecureOS] kernel mb2_info_ptr=0x");
     serial_write_hex32(mb2_info_ptr);
-    serial_write_string("\r\n");
+    printk("\r\n");
 
     {
         const struct multiboot_tag_framebuffer *fb_pre =
@@ -173,11 +173,11 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             fb_snapshot = *fb_pre;
             fb_snapshot_valid = 1;
         } else if (fb_pre) {
-            serial_write_string("[SecureOS] framebuffer tag too small\r\n");
+            printk("[SecureOS] framebuffer tag too small\r\n");
         }
     }
 
-    serial_write_string("[VMM] initializing PMM/VMM test path\r\n");
+    printk("[VMM] initializing PMM/VMM test path\r\n");
     pmm_init(mb2_info_ptr, (uintptr_t)&_kernel_start, (uintptr_t)&_kernel_end);
     run_bitmap_pmm_tests();
 
@@ -194,30 +194,30 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     uintptr_t before_transition_pa = (uintptr_t)vmm_query_page(kmain_va);
 
-    serial_write_string("[VMM] kmain VA=0x");
+    printk("[VMM] kmain VA=0x");
     serial_write_hex64(kmain_va);
-    serial_write_string(" pre-transition PA=0x");
+    printk(" pre-transition PA=0x");
     serial_write_hex64(before_transition_pa);
-    serial_write_string("\r\n");
+    printk("\r\n");
     vmm_print_test_result("query kmain via vmm_query_page", before_transition_pa != 0);
 
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
 
-    serial_write_string("[VMM] kmain higher-half VA=0x");
+    printk("[VMM] kmain higher-half VA=0x");
     serial_write_hex64(kmain_higher_half_va);
-    serial_write_string("\r\n");
+    printk("\r\n");
 
     uintptr_t after_transition_high_pa = 0;
     if (kmain_higher_half_va != 0) {
         after_transition_high_pa = vmm_query_page2(kmain_higher_half_va);
     }
 
-    serial_write_string("[VMM] kmain higher-half VA=0x");
+    printk("[VMM] kmain higher-half VA=0x");
     serial_write_hex64(kmain_higher_half_va);
-    serial_write_string(" post-transition PA(query2, high)=0x");
+    printk(" post-transition PA(query2, high)=0x");
     serial_write_hex64(after_transition_high_pa);
-    serial_write_string("\r\n");
+    printk("\r\n");
     vmm_print_test_result("query kmain higher-half via vmm_query_page2", after_transition_high_pa != 0);
 
     if (before_transition_pa != 0 && after_transition_high_pa != 0) {
@@ -235,43 +235,43 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             fb_runtime.common.framebuffer_addr = (uint64_t)fb_va;
         }
 
-        serial_write_string("[SecureOS] framebuffer addr=0x");
+        printk("[SecureOS] framebuffer addr=0x");
         serial_write_hex64(fb_pa);
-        serial_write_string(" phys_to_virt=0x");
+        printk(" phys_to_virt=0x");
         serial_write_hex64(fb_va);
-        serial_write_string(" mapped_pa(va)=0x");
+        printk(" mapped_pa(va)=0x");
         serial_write_hex64(fb_pa_after_transition);
-        serial_write_string("\r\n");
+        printk("\r\n");
 
         if (fb_va != 0 && fb_pa_after_transition != 0) {
             draw_boot_banner(&fb_runtime);
         } else {
-            serial_write_string("[SecureOS] framebuffer unmapped after transition; skip draw\r\n");
+            printk("[SecureOS] framebuffer unmapped after transition; skip draw\r\n");
         }
     } else {
-        serial_write_string("[SecureOS] framebuffer tag missing (type 8)\r\n");
+        printk("[SecureOS] framebuffer tag missing (type 8)\r\n");
     }
 
     block_device_t fat32_disk = {0};
     fat32_mount_t mount = {0};
 
-    serial_write_string("[FAT32] initializing IDE-backed disk\r\n");
+    printk("[FAT32] initializing IDE-backed disk\r\n");
     if (block_device_init_ide_primary_master(&fat32_disk, "fat32-disk") != 0) {
-        serial_write_string("[FAT32] disk init failed\r\n");
+        printk("[FAT32] disk init failed\r\n");
     } else if (fat32_mount(&mount, &fat32_disk, 0) != 0) {
-        serial_write_string("[FAT32] mount failed\r\n");
+        printk("[FAT32] mount failed\r\n");
     } else {
-        serial_write_string("[FAT32] disk ready: sectors=0x");
+        printk("[FAT32] disk ready: sectors=0x");
         serial_write_hex64(fat32_disk.sector_count);
-        serial_write_string(" sector_size=0x");
+        printk(" sector_size=0x");
         serial_write_hex32(fat32_disk.sector_size);
-        serial_write_string("\r\n");
+        printk("\r\n");
 
         fat32_dir_entry_view_t root_entry = {0};
         int root_resolve = fat32_path_resolve(&mount, "/", &root_entry);
         fat32_print_test_result("resolve /", root_resolve == 0 && root_entry.first_cluster == mount.root_cluster);
 
-        serial_write_string("[FAT32] listing /\r\n");
+        printk("[FAT32] listing /\r\n");
         fat32_print_test_result("ls /", fat32_dir_list(&mount, "/", serial_print_dir_entry, 0) == 0);
 
         fat32_dir_entry_view_t readme_entry = {0};
@@ -297,10 +297,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             fat32_print_test_result("read /README.TXT", read_result == 0 && bytes_read > 0);
 
             if (read_result == 0 && bytes_read > 0) {
-                serial_write_string("[FAT32] /README.TXT bytes: ");
+                printk("[FAT32] /README.TXT bytes: ");
                 serial_write_hex32(bytes_read);
-                serial_write_string("\r\n");
-                serial_write_string("[FAT32] /README.TXT text: ");
+                printk("\r\n");
+                printk("[FAT32] /README.TXT text: ");
                 for (uint32_t i = 0; i < bytes_read; i++) {
                     char c = (char)readme_buffer[i];
                     if (c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c <= 0x7E)) {
@@ -309,7 +309,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
                         serial_write_char('.');
                     }
                 }
-                serial_write_string("\r\n");
+                printk("\r\n");
                 fat32_print_test_result("readme prefix", buffer_starts_with(readme_buffer, bytes_read, "This is SecureOS FAT32 storage."));
             }
 
@@ -321,7 +321,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         fat32_print_test_result("resolve /boot", boot_resolve == 0 && (boot_dir_entry.attributes & FAT_ATTR_DIRECTORY));
 
         if (boot_resolve == 0) {
-            serial_write_string("[FAT32] listing /boot\r\n");
+            printk("[FAT32] listing /boot\r\n");
             fat32_print_test_result("ls /boot", fat32_dir_list(&mount, "/boot", serial_print_dir_entry, 0) == 0);
 
             fat32_file_t pwned_file = {0};
@@ -342,7 +342,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             fat32_print_test_result("read /boot/PWNED.TXT", pwned_read == 0 && pwned_bytes > 0);
 
             if (pwned_read == 0 && pwned_bytes > 0) {
-                serial_write_string("[FAT32] /boot/PWNED.TXT text: ");
+                printk("[FAT32] /boot/PWNED.TXT text: ");
                 for (uint32_t i = 0; i < pwned_bytes; i++) {
                     char c = (char)pwned_buffer[i];
                     if (c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c <= 0x7E)) {
@@ -351,7 +351,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
                         serial_write_char('.');
                     }
                 }
-                serial_write_string("\r\n");
+                printk("\r\n");
                 fat32_print_test_result("pwned prefix", buffer_starts_with(pwned_buffer, pwned_bytes, "IT WORKS"));
             }
 
@@ -433,17 +433,17 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     shell_ctx_t shell_ctx = {0};
     shell_init(&shell_ctx, &mount);
-    serial_write_string("[SSH] SecureShell initialized\r\n");
-    serial_write_string("[KBD] debug keypress loop active\r\n");
+    printk("[SSH] SecureShell initialized\r\n");
+    printk("[KBD] debug keypress loop active\r\n");
 
     while (1) {
         char* line_buffer = (char*)0x800000;
         int line_len = keyboard_getline(line_buffer, 256);
         if (line_len > 0) {
             line_buffer[line_len] = '\0';
-            serial_write_string("[SSH] input: ");
-            serial_write_string(line_buffer);
-            serial_write_string("\r\n");
+            printk("[SSH] input: ");
+            printk(line_buffer);
+            printk("\r\n");
 
             char* argv[16] = {0};
             size_t argc = shell_split_args(line_buffer, argv, 16);
@@ -452,7 +452,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
             int shell_result = shell_eval(&shell_ctx);
             if (shell_result == 0) {
-                serial_write_string("[SSH] exiting shell\r\n");
+                printk("[SSH] exiting shell\r\n");
                 break;
             }
 

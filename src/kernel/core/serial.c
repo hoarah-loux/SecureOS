@@ -111,7 +111,7 @@ static int is_digit(char c) {
     return c >= '0' && c <= '9';
 }
 
-int serial_printf(const char *fmt, ...) {
+int printk(const char *fmt, ...) {
     enum {
         LEN_NONE,
         LEN_HH,
