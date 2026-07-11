@@ -25,7 +25,6 @@ create_proc_out create_proc(bool k){
 
     p->adress_space = space_md.space;
     p->main_thread = NULL;
-    p->thread_list = NULL;
     p->thread_head = NULL;
     p->thread_tail = NULL;
 
@@ -40,7 +39,6 @@ create_proc_out create_proc(bool k){
 
     p->child_head = NULL;
     p->child_tail = NULL;
-    p->child_list = NULL;
     p->sibling_prev = NULL;
     p->sibling_next = NULL;
     p->parent = NULL;
@@ -58,7 +56,7 @@ destroy_proc_out destroy_proc(proc *p){
 
     destroy_proc_out result = {0};
     if(p == NULL)return result;
-    if(p->thread_list != NULL){
+    if(p->thread_head != NULL){
 
         result.error_code = THREAD_ACTIVE;
         result.success = false;
@@ -83,7 +81,7 @@ destroy_proc_out destroy_proc(proc *p){
         //destroy space
     }
 
-    if(p->child_list != NULL){
+    if(p->child_head != NULL){
 
         result.error_code = PROC_STILL_HAS_CHILD;
         result.success = false;
@@ -98,35 +96,14 @@ destroy_proc_out destroy_proc(proc *p){
     p->next->prev = p->prev;
     }
 
-    if(p->sibling_prev != NULL){
-    p->sibling_prev->sibling_next = p->sibling_next;
-    }
     
-    if(p->sibling_next != NULL){
-    p->sibling_next->sibling_prev = p->sibling_prev;
-    }
-
-
-
-
 
     p->child_head = NULL;
-    p->child_list = NULL;
     p->child_tail = NULL;
     
 
 
     
-    
-
-
-
-
-
-
-
-
-
     kfree(p);
     result.error_code = 0;
     result.success = true;
@@ -136,7 +113,7 @@ destroy_proc_out destroy_proc(proc *p){
 }
 
 
-
+// will handle children
 proc_exit_out proc_exit(proc *p){
 
     proc_exit_out result = {0};
@@ -155,16 +132,54 @@ proc_exit_out proc_exit(proc *p){
     p->flags |= PROC_F_REAPABLE;
     p->exit_status = 0;
     
+    //clear childrens list
+
     proc *child_cursor = p->child_head;
 
     while(child_cursor != NULL){
 
+        proc *next_child = child_cursor->sibling_next;
         child_cursor->parent = NULL;
+        child_cursor->sibling_prev = NULL;
+        child_cursor->sibling_next = NULL;
         child_cursor->flags |= PROC_F_ORPHANED;
-        child_cursor = child_cursor->sibling_next;
+        child_cursor = next_child;
          
     }
 
+    p->child_head = NULL;
+    
+    p->child_tail = NULL;
+
+    result.success = true;
+    result.error_code = 0;
+    return result;
+    
+  
+
+
+}
+
+
+// will handle parents children list and p's own sibling list
+reap_proc_out reap_proc(proc *p){
+
+
+    reap_proc_out result = {0};
+
+    if(p == NULL){return result;}
+
+    if(p->flags & PROC_F_REAPED){return result;}
+    if(!(p->flags & PROC_F_REAPABLE)){return result;}
+    if(p->state != TERMINATED){return result;}
+
+
+
+
+    if(p->parent == NULL){goto reap;} // if you know what i mean
+
+
+    // rewire siblings list
     if(p->parent != NULL){
 
         if(p->sibling_prev != NULL){
@@ -177,12 +192,42 @@ proc_exit_out proc_exit(proc *p){
             p->sibling_next->sibling_prev = p->sibling_prev;
         }
 
+
+        // change parent anchoir in head an tail casees
+
+        if(p->sibling_prev == NULL){
+            p->parent->child_head = p->sibling_next;
+            
+        }
+
+        
+
+        if(p->sibling_next == NULL){
+
+            p->parent->child_tail = p->sibling_prev;
+
+
+
+        }
+
+        reap:
+
+        p->parent = NULL;
+        p->sibling_next = NULL;
+        p->sibling_prev = NULL;
+        p->flags &= ~PROC_F_REAPABLE;
+        p->flags |= PROC_F_REAPED;
+
+        result.success = true;
+        result.error_code = 0;
+        return result;
+
+        
+
     }
 
     
-
-
-
+    
 
 
 

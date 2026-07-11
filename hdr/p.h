@@ -14,7 +14,7 @@ typedef struct proc{
     struct proc *prev;           // previous process in global/all-process list
     vm_space* adress_space;      // owning virtual address space of this process
     struct thread *main_thread;  // primary thread (entry thread) of the process
-    struct thread *thread_list;  // legacy alias/head pointer for thread linkage
+    
     struct thread *thread_head;  // first thread in this process thread list
     struct thread *thread_tail;  // last thread in this process thread list
     uint64_t state;              // lifecycle state (enum p_states)
@@ -29,9 +29,11 @@ typedef struct proc{
     //this is for later shit
     struct proc *child_head;     // first child process in child list
     struct proc *child_tail;     // last child process in child list
-    struct proc *child_list;     // legacy alias/head pointer for children
-    struct proc *sibling_prev;   // previous sibling in parent's child list
-    struct proc *sibling_next;   // next sibling in parent's child list
+        
+     
+    
+    struct proc *sibling_next;    // previous sibling in parent's child list 
+    struct proc *sibling_prev;     // next sibling in parent's child list
     struct proc *parent;         // direct parent process pointer
 
 
@@ -106,6 +108,19 @@ enum proc_exit_error{
 
 };
 
+typedef struct reap_proc_out{
+
+    bool success;
+    uint64_t error_code;
+
+}reap_proc_out;
+
+enum reap_proc_error{
+
+    wesee,
+
+};
+
 
 
 create_proc_out create_proc(bool k);
@@ -113,6 +128,10 @@ create_proc_out create_proc(bool k);
 destroy_proc_out destroy_proc(proc *p);
 
 proc_exit_out proc_exit(proc *p);
+
+reap_proc_out reap_proc (proc*);
+
+
 
 
 
