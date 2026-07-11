@@ -1,7 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-#include "mm/alloc/vmm.h"
+#include <vmm.h>
 
 struct thread;
 

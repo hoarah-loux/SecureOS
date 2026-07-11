@@ -1,7 +1,7 @@
-#include "pmm.h"
-#include "buddy.h"
-#include "core/serial.h"
-#include "stdlib/hexdump.h"
+#include <pmm.h>
+#include <buddy.h>
+#include <serial.h>
+#include <hexdump.h>
 
 #include <string.h>
 

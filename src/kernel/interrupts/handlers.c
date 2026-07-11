@@ -1,5 +1,13 @@
-#include "mm/alloc/vmm.h"
-#include "mm/alloc/pmm.h"
+#include <vmm.h>
+#include <pmm.h>
+#include <pic.h>
+#include <keyboard.h>
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
 
 vm_space active_space;
 
@@ -58,12 +66,13 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
 
 
     }
+}
 
+void keyboard_interrupt_handler(int irq, void *data) {
+    (void)irq;
+    (void)data;
 
-    
-
-
-
-
-    
+    uint8_t scancode = inb(0x60);
+    keyboard_handle_scancode(scancode);
+    pic_send_eoi(1);
 }

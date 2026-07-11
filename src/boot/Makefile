@@ -47,6 +47,8 @@ BUILD_DIR = $(BOOT_DIR)/build
 # - We copy the kernel and grub.cfg here before calling grub-mkrescue.
 ISO_DIR = $(BUILD_DIR)/isodir
 
+INCLUDE_DIR = $(PROJECT_ROOT)/hdr
+
 # ---------------- Toolchain programs ----------------
 
 # Assembler (ASM) program.
@@ -104,7 +106,7 @@ ASMFLAGS = -f elf64
 #     Enable common and extra warnings.
 CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone -mcmodel=kernel \
 		 -mno-mmx -mno-sse -mno-sse2 -fno-pic -fno-pie -Wall -Wextra \
-		 -I$(KERNEL_DIR) -I$(SRC_DIR)
+		 -I$(INCLUDE_DIR)
 
 # Linker flags.
 # - `-T <script>`:
@@ -117,7 +119,9 @@ LDFLAGS = -T $(BOOT_DIR)/grub/linker.ld -nostdlib
 
 # Assembly entry stub source.
 # - This contains the Multiboot2 header and the mode/paging setup.
-ASM_SRC = $(BOOT_DIR)/grub/entry64_mb2.asm
+ASM_SOURCES = \
+	$(BOOT_DIR)/grub/entry64_mb2.asm \
+	$(SRC_DIR)/arch/x86_64/interrupts.asm
 
 # Kernel C sources.
 # - Add files here as you split the kernel into modules.
@@ -127,6 +131,10 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
 	$(KERNEL_DIR)/core/serial.c \
+	$(KERNEL_DIR)/core/shell.c \
+	$(KERNEL_DIR)/interrupts/handlers.c \
+	$(KERNEL_DIR)/interrupts/keyboard.c \
+	$(KERNEL_DIR)/interrupts/pic.c \
 	$(KERNEL_DIR)/mm/alloc/pmm.c \
 	$(KERNEL_DIR)/mm/alloc/buddy.c \
 	$(KERNEL_DIR)/mm/alloc/slab.c \
@@ -138,7 +146,10 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/fs/fat32_dir.c \
 	$(KERNEL_DIR)/fs/fat32_fs.c \
 	$(KERNEL_DIR)/fs/block_device.c \
-	$(KERNEL_DIR)/fs/tar.c
+	$(KERNEL_DIR)/fs/tar.c \
+
+ARCH_C_SRCS = \
+	$(SRC_DIR)/arch/x86_64/idt.c
 
 # Linker script.
 LINKER_SCRIPT = $(BOOT_DIR)/grub/linker.ld
@@ -149,11 +160,15 @@ GRUB_CFG = $(BOOT_DIR)/grub/grub.cfg
 # ---------------- Object files (intermediate build artifacts) ----------------
 
 # Object file produced by assembling the entry stub.
-ASM_OBJ = $(BUILD_DIR)/entry64_mb2.o
+ASM_OBJS = \
+	$(BUILD_DIR)/entry64_mb2.o \
+	$(BUILD_DIR)/arch/x86_64/interrupts.o
 
 # Object files produced by compiling kernel C sources.
 # - We mirror the src/kernel directory structure under the build directory.
 KERNEL_OBJS = $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/kernel/%.o,$(KERNEL_SRCS))
+
+ARCH_C_OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 
 # ---------------- Outputs ----------------
 
@@ -211,9 +226,14 @@ $(BUILD_DIR):
 # - `| $(BUILD_DIR)` is an *order-only* dependency: ensure the build directory
 #   exists before running the recipe, but do not rebuild just because the
 #   directory timestamp changes.
-$(ASM_OBJ): $(ASM_SRC) | $(BUILD_DIR)
+
+$(BUILD_DIR)/entry64_mb2.o: $(BOOT_DIR)/grub/entry64_mb2.asm | $(BUILD_DIR)
 	# Run NASM with the chosen format flags and write the .o output.
-	$(ASM) $(ASMFLAGS) $(ASM_SRC) -o $(ASM_OBJ)
+	$(ASM) $(ASMFLAGS) $< -o $@
+
+$(BUILD_DIR)/arch/x86_64/%.o: $(SRC_DIR)/arch/x86_64/%.asm | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(ASM) $(ASMFLAGS) $< -o $@
 
 # Compile the kernel C source into an object file.
 # - `-c` means “compile only”, producing a .o without linking.
@@ -221,11 +241,15 @@ $(BUILD_DIR)/kernel/%.o: $(KERNEL_DIR)/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Link the final kernel ELF.
 # - We invoke the linker directly (ld) so we fully control the link.
 # - The linker script defines the memory layout, segments, and symbols.
-$(KERNEL_ELF): $(ASM_OBJ) $(KERNEL_OBJS) $(LINKER_SCRIPT)
-	$(LD) $(LDFLAGS) $(ASM_OBJ) $(KERNEL_OBJS) -o $(KERNEL_ELF)
+$(KERNEL_ELF): $(ASM_OBJS) $(KERNEL_OBJS) $(ARCH_C_OBJS) $(LINKER_SCRIPT)
+	$(LD) $(LDFLAGS) $(ASM_OBJS) $(KERNEL_OBJS) $(ARCH_C_OBJS) -o $(KERNEL_ELF)
 
 # Create the bootable ISO image.
 # - grub-mkrescue collects GRUB modules and our staged tree and emits an ISO.

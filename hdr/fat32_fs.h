@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "fs/fat.h"
+#include <fat.h>
 
 typedef struct {
     fat32_mount_t *mount;

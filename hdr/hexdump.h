@@ -2,7 +2,7 @@
 #include <stddef.h>
 
 // include serial to print
-#include "core/serial.h"
+#include <serial.h>
 
 #ifndef HEXDUMP_H
 #define HEXDUMP_H

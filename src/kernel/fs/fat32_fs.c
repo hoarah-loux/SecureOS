@@ -1,7 +1,7 @@
-#include "fs/fat32_fs.h"
+#include <fat32_fs.h>
 
-#include "fs/fat32_cluster.h"
-#include "fs/fat32_dir.h"
+#include <fat32_cluster.h>
+#include <fat32_dir.h>
 
 typedef struct {
     fat32_dir_visit_fn visit;

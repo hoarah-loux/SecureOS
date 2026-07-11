@@ -1,4 +1,4 @@
-#include "core/framebuffer.h"
+#include <framebuffer.h>
 
 static void fb_putpixel(const struct multiboot_tag_framebuffer *fb, uint32_t x, uint32_t y, uint32_t rgb) {
     if (!fb || x >= fb->common.framebuffer_width || y >= fb->common.framebuffer_height) {

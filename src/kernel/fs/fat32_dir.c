@@ -1,5 +1,5 @@
-#include "fs/fat32_dir.h"
-#include "fs/fat32_cluster.h"
+#include <fat32_dir.h>
+#include <fat32_cluster.h>
 
 static uint8_t fat32_to_upper_ascii(uint8_t c) {
     if (c >= 'a' && c <= 'z') {

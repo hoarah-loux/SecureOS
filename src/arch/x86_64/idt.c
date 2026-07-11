@@ -1,9 +1,13 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "idt.h"
-#include "kernel/interrupts/handlers.h"
+#include <idt.h>
+#include <handlers.h>
+#include <pic.h>
 
 extern void page_fault_isr(void);
+extern void keyboard_isr(void);
+
+static inline void load_idt(struct idt_ptr *idtp);
 
 
 
@@ -19,6 +23,7 @@ idtp.limit = sizeof(struct idt_entry) * 256 - 1;
 idtp.base  = (uint64_t)&idt;
 
 set_idt_entry(14, (uintptr_t)page_fault_isr);
+set_idt_entry(PIC_KEYBOARD_VECTOR, (uintptr_t)keyboard_isr);
 
 load_idt(&idtp);
 
