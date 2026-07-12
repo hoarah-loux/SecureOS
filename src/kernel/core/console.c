@@ -1,4 +1,5 @@
 #include <console.h>
+#include <stdarg.h>
 
 enum {
     CONSOLE_CHAR_WIDTH = 8,
@@ -123,6 +124,179 @@ int console_puts(console_t* console, const char* str) {
     }
 
     return 0; // Return 0 on success
+}
+
+static int console_put_unsigned(console_t *console, unsigned long long value, unsigned int base, int uppercase) {
+    char buf[32];
+    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
+    unsigned int i = 0;
+    int written = 0;
+
+    if (!console || base < 2 || base > 16) {
+        return -1;
+    }
+
+    if (value == 0) {
+        return (console_putc(console, '0') == 0) ? 1 : -1;
+    }
+
+    while (value != 0 && i < sizeof(buf)) {
+        buf[i++] = digits[value % base];
+        value /= base;
+    }
+
+    while (i > 0) {
+        i--;
+        if (console_putc(console, buf[i]) != 0) {
+            return -1;
+        }
+        written++;
+    }
+
+    return written;
+}
+
+int console_printf(console_t* console, const char* fmt, ...) {
+    va_list args;
+    int count = 0;
+
+    if (!console || !fmt) {
+        return -1;
+    }
+
+    va_start(args, fmt);
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            if (console_putc(console, *fmt++) != 0) {
+                va_end(args);
+                return -1;
+            }
+            count++;
+            continue;
+        }
+
+        fmt++;
+        if (*fmt == '\0') {
+            break;
+        }
+
+        if (*fmt == '%') {
+            if (console_putc(console, '%') != 0) {
+                va_end(args);
+                return -1;
+            }
+            count++;
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 'c') {
+            char c = (char)va_arg(args, int);
+            if (console_putc(console, c) != 0) {
+                va_end(args);
+                return -1;
+            }
+            count++;
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 's') {
+            const char *s = va_arg(args, const char *);
+            if (!s) {
+                s = "(null)";
+            }
+            while (*s) {
+                if (console_putc(console, *s++) != 0) {
+                    va_end(args);
+                    return -1;
+                }
+                count++;
+            }
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 'd' || *fmt == 'i') {
+            long long v = va_arg(args, int);
+            if (v < 0) {
+                if (console_putc(console, '-') != 0) {
+                    va_end(args);
+                    return -1;
+                }
+                count++;
+                v = -v;
+            }
+
+            {
+                int w = console_put_unsigned(console, (unsigned long long)v, 10, 0);
+                if (w < 0) {
+                    va_end(args);
+                    return -1;
+                }
+                count += w;
+            }
+
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 'u') {
+            unsigned int v = va_arg(args, unsigned int);
+            int w = console_put_unsigned(console, (unsigned long long)v, 10, 0);
+            if (w < 0) {
+                va_end(args);
+                return -1;
+            }
+            count += w;
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 'x' || *fmt == 'X') {
+            unsigned int v = va_arg(args, unsigned int);
+            int w = console_put_unsigned(console, (unsigned long long)v, 16, *fmt == 'X');
+            if (w < 0) {
+                va_end(args);
+                return -1;
+            }
+            count += w;
+            fmt++;
+            continue;
+        }
+
+        if (*fmt == 'p') {
+            unsigned long long v = (unsigned long long)(uintptr_t)va_arg(args, void *);
+            if (console_putc(console, '0') != 0 || console_putc(console, 'x') != 0) {
+                va_end(args);
+                return -1;
+            }
+            count += 2;
+
+            {
+                int w = console_put_unsigned(console, v, 16, 0);
+                if (w < 0) {
+                    va_end(args);
+                    return -1;
+                }
+                count += w;
+            }
+
+            fmt++;
+            continue;
+        }
+
+        if (console_putc(console, '%') != 0 || console_putc(console, *fmt) != 0) {
+            va_end(args);
+            return -1;
+        }
+        count += 2;
+        fmt++;
+    }
+
+    va_end(args);
+    return count;
 }
 
 void console_newline(console_t* console) {

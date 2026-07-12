@@ -21,6 +21,7 @@ typedef struct {
 int console_init(console_t* console, struct multiboot_tag_framebuffer* fb);
 int console_putc(console_t* console, char c);
 int console_puts(console_t* console, const char* str);
+int console_printf(console_t* console, const char* fmt, ...);
 void console_newline(console_t* console);
 void console_backspace(console_t* console);
 void console_set_prompt(console_t* console, const char* prompt);

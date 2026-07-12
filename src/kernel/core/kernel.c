@@ -4,7 +4,7 @@
  */
 
 #include <stdint.h>
-
+#include <stddef.h>
 #include <multiboot2.h>
 #include <serial.h>
 #include <framebuffer.h>
@@ -455,41 +455,42 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("[CONSOLE] console initialized\r\n");
         console_set_prompt(&con, "SSH> ");
 
-        console_puts(&con, "[CONSOLE] Hello from SecureOS console!\n");
+        console_puts(&con, "[CONSOLE] Welcome to the most secure OS in existence!\n");
+        shell_ctx_t shell_ctx = {0};
+        shell_init(&shell_ctx, &mount, &con);
+        console_puts(&con, "[SSH] SecureShell initialized\n");
         console_puts(&con, con.prompt);
+        printk("[KBD] debug keypress loop active\r\n");
 
-        for (;;)
-        {
-            char ch;
-            if (keyboard_getchar_nonblock(&ch))
-            {
-                if (ch == '\r' || ch == '\n')
-                {
-                    console_putc(&con, '\n');
-                    /* run command here */
+        // Find some random spot in memory to save buffer to:
+        char* line_buffer = (char*)0x800000;
+        size_t buffer_size = 256;
+        size_t index = 0;
+        while (index < buffer_size-1) {
+            char c;
+            if (keyboard_getchar_nonblock(&c)) {
+                if (c == '\r' || c == '\n') {
+                    line_buffer[index] = '\0';
+                    console_newline(&con);
+                    char* argv[16] = {0};
+                    size_t argc = shell_split_args(line_buffer, argv, 16);
+                    shell_ctx.argc = argc;
+                    shell_ctx.argv = argv;
+                    int shell_result = shell_eval(&shell_ctx);
+                    index = 0;
+                    line_buffer[index] = '\0';
                     console_puts(&con, con.prompt);
-                }
-                else if (ch == '\b')
-                {
-                    console_backspace(&con);
-                }
-                else
-                {
-                    console_putc(&con, ch);
+                } else if (c == '\b') {
+                    if (index > 0) {
+                        console_backspace(&con);
+                        line_buffer[index] = '\0';
+                        index--;
+                    }
+                } else {
+                    line_buffer[index++] = c;
+                    console_putc(&con, c);
                 }
             }
-            __asm__ volatile("hlt");
         }
     }
-
-    
-
-    shell_ctx_t shell_ctx = {0};
-    shell_init(&shell_ctx, &mount);
-    printk("[SSH] SecureShell initialized\r\n");
-    printk("[KBD] debug keypress loop active\r\n");
-
-
-    while (1)
-        __asm__ volatile("hlt");
 }
