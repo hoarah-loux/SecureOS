@@ -326,6 +326,7 @@ run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-cdrom $(ISO_FILE) \
 		$(FAT32_DRIVE) \
 		-serial stdio \
+		-vga std \
 		-m 2048
 
 # Force debug-friendly compile flags for this target and its prerequisites.
