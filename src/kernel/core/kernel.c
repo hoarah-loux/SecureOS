@@ -455,10 +455,9 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("[CONSOLE] console initialized\r\n");
         console_set_prompt(&con, "SSH> ");
 
-        console_puts(&con, "[CONSOLE] Welcome to the most secure OS in existence!\n");
+        console_puts(&con, "-={ Welcome to the SecureOS! }=-\n\n\n");
         shell_ctx_t shell_ctx = {0};
         shell_init(&shell_ctx, &mount, &con);
-        console_puts(&con, "[SSH] SecureShell initialized\n");
         console_puts(&con, con.prompt);
         printk("[KBD] debug keypress loop active\r\n");
 

@@ -1,9 +1,10 @@
 #include <console.h>
+#include <font.h>
 #include <stdarg.h>
 
 enum {
-    CONSOLE_CHAR_WIDTH = 8,
-    CONSOLE_CHAR_HEIGHT = 10,
+    CONSOLE_CHAR_WIDTH = FONT_BWIDTH * 8,
+    CONSOLE_CHAR_HEIGHT = FONT_HEIGHT + 2,
     CONSOLE_TAB_WIDTH = 4
 };
 
