@@ -18,6 +18,7 @@
 #include <pmm.h>
 #include <vmm.h>
 #include <shell.h>
+#include <console.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -151,7 +152,9 @@ static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
  */
 void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     struct multiboot_tag_framebuffer fb_snapshot = {0};
+    struct multiboot_tag_framebuffer fb_runtime = {0};
     int fb_snapshot_valid = 0;
+    int fb_runtime_valid = 0;
 
     serial_init();
     printk("[SecureOS] kmain reached\r\n");
@@ -228,7 +231,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         uintptr_t fb_pa = (uintptr_t)fb_snapshot.common.framebuffer_addr;
         uintptr_t fb_va = phys_to_virt(fb_pa);
         uintptr_t fb_pa_after_transition = 0;
-        struct multiboot_tag_framebuffer fb_runtime = fb_snapshot;
+        fb_runtime = fb_snapshot;
 
         if (fb_va != 0) {
             fb_pa_after_transition = vmm_query_page2(fb_va);
@@ -244,6 +247,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("\r\n");
 
         if (fb_va != 0 && fb_pa_after_transition != 0) {
+            fb_runtime_valid = 1;
             draw_boot_banner(&fb_runtime);
         } else {
             printk("[SecureOS] framebuffer unmapped after transition; skip draw\r\n");
@@ -359,7 +363,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         }
 
         {
-            static const uint8_t smoke_a[] = "nigger assaf\n";
+            static const uint8_t smoke_a[] = "SMOKE-A\n";
             static const uint8_t smoke_b[] = "SMOKE-B\n";
             static const uint8_t smoke_ab[] = "SMOKE-A\nSMOKE-B\n";
             fat32_file_t smoke_file = {0};
@@ -375,7 +379,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
             (void)fat32_file_delete(&mount, "/SMOKE.TXT");
 
-            create_ok = fat32_file_create(&mount, "/ASSAF.TXT", &smoke_file);
+            create_ok = fat32_file_create(&mount, "/SMOKE.TXT", &smoke_file);
             fat32_print_test_result("smoke create", create_ok == 0);
 
             write_ok = (create_ok == 0)
@@ -403,7 +407,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
             fat32_file_close(&smoke_file);
 
-            #if 0
             delete_ok = fat32_file_delete(&mount, "/SMOKE.TXT");
             fat32_print_test_result("smoke delete", delete_ok == 0);
 
@@ -412,7 +415,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
                 resolve_after_delete = fat32_path_resolve(&mount, "/SMOKE.TXT", &deleted_entry);
                 fat32_print_test_result("smoke deleted not found", resolve_after_delete != 0);
             }
-            #endif
         }
 
         fat32_print_test_result("root cluster", mount.root_cluster >= 2);
@@ -431,33 +433,63 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         vga[i * 2 + 1] = 0x0F;
     }
 
+    // dump framebuffer info to serial
+    printk("[FB] framebuffer info:\r\n");
+    printk("[FB]  addr=%p\r\n", (void*)fb_snapshot.common.framebuffer_addr);
+    printk("  width=%u  height=%u  bpp=%u\r\n",
+        fb_snapshot.common.framebuffer_width,
+        fb_snapshot.common.framebuffer_height,
+        fb_snapshot.common.framebuffer_bpp);
+    printk("[FB]  pitch=%u  type=%u\r\n",
+        fb_snapshot.common.framebuffer_pitch,
+        fb_snapshot.common.framebuffer_type);
+    
+    printk("[CONSOLE] Attempting to init console...\r\n");
+
+    console_t con = {0};
+    if (!fb_runtime_valid) {
+        printk("[CONSOLE] framebuffer runtime mapping not valid\r\n");
+    } else if (console_init(&con, &fb_runtime) != 0) {
+        printk("[CONSOLE] console init failed\r\n");
+    } else {
+        printk("[CONSOLE] console initialized\r\n");
+        console_set_prompt(&con, "SSH> ");
+
+        console_puts(&con, "[CONSOLE] Hello from SecureOS console!\n");
+        console_puts(&con, con.prompt);
+
+        for (;;)
+        {
+            char ch;
+            if (keyboard_getchar_nonblock(&ch))
+            {
+                if (ch == '\r' || ch == '\n')
+                {
+                    console_putc(&con, '\n');
+                    /* run command here */
+                    console_puts(&con, con.prompt);
+                }
+                else if (ch == '\b')
+                {
+                    console_backspace(&con);
+                }
+                else
+                {
+                    console_putc(&con, ch);
+                }
+            }
+            __asm__ volatile("hlt");
+        }
+    }
+
+    
+
     shell_ctx_t shell_ctx = {0};
     shell_init(&shell_ctx, &mount);
     printk("[SSH] SecureShell initialized\r\n");
     printk("[KBD] debug keypress loop active\r\n");
 
-    while (1) {
-        char* line_buffer = (char*)0x800000;
-        int line_len = keyboard_getline(line_buffer, 256);
-        if (line_len > 0) {
-            line_buffer[line_len] = '\0';
-            printk("[SSH] input: ");
-            printk(line_buffer);
-            printk("\r\n");
 
-            char* argv[16] = {0};
-            size_t argc = shell_split_args(line_buffer, argv, 16);
-            shell_ctx.argc = argc;
-            shell_ctx.argv = argv;
-
-            int shell_result = shell_eval(&shell_ctx);
-            if (shell_result == 0) {
-                printk("[SSH] exiting shell\r\n");
-                break;
-            }
-
-        }
-
+    while (1)
         __asm__ volatile("hlt");
-    }
 }
