@@ -130,6 +130,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/core/kernel.c \
 	$(KERNEL_DIR)/core/framebuffer.c \
 	$(KERNEL_DIR)/core/multiboot2_utils.c \
+	$(KERNEL_DIR)/core/console.c \
 	$(KERNEL_DIR)/core/serial.c \
 	$(KERNEL_DIR)/core/shell.c \
 	$(KERNEL_DIR)/interrupts/handlers.c \

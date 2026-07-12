@@ -24,6 +24,80 @@ static void fb_putpixel(const struct multiboot_tag_framebuffer *fb, uint32_t x, 
     }
 }
 
+int fb_is_supported(const struct multiboot_tag_framebuffer *fb) {
+    if (!fb) {
+        return 0;
+    }
+
+    if (fb->common.framebuffer_type != 1) {
+        return 0;
+    }
+
+    if (fb->common.framebuffer_bpp != 16 &&
+        fb->common.framebuffer_bpp != 24 &&
+        fb->common.framebuffer_bpp != 32) {
+        return 0;
+    }
+
+    return 1;
+}
+
+void fb_fill_rect(const struct multiboot_tag_framebuffer *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb) {
+    if (!fb || w == 0 || h == 0) {
+        return;
+    }
+
+    uint32_t max_x = fb->common.framebuffer_width;
+    uint32_t max_y = fb->common.framebuffer_height;
+    uint32_t x_end = x + w;
+    uint32_t y_end = y + h;
+
+    if (x >= max_x || y >= max_y) {
+        return;
+    }
+
+    if (x_end > max_x) {
+        x_end = max_x;
+    }
+    if (y_end > max_y) {
+        y_end = max_y;
+    }
+
+    for (uint32_t py = y; py < y_end; py++) {
+        for (uint32_t px = x; px < x_end; px++) {
+            fb_putpixel(fb, px, py, rgb);
+        }
+    }
+}
+
+void fb_scroll_up(const struct multiboot_tag_framebuffer *fb, uint32_t pixel_rows, uint32_t clear_rgb) {
+    if (!fb || pixel_rows == 0) {
+        return;
+    }
+
+    uint32_t height = fb->common.framebuffer_height;
+    uint32_t pitch = fb->common.framebuffer_pitch;
+    uint8_t *base = (uint8_t *)(uintptr_t)fb->common.framebuffer_addr;
+
+    if (pixel_rows >= height) {
+        fb_fill_rect(fb, 0, 0, fb->common.framebuffer_width, height, clear_rgb);
+        return;
+    }
+
+    uint32_t shift = pitch * pixel_rows;
+    uint32_t move_bytes = pitch * (height - pixel_rows);
+    for (uint32_t i = 0; i < move_bytes; i++) {
+        base[i] = base[i + shift];
+    }
+
+    fb_fill_rect(fb,
+                 0,
+                 height - pixel_rows,
+                 fb->common.framebuffer_width,
+                 pixel_rows,
+                 clear_rgb);
+}
+
 static const uint8_t *font8x8_glyph(char c) {
     static const uint8_t font8x8_basic[96][8] = {
         {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 0x20 ' ' */
