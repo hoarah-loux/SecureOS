@@ -200,6 +200,14 @@ typedef struct create_vm_space_out{
 
 }create_vm_space_out;
 
+enum region_types{
+
+    STACK,
+
+
+
+};
+
 
 
 enum map_flags_region{
@@ -311,6 +319,7 @@ void vmm_destroy_page_table(uintptr_t *page_table);
 
 
 create_vm_space_out create_vm_space(uintptr_t *k_root);
+reserve_region_out reserve_region(vm_space* space, reserve_region_request* req);
 
 //the further functions here are non essentials but make our vmm much more powerful
 
