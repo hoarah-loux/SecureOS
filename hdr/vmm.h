@@ -159,6 +159,7 @@ typedef struct vm_region{
     struct vm_region *next;
     struct vm_region *prev;
     uint64_t region_id;
+    bool is_kernel_asset;
     
 
 
@@ -170,6 +171,7 @@ typedef struct vm_space{
     uintptr_t *pml4_phys_ptr;
     uintptr_t *pml4_ptr;
     vm_region *vm_region_list;
+    vm_region *kernel_asset_list;
     //add spinlock later
     uintptr_t user_base;
     uintptr_t user_limit;
@@ -209,6 +211,7 @@ enum map_flags_region{
     PRIVATE= 1u << 2,
     SHARED = 1u << 3,
     GROWDOWN = 1u << 4,
+    KERNEL_ASSET = 1u << 5,
 
 
 
@@ -222,6 +225,8 @@ enum reserve_region_error{
     FIXED_OVERLAP_ERROR,
     TOPDOWN_ALLOC_ERROR,
     FIRSTFIT_NO_SPACE_ERROR,
+    KERNEL_ASSET_ALLOCATION_ERROR,
+    OVERFLOW_ERROR,
 
 
 };
