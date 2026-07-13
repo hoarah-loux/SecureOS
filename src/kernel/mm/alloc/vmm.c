@@ -1,6 +1,6 @@
 #include <vmm.h>
 
-//redundant but looks cool
+
 #define LOW_BASE 0x100000
 
 //all these are virtual addrs
@@ -1198,7 +1198,8 @@ uintptr_t vmm_query_page2(uintptr_t virtual_adress){
 
 
 
-
+//there is a problem here that i dont remember now i will remember when we debug, probably 
+//debug for 3 hours and then say ohhh yes this was the issue i forgot
 
 
 static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uint64_t desired_spilt_lvl){
@@ -1680,7 +1681,9 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 
     //DONT FORGET !!!!!!!!!!!!!!!!!!!!!!!!!!!!
     //add flag enforcment for kernel pages, and user pages.
-    //just set all low pages to US = 1, maybe here maybe in region idfk
+    //just set all low pages to US = 1, maybe here maybe in region idfk !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     for(int i = ker_index; i <= 511; i++){
 
@@ -1751,6 +1754,141 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
     uintptr_t min_end_from_base = legal_base + req->size;
     if(min_end_from_base < legal_base){kfree(region); return result;} // overflow guard
     if(legal_limit < min_end_from_base){kfree(region); return result;} // underflow guard
+
+
+
+
+    //if th user requetss a kernel stack for example
+
+    if(req->map_flags & KERNEL_ASSET){
+
+       uintptr_t physmap_end = align_up_u(PHYS_MAP_BASE + align_up_u(BUDDY_MAX_PHYS,  2097152), 4096);
+
+       legal_base = physmap_end;
+
+       legal_limit = align_down_u(KERNEL_IMAGE_BASE, 4096);
+
+       //walk region until u find smth in the right place
+
+       vm_region *kernel_cursor = space->kernel_asset_list;
+
+
+        if(kernel_cursor == NULL){ //empty list case
+
+        region->va_start = legal_base;
+
+        uintptr_t end = region->va_start + req->size;
+        uintptr_t start = region->va_start;
+
+
+         if(start > end || end > legal_limit){
+                result.success = false;
+                result.error_code = OVERFLOW_ERROR;
+                kfree(region);
+                return result;
+
+            }
+
+        region->va_end = legal_base + req->size;
+        
+        region->is_kernel_asset = true;
+        region->map_flags |= KERNEL_ASSET;
+        goto insert_to_list_k;
+
+        
+
+
+
+       }
+
+       while(kernel_cursor != NULL){
+
+        if(kernel_cursor->next == NULL){
+            
+            region->va_start = kernel_cursor->va_end;
+
+            uintptr_t end = region->va_start + req->size;
+            uintptr_t start = region->va_start;
+
+
+            if(start > end || end > legal_limit){
+                result.success = false;
+                result.error_code = OVERFLOW_ERROR;
+                kfree(region);
+                return result;
+
+            }
+
+            region->va_end = region->va_start + req->size;
+            region->is_kernel_asset = true;
+            region->map_flags |= KERNEL_ASSET;
+            goto insert_to_list_k;
+
+
+
+        }
+
+
+        kernel_cursor = kernel_cursor->next;
+
+            
+
+
+       }
+      
+        result.success = false;
+        result.error_code = KERNEL_ASSET_ALLOCATION_ERROR;
+        kfree(region);
+        return result;
+
+
+        insert_to_list_k:
+
+        vm_region* curr = space->kernel_asset_list;
+        vm_region* prev = NULL;
+
+        
+
+        // Find sorted insertion point: prev < new <= curr
+        while(curr != NULL && curr->va_start < region->va_start){
+            prev = curr;
+            curr = curr->next;
+        }
+
+        // Stitch new node between prev and curr
+        region->prev = prev;
+        region->next = curr;
+
+        // If prev is NULL, insertion happened at the head
+        if(prev == NULL){
+            space->kernel_asset_list = region;
+        }else{
+            prev->next = region;
+        }
+
+        if(curr != NULL){
+            curr->prev = region;
+        }
+
+        
+
+        result.success = true;
+        result.region_ptr = (vm_region *) region;
+        result.space_ptr = (vm_space *) space;
+
+        return result;
+
+
+        
+
+
+    }
+
+   
+
+
+
+
 
     if(req->map_flags & FIXED){
 
