@@ -4,9 +4,11 @@
 #include <stdbool.h>
 #include <p.h>
 #include <vmm.h>
+#include <context.h>
 
 
-struct context;
+
+
 
 
 
@@ -17,16 +19,18 @@ typedef struct thread{
     struct proc *owning_proc;
     struct thread *next;
     struct thread *prev;
-    uintptr_t *user_stack_va_start;
-    uintptr_t *user_stack_va_end;
+    uintptr_t user_stack_va_start;
+    uintptr_t user_stack_va_end;
     size_t user_stack_size;
-    uintptr_t *kernel_stack_va_start;
-    uintptr_t *kernel_stack_va_end;
-    uintptr_t *_rsp; //this starts at the va end and goes to the va start bcz its a stack it grows down
+    uintptr_t kernel_stack_va_start;
+    uintptr_t kernel_stack_va_end;
+    uintptr_t _rsp_k; //this starts at the va end and goes to the va start bcz its a stack it grows down
+    uintptr_t _rsp_u;
     size_t kernel_stack_size;
     struct context *context;
     struct thread *rq_thread_next;
     struct thread *rq_thread_prev;
+    uint64_t flags;
     uint64_t state;
 
 
@@ -45,14 +49,16 @@ typedef struct create_thread_out{
 
 
 enum create_thread_error{
-    sadas,
+    USER_STACK_RESERVE_ERROR,
+    KERNEL_STACK_RESERVE_ERROR,
+    CONTEXT_ALLOC_FAIL,
 
 };
 
 enum create_thread_flags{
 
     THREAD_F_START_SUSPENDED = 1u << 0 ,
-    THREAD_F_SET_MAIN_THREAD = 1u << 1,
+    THREAD_F_MAIN_THREAD = 1u << 1,
 
 
 

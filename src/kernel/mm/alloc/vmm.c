@@ -1728,9 +1728,12 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     req->size = align_size_up(req->size, 4096);
     
+    
 
     vm_region* region = kcalloc( 1, sizeof(vm_region));
     if(region == NULL) return result;
+
+   
 
     
     //overflow guard
@@ -1754,6 +1757,10 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
     uintptr_t min_end_from_base = legal_base + req->size;
     if(min_end_from_base < legal_base){kfree(region); return result;} // overflow guard
     if(legal_limit < min_end_from_base){kfree(region); return result;} // underflow guard
+
+
+    region->size_bytes = req_real_size;
+    region->size_rounded = req->size;
 
 
 
