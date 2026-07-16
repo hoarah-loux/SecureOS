@@ -226,7 +226,7 @@ uint64_t slab_free(void *obj){
 
     slot_size = (slot_size + (align - 1)) & ~(align - 1);
 
-    if((uintptr_t)obj < data_start || (uintptr_t)obj >= slab_end){return 0;} //not in slab
+    if((uintptr_t)obj < data_start || (uintptr_t)obj >= slab_end){return 0;} //not in slab // make sure to check the condiotion
 
     if (((uintptr_t)obj - (data_start + OBJ_HEADER_SIZE)) % slot_size != 0){return 0;}
     free_node *node = (free_node *)obj;

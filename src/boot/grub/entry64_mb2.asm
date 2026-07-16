@@ -245,6 +245,15 @@ pgtables:
     resb 0x7000
 
     ; Switch back to code section.
+
+
+    ALIGN 16
+tss64: 
+
+    resb 0x68
+
+tss64_end:
+    
     SECTION .text
 
     ; The entry point is treated as 32-bit code.
@@ -554,6 +563,22 @@ long_mode_entry:
     mov ds, ax
     mov es, ax
     mov ss, ax
+
+   ; tss setup
+    mov qword [rel tss64 + 4], rsp
+    mov word  [rel tss64 + 0x66], 0x68
+
+    lea rax, [rel tss64]
+    mov word  [rel gdt64.tss + 2], ax
+    shr rax, 16
+    mov byte  [rel gdt64.tss + 4], al
+    shr rax, 8
+    mov byte  [rel gdt64.tss + 7], al
+    shr rax, 8
+    mov dword [rel gdt64.tss + 8], eax
+
+mov ax, gdt64.tss
+ltr ax
 
     ; Clear FS/GS selectors.
     ; - Many kernels later use FS/GS base MSRs for per-CPU/per-thread data.
@@ -976,6 +1001,31 @@ gdt64:
     ; - L=0 (not a code segment)
     ; - D=1 (default operand size; common for data)
     dq 0x00CF92000000FFFF
+
+
+.ucode: equ $ - gdt64
+
+    ;user code segment selector
+    dq 0x00AFFA000000FFFF
+
+.udata: equ $ - gdt64
+
+
+    ;user data segment selector
+
+    dq 0x00CFF2000000FFFF
+
+.tss: equ $ - gdt64
+
+    dw (tss64_end - tss64 - 1)                 ; limit 15:0
+    dw 0                                       ; base 15:0 (patched at runtime)
+    db 0                                       ; base 23:16 (patched at runtime)
+    db 0x89                                    ; type=9, S=0, DPL=0, P=1
+    db (((tss64_end - tss64 - 1) >> 16) & 0x0F) ; flags=0, limit 19:16
+    db 0                                       ; base 31:24 (patched at runtime)
+    dd 0                                       ; base 63:32 (patched at runtime)
+    dd 0                                       ; reserved
+
 .pointer:
     ; GDTR (GDT Register) pseudo-descriptor used by LGDT.
     ; - 16-bit limit = size of GDT in bytes minus 1.
