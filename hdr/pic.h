@@ -4,7 +4,10 @@
 
 #define PIC1_VECTOR_BASE 0x20u
 #define PIC2_VECTOR_BASE 0x28u
-#define PIC_KEYBOARD_VECTOR (PIC1_VECTOR_BASE + 1u)
+#define PIC_TIMER_IRQ 0u
+#define PIC_KEYBOARD_IRQ 1u
+#define PIC_TIMER_VECTOR (PIC1_VECTOR_BASE + PIC_TIMER_IRQ)
+#define PIC_KEYBOARD_VECTOR (PIC1_VECTOR_BASE + PIC_KEYBOARD_IRQ)
 
 void pic_remap(uint8_t master_offset, uint8_t slave_offset);
 void pic_set_mask(uint8_t irq_line);

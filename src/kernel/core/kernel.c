@@ -15,6 +15,7 @@
 #include <fat32_fs.h>
 #include <pic.h>
 #include <keyboard.h>
+#include <handlers.h>
 #include <pmm.h>
 #include <vmm.h>
 #include <shell.h>
@@ -29,6 +30,44 @@ extern uintptr_t _pmm_free_frame(uintptr_t address_to_free);
 
 #define KERNEL_IMAGE_BASE_VA 0xFFFFFFFF80000000ULL
 #define TWO_MIB_PAGE_MASK (~((uintptr_t)0x1FFFFF))
+
+#define PIT_INPUT_HZ 1193182u
+#define PIT_COMMAND_PORT 0x43u
+#define PIT_CHANNEL0_PORT 0x40u
+
+static inline void pit_outb(uint16_t port, uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static void pit_init(uint32_t hz) {
+    uint32_t divisor;
+
+    if (hz == 0) {
+        return;
+    }
+
+    divisor = PIT_INPUT_HZ / hz;
+    if (divisor == 0) {
+        divisor = 1;
+    }
+    if (divisor > 0xFFFFu) {
+        divisor = 0xFFFFu;
+    }
+
+    pit_outb(PIT_COMMAND_PORT, 0x36);
+    pit_outb(PIT_CHANNEL0_PORT, (uint8_t)(divisor & 0xFFu));
+    pit_outb(PIT_CHANNEL0_PORT, (uint8_t)((divisor >> 8) & 0xFFu));
+}
+
+static void report_timer_irq_smoke_test(uint64_t ticks_before, uint64_t ticks_after) {
+    printk("[TIMER] ticks before=0x");
+    serial_write_hex64(ticks_before);
+    printk(" after=0x");
+    serial_write_hex64(ticks_after);
+    printk("\r\n");
+    printk("[TIMER] irq0 smoke test: ");
+    printk((ticks_after > ticks_before) ? "PASS\r\n" : "PENDING\r\n");
+}
 
 static uintptr_t read_cr3_root_phys(void) {
     uintptr_t cr3 = 0;
@@ -153,6 +192,7 @@ static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
 void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     struct multiboot_tag_framebuffer fb_snapshot = {0};
     struct multiboot_tag_framebuffer fb_runtime = {0};
+    uint64_t timer_ticks_boot = 0;
     int fb_snapshot_valid = 0;
     int fb_runtime_valid = 0;
 
@@ -160,8 +200,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     printk("[SecureOS] kmain reached\r\n");
     idt_init();
     pic_init_for_keyboard();
+    pit_init(100);
     __asm__ volatile("sti" ::: "memory");
-    printk("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active\r\n");
+    timer_ticks_boot = timer_ticks_get();
+    printk("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active (timer IRQ0 masked)\r\n");
     printk("[SecureOS] kernel mb2_magic=0x");
     serial_write_hex32(mb2_magic);
     printk("\r\n");
@@ -458,6 +500,11 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         console_puts(&con, "-={ Welcome to the SecureOS! }=-\n\n\n");
         shell_ctx_t shell_ctx = {0};
         shell_init(&shell_ctx, &mount, &con);
+
+        pic_clear_mask(PIC_TIMER_IRQ);
+        printk("[INT] timer IRQ0 unmasked at interactive stage\r\n");
+        report_timer_irq_smoke_test(timer_ticks_boot, timer_ticks_get());
+
         console_puts(&con, con.prompt);
         printk("[KBD] debug keypress loop active\r\n");
 

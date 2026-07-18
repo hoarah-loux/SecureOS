@@ -10,6 +10,7 @@ static inline uint8_t inb(uint16_t port) {
 }
 
 vm_space active_space;
+static volatile uint64_t timer_ticks = 0;
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
 
@@ -74,5 +75,13 @@ void keyboard_interrupt_handler(int irq, void *data) {
 
     uint8_t scancode = inb(0x60);
     keyboard_handle_scancode(scancode);
-    pic_send_eoi(1);
+    pic_send_eoi(PIC_KEYBOARD_IRQ);
+}
+void timer_handler(){
+    timer_ticks++;
+    pic_send_eoi(PIC_TIMER_IRQ);
+}
+
+uint64_t timer_ticks_get(void) {
+    return timer_ticks;
 }

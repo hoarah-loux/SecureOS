@@ -98,5 +98,7 @@ void pic_init_for_keyboard(void) {
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 
-    pic_clear_mask(1);
+    // Keep timer masked until full runtime validation; keyboard stays enabled.
+    pic_set_mask(PIC_TIMER_IRQ);
+    pic_clear_mask(PIC_KEYBOARD_IRQ);
 }
