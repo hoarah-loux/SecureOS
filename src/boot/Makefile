@@ -148,6 +148,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/fs/fat32_fs.c \
 	$(KERNEL_DIR)/fs/block_device.c \
 	$(KERNEL_DIR)/fs/tar.c \
+	$(KERNEL_DIR)/proc/loader/loader.c
 
 ARCH_C_SRCS = \
 	$(SRC_DIR)/arch/x86_64/idt.c
@@ -354,12 +355,15 @@ $(FAT32_IMAGE):
 	@echo "This is SecureOS FAT32 storage." > $(FAT32_ROOT)/README.TXT
 	@echo "IT WORKS" > $(FAT32_ROOT)/boot/pwned.txt
 	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
+	cp $(PROJECT_ROOT)/elf.elf $(FAT32_ROOT)/ELF.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
 	$(MCOPY) -i $@ $(FAT32_ROOT)/README.TXT ::/README.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/boot/pwned.txt ::/boot/PWNED.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
+	$(MCOPY) -i $@ $(FAT32_ROOT)/ELF.exe ::ELF.EXE
+	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.
 # - A phony target is not a real file; it should always run when requested.
