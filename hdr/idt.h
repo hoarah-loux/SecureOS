@@ -3,7 +3,8 @@
 #include <stddef.h>
 
 
-
+#define YIELD_VECTOR 0x81
+#define EXIT_VECTOR  0x82
 
 
 
@@ -28,5 +29,5 @@ typedef struct __attribute__((packed)) idt_ptr {
 }idt_ptr;
 
 void idt_init(void);
-void set_idt_entry(int vector, uintptr_t handler);
+void set_idt_entry(int vector, uintptr_t handler, uint8_t type_attr);
 

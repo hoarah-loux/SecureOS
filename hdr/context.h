@@ -26,3 +26,19 @@ typedef struct context {
     struct thread *owner_thread;
 
 } context;
+
+
+typedef enum trap_reason {
+    TRAP_REASON_TIMER,
+    TRAP_REASON_YIELD,
+    TRAP_REASON_EXIT,
+    TRAP_REASON_SYSCALL,
+    TRAP_REASON_FAULT,
+} trap_reason;
+
+typedef struct trap_frame {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t rip, cs, rflags; 
+    uint64_t rsp, ss; // ss here is the same as ds, but iretq treats it as ss so have to keep it ss
+} trap_frame;

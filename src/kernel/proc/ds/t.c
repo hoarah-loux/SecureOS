@@ -100,8 +100,8 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     t->id = 0; //counter of some type we will see
     t->next = NULL;
     t->prev = NULL;
-    t->rq_thread_next = NULL;
-    t->rq_thread_prev = NULL;
+    t->q_thread_next = NULL;
+    t->q_thread_prev = NULL;
     t->state = NEW;
     t->flags = thread_flags;
     t->owning_proc = owning_process;
@@ -194,9 +194,6 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     result.error_code = 0;
 
     return result;
-
-
-
 
 
 }
