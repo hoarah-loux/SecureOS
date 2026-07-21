@@ -7,7 +7,7 @@
 #include <context.h>
 
 
-
+struct thread_queue;
 
 
 
@@ -28,10 +28,11 @@ typedef struct thread{
     uintptr_t _rsp_u;
     size_t kernel_stack_size;
     struct context *context;
-    struct thread *rq_thread_next;
-    struct thread *rq_thread_prev;
+    struct thread *q_thread_next;
+    struct thread *q_thread_prev;
     uint64_t flags;
     uint64_t state;
+    struct thread_queue *owner_queue;
 
 
 

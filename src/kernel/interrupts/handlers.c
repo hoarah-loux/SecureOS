@@ -2,6 +2,8 @@
 #include <pmm.h>
 #include <pic.h>
 #include <keyboard.h>
+#include <handlers.h>
+
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t value;
@@ -77,11 +79,21 @@ void keyboard_interrupt_handler(int irq, void *data) {
     keyboard_handle_scancode(scancode);
     pic_send_eoi(PIC_KEYBOARD_IRQ);
 }
-void timer_handler(){
+
+
+void timer_handler(trap_frame *frame, trap_reason trap_reason){
+    
     timer_ticks++;
     pic_send_eoi(PIC_TIMER_IRQ);
 }
 
 uint64_t timer_ticks_get(void) {
     return timer_ticks;
+}
+
+
+void yield_handler(trap_frame *frame, trap_reason trap_reason){
+
+    return;
+
 }
