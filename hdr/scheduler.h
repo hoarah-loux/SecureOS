@@ -6,7 +6,7 @@
 #include <context.h>
 #include <heap.h>
 
-#define SCHEDULER_MAX_CPUS 1
+#define MAX_CPUS 1
 #define SCHEDULER_DEFAULT_QUANTUM_TICKS 5
 
 typedef struct scheduler_cpu {
@@ -17,13 +17,23 @@ typedef struct scheduler_cpu {
     thread_queue *dying_queue;
     uint64_t tick_count;
     uint64_t default_quantum_ticks;
+    bool present;
+    bool is_initialized;
     bool need_resched;
 } scheduler_cpu;
 
 typedef struct scheduler_init_out {
     bool success;
     uint64_t error_code;
+    uint64_t initialized_cpu_count;
 } scheduler_init_out;
+
+typedef struct scheduler_cpu_init_out {
+    bool success;
+    uint64_t error_code;
+    uint64_t cpu_id;
+    scheduler_cpu *cpu;
+} scheduler_cpu_init_out;
 
 enum scheduler_error {
     SCHED_INVALID_CPU_ID,
@@ -32,8 +42,23 @@ enum scheduler_error {
     SCHED_DYING_QUEUE_INIT_FAIL,
 };
 
+enum sched_add_ready_err{
+    INVALID_THREAD,
+    SCHED_NOT_READY,
+    THREAD_ALREADY_IN_OTHER_Q,
+
+};
+
+typedef struct sched_add_ready_out{
+
+    bool success;
+    uint64_t error_code;
+
+}sched_add_ready_out;
+
+
 scheduler_init_out scheduler_init(void); // initializes the scheduler system and CPU0 scheduler state
-scheduler_init_out scheduler_cpu_init(uint64_t cpu_id); // initializes one CPU's scheduler queues and counters
+scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id); // initializes one CPU's scheduler queues and counters
 
 scheduler_cpu *scheduler_get_cpu(uint64_t cpu_id); // returns the scheduler state for a specific CPU id
 scheduler_cpu *scheduler_this_cpu(void); // returns the scheduler state for the currently running CPU
@@ -41,7 +66,7 @@ scheduler_cpu *scheduler_this_cpu(void); // returns the scheduler state for the 
 thread *scheduler_current(void); // returns the current running thread on this CPU
 uint64_t scheduler_set_current(thread *t); // sets the current running thread on this CPU
 
-uint64_t scheduler_add_ready(thread *t); // marks a thread READY and enqueues it for execution
+sched_add_ready_out scheduler_add_ready(uint64_t cpu_id, thread *t); // marks a thread READY and enqueues it for execution
 thread *scheduler_pick_next(void); // picks and removes the next runnable thread from the ready queue
 
 uint64_t scheduler_yield(trap_frame *frame); // handles voluntary reschedule from the yield interrupt path
