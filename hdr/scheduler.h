@@ -56,6 +56,14 @@ typedef struct sched_add_ready_out{
 
 }sched_add_ready_out;
 
+typedef struct scheduler_yield_out{
+
+    bool success;
+    uint64_t error_code;
+    thread *yielded_t;
+
+}scheduler_yield_out;
+
 
 scheduler_init_out scheduler_init(void); // initializes the scheduler system and CPU0 scheduler state
 scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id); // initializes one CPU's scheduler queues and counters
@@ -63,14 +71,14 @@ scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id); // initializes one C
 scheduler_cpu *scheduler_get_cpu(uint64_t cpu_id); // returns the scheduler state for a specific CPU id
 scheduler_cpu *scheduler_this_cpu(void); // returns the scheduler state for the currently running CPU
 
-thread *scheduler_current(void); // returns the current running thread on this CPU
-uint64_t scheduler_set_current(thread *t); // sets the current running thread on this CPU
+thread *scheduler_current(uint64_t cpu_id); // returns the current running thread on this CPU
+uint64_t scheduler_set_current(uint64_t cpu_id ,thread *t); // sets the current running thread on this CPU
 
 sched_add_ready_out scheduler_add_ready(uint64_t cpu_id, thread *t); // marks a thread READY and enqueues it for execution
-thread *scheduler_pick_next(void); // picks and removes the next runnable thread from the ready queue
+thread *scheduler_pick_next(uint64_t cpu_id); // picks and removes the next runnable thread from the ready queue
 
-uint64_t scheduler_yield(trap_frame *frame); // handles voluntary reschedule from the yield interrupt path
-uint64_t scheduler_tick(trap_frame *frame); // handles timer ticks and requests preemption when a time slice expires
+scheduler_yield_out scheduler_yield(uint64_t cpu_id); // handles voluntary reschedule from the yield interrupt path
+uint64_t scheduler_tick(uint64_t cpu_id); // records a timer tick and requests preemption when a time slice expires
 
 uint64_t scheduler_block_current(thread_queue *wait_queue); // blocks the current thread on a subsystem wait queue
 uint64_t scheduler_wake_one(thread_queue *wait_queue); // wakes one blocked thread from a wait queue and makes it READY
