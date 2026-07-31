@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <context.h>
+#include <scheduler.h>
 
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip);
