@@ -85,6 +85,41 @@ void timer_handler(trap_frame *frame, trap_reason trap_reason){
     
     timer_ticks++;
     pic_send_eoi(PIC_TIMER_IRQ);
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL){return;}
+    if(!scheduler_tick(cpu->cpu_id)){return;}
+
+    uint64_t cpu_id = cpu->cpu_id;
+    
+   
+    
+
+
+    if(!cpu->need_resched){
+
+        return;
+
+    }else{
+
+        //this is the context switch
+
+       thread *t = cpu->current_thread;
+       save_trap_frame_out frame_md = save_trap_frame(frame, t);
+       if(frame_md.success == false){return;}
+       sched_add_ready_out ready_md = scheduler_add_ready(cpu_id, t);
+       if(ready_md.success == false){return;}
+       thread *next_t = scheduler_pick_next(cpu_id);
+       if(next_t == NULL){return;}
+       if(!scheduler_set_current(cpu_id, next_t)){return;}
+       cpu->need_resched = false;
+       restore_context(next_t->context);
+
+
+
+    }
+
+
+    
 }
 
 uint64_t timer_ticks_get(void) {

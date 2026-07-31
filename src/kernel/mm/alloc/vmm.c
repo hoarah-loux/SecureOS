@@ -1766,6 +1766,7 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
 
     //if th user requetss a kernel stack for example
+    // important note, have to make this kernel asset list a global list
 
     if(req->map_flags & KERNEL_ASSET){
 

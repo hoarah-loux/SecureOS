@@ -78,6 +78,30 @@ scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id){
 }
 
 
+scheduler_cpu *scheduler_get_cpu(uint64_t cpu_id){
+
+    if(cpu_id >= MAX_CPUS){return NULL;}
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+    if(!cpu->is_initialized || !cpu->present){return NULL;}
+
+    return cpu;
+
+}
+
+scheduler_cpu *scheduler_this_cpu(void){
+    //this is just a place holder for now and will be replaced with real cpu look up once SMP
+    // implemntation starts 
+
+
+    return scheduler_get_cpu(0);
+
+
+
+
+} 
+
+
 
 sched_add_ready_out scheduler_add_ready(uint64_t cpu_id ,thread *t){
 

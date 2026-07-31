@@ -3,9 +3,10 @@
 #include <stdint.h>
 #include <vmm.h>
 #include <stdbool.h>
+#include <t.h>
+#include <heap.h>
 
 
-struct thread;
 
 
 typedef struct context {
@@ -42,3 +43,17 @@ typedef struct trap_frame {
     uint64_t rip, cs, rflags; 
     uint64_t rsp, ss; // ss here is the same as ds, but iretq treats it as ss so have to keep it ss
 } trap_frame;
+
+
+typedef struct save_trap_frame_out{
+
+    trap_frame *frame_saved;
+    context *context_saved;
+    bool success;
+
+}save_trap_frame_out;
+
+
+save_trap_frame_out save_trap_frame(trap_frame *frame, thread *t);
+
+extern void restore_context(context *c) __attribute__((noreturn));

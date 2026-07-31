@@ -64,6 +64,7 @@
 
     ; Export `_start` so the linker can mark it as the ELF entry point.
     GLOBAL _start
+    GLOBAL tss64
 
     ; Symbols resolved from other compilation units / the linker script.
     ; - `kmain` is the C entry point we call after CPU setup.
@@ -1056,5 +1057,4 @@ msg_not_long:  db "[SecureOS] ERROR: Not in long mode", 13, 10, 0
 msg_mmap_e820: db "[SecureOS] MB2 E820 mmap tag (type 6) present", 13, 10, 0
 msg_mmap_efi:  db "[SecureOS] MB2 EFI memory map tag (type 17) present", 13, 10, 0
 msg_mmap_no:   db "[SecureOS] ERROR: No MB2 memory map tag (type 6/17) found", 13, 10, 0
-
 

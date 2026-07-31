@@ -130,7 +130,8 @@ push r12
 push r13
 push r14
 push r15
-
+;;we dont push rip, rsp, cs, rlflags,ss bcz the spu psuhes them itself when its relegvent
+;; when its a user to kernel interrupot
 
 mov rdi, rsp
 mov rsi, 0
