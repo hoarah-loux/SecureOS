@@ -129,6 +129,41 @@ uint64_t timer_ticks_get(void) {
 
 void yield_handler(trap_frame *frame, trap_reason trap_reason){
 
-    return;
+    (void)trap_reason;
+
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL || frame == NULL){return;}
+
+    thread *current = cpu->current_thread;
+    if(current == NULL){return;}
+
+    save_trap_frame_out frame_md = save_trap_frame(frame, current);
+    if(!frame_md.success){return;}
+
+    scheduler_yield_out yield_md = scheduler_yield(cpu->cpu_id);
+    if(!yield_md.success){return;}
+
+    thread *next = scheduler_current(cpu->cpu_id);
+    if(next == NULL){return;}
+
+    cpu->need_resched = false;
+    restore_context(next->context);
+
+}
+
+
+void exit_handler(trap_frame *frame, trap_reason trap_reason){ // figure out were exit status comes from
+
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL){return;}
+
+    if(!scheduler_exit_current(cpu->cpu_id)){return;}
+    thread *next_t = scheduler_current(cpu->cpu_id);
+    if(next_t == NULL){return;}
+    restore_context(next_t->context);
+
+
+
+
 
 }

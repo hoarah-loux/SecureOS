@@ -115,6 +115,8 @@ sched_add_ready_out scheduler_add_ready(uint64_t cpu_id ,thread *t){
         return result;
     }
 
+    uint64_t old_state = t->state;
+
     scheduler_cpu *cpu = &cpus[cpu_id];
 
     if(cpu == NULL || !cpu->present || !cpu->is_initialized){return result;}
@@ -133,13 +135,50 @@ sched_add_ready_out scheduler_add_ready(uint64_t cpu_id ,thread *t){
         return result;
     }
 
-    t->state = READY;
+    t->state = READY_T;
 
-    if(!thread_queue_push(cpu->ready_queue, t)){return result;}
+    if(!thread_queue_push(cpu->ready_queue, t)){
+
+        t->state = old_state;
+        return result;
+    }
 
     result.success = true;
 
     return result;
+
+
+
+}
+
+
+static uint64_t scheduler_add_dying(uint64_t cpu_id ,thread *t){
+
+    
+
+    if(cpu_id >= MAX_CPUS) return 0;
+
+    if(t == NULL){return 0;}
+    if(t->state != DYING_T){return 0;}
+    
+
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+
+    if(cpu == NULL || !cpu->present || !cpu->is_initialized){return 0;}
+
+    if(cpu->dying_queue == NULL){ return 0;}
+
+    if(t->owner_queue != NULL){return 0;}
+
+
+    t->state = DYING_T;
+
+    if(!thread_queue_push(cpu->dying_queue, t)){return 0;}
+
+    
+
+    return 1;
 
 
 
@@ -163,7 +202,7 @@ thread *scheduler_pick_next(uint64_t cpu_id){
 
     thread *t = tmd.popped_t;
 
-    t->state = RUNNING;
+    t->state = RUNNING_T;
 
     return t;
 
@@ -234,7 +273,7 @@ scheduler_yield_out scheduler_yield(uint64_t cpu_id){
 
     thread *current = cpu->current_thread;
 
-    if(current == NULL){
+    if(current == NULL){ // IDLE FALL BACK HERE TOO
         thread *next = scheduler_pick_next(cpu_id);
         if(next == NULL){
             result.error_code = SCHED_NOT_READY;
@@ -259,13 +298,29 @@ scheduler_yield_out scheduler_yield(uint64_t cpu_id){
     }
 
     thread *next = scheduler_pick_next(cpu_id);
-    if(next == NULL){
+    if(next == NULL){ // this needs to be patched so that it runs the idle thread
+
+        thread_queue_remove_out removed_md = thread_queue_remove(cpu->ready_queue, current);
+        if(!removed_md.success){return result;} // these two lines are additions made later
+
         scheduler_set_current(cpu_id, current);
+        
         result.error_code = SCHED_NOT_READY;
         return result;
     }
 
-    if(!scheduler_set_current(cpu_id, next)){
+    if(!scheduler_set_current(cpu_id, next)){ // idfk abt this condition 
+
+        sched_add_ready_out add_ready_md = scheduler_add_ready(cpu->cpu_id ,next);
+        if(add_ready_md.success == false) return result;
+        thread_queue_remove_out remove_md = thread_queue_remove(cpu->ready_queue, current);
+        if(remove_md.success == false){return result;}
+        current->state = RUNNING_T;
+
+
+
+
+
         scheduler_set_current(cpu_id, current);
         result.error_code = SCHED_NOT_READY;
         return result;
@@ -296,5 +351,40 @@ uint64_t scheduler_tick(uint64_t cpu_id){
     }
 
     return 1;
+
+}
+
+
+uint64_t scheduler_exit_current(uint64_t cpu_id){
+
+    if(cpu_id >= MAX_CPUS){return 0;}
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+
+    if(!cpu->present || !cpu->is_initialized){return 0;}
+    if(cpu->current_thread == NULL){return 0;}
+
+   thread_exit_out exit_md = thread_exit(cpu->current_thread, cpu->current_thread->exit_status);
+
+   if(!exit_md.success){return 0;}
+   thread *exiting_thread = exit_md.exiting_thread;
+
+   if(!scheduler_add_dying(cpu->cpu_id, exiting_thread)){return 0;}
+
+   thread *next = scheduler_pick_next(cpu->cpu_id);
+   if(next == NULL){return 0;} ///// idle thread may be postponded to init
+
+   if(!scheduler_set_current(cpu->cpu_id, next)){return 0;}
+
+   return 1;
+
+
+
+    
+     
+
+
+
+
 
 }
