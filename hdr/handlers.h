@@ -16,4 +16,6 @@ uint64_t timer_ticks_get(void);
 
 void yield_handler(trap_frame *frame, trap_reason trap_reason);
 
+void exit_handler(trap_frame *frame, trap_reason trap_reason);
+
  

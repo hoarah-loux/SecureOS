@@ -56,6 +56,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
         t->user_stack_va_start = u_stack_va_start;
         t->user_stack_va_end = u_stack_va_end;
         t->user_stack_size = usr_stack->size_rounded;
+        t->usr_stack_region_ptr = usr_stack;
 
     }
     
@@ -94,6 +95,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     t->kernel_stack_size = 16 * 1024;
     t->kernel_stack_va_end = k_stack_va_end;
     t->kernel_stack_va_start = k_stack_va_start;
+    t->ker_stack_region_ptr = ker_stack;
 
     //fill put the rest of the metadata
 
@@ -102,10 +104,13 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     t->prev = NULL;
     t->q_thread_next = NULL;
     t->q_thread_prev = NULL;
-    t->state = NEW;
+    t->state = NEW_T;
     t->flags = thread_flags;
     t->owning_proc = owning_process;
     t->is_kernel = t_k;
+    t->ref_count = 1;
+
+
 
     if(t->flags & THREAD_F_MAIN_THREAD){
         
@@ -181,11 +186,11 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     if(thread_flags & THREAD_F_START_SUSPENDED){
 
-        t->state = BLOCKED;
+        t->state = BLOCKED_T;
 
     }else{
 
-        t->state = READY;
+        t->state = NEW_T;
 
     }
 
@@ -196,4 +201,275 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     return result;
 
 
+}
+
+
+thread_exit_out thread_exit(thread *t, uint64_t exit_status){
+
+    thread_exit_out result = {0};
+
+    if(t == NULL){
+        result.error_code = THREAD_EXIT_INVALID_THREAD;
+        return result;
+    }
+
+    if(t->owning_proc == NULL){
+        result.error_code = THREAD_EXIT_INVALID_OWNER;
+        return result;
+    }
+
+    if(t->ref_count == 0){
+        result.error_code = THREAD_EXIT_INVALID_REFCOUNT;
+        return result;
+    }
+
+    if(t->flags & THREAD_F_REAPED){
+        result.error_code = THREAD_EXIT_ALREADY_REAPED;
+        return result;
+    }
+
+    if(t->state == DYING_T || (t->flags & THREAD_F_REAPABLE)){
+        result.error_code = THREAD_EXIT_ALREADY_DYING;
+        return result;
+    }
+
+    if(t->state != RUNNING_T){
+        result.error_code = THREAD_EXIT_NOT_RUNNING;
+        return result;
+    }
+
+    if(t->owner_queue != NULL){
+        result.error_code = THREAD_EXIT_STILL_QUEUED;
+        return result;
+    }
+
+    t->exit_status = exit_status;
+    t->state = DYING_T;
+    t->flags |= THREAD_F_REAPABLE;
+
+    result.exiting_thread = t;
+    result.success = true;
+    result.error_code = 0;
+    return result;
+}
+
+
+reap_thread_out reap_thread(thread *t){
+
+    reap_thread_out result = {0};
+
+    if(t == NULL){
+        result.error_code = THREAD_REAP_INVALID_THREAD;
+        return result;
+    }
+
+    proc *owner = t->owning_proc;
+    if(owner == NULL){
+        result.error_code = THREAD_REAP_INVALID_OWNER;
+        return result;
+    }
+
+    if(t->ref_count == 0){
+        result.error_code = THREAD_REAP_INVALID_REFCOUNT;
+        return result;
+    }
+
+    if(t->flags & THREAD_F_REAPED){
+        result.error_code = THREAD_REAP_ALREADY_REAPED;
+        return result;
+    }
+
+    if(t->state != DYING_T){
+        result.error_code = THREAD_REAP_NOT_DYING;
+        return result;
+    }
+
+    if(!(t->flags & THREAD_F_REAPABLE)){
+        result.error_code = THREAD_REAP_NOT_REAPABLE;
+        return result;
+    }
+
+    if(t->owner_queue != NULL){
+        result.error_code = THREAD_REAP_STILL_QUEUED;
+        return result;
+    }
+
+    if(owner->thread_count == 0 || owner->thread_head == NULL || owner->thread_tail == NULL){
+        result.error_code = THREAD_REAP_EMPTY_PROCESS_LIST;
+        return result;
+    }
+
+    bool found = false;
+    thread *cursor = owner->thread_head;
+    for(uint64_t visited = 0; cursor != NULL && visited < owner->thread_count; visited++){
+        if(cursor == t){
+            found = true;
+            break;
+        }
+        cursor = cursor->next;
+    }
+
+    if(!found){
+        result.error_code = THREAD_REAP_NOT_IN_PROCESS;
+        return result;
+    }
+
+    if((t->prev == NULL && owner->thread_head != t) ||
+       (t->prev != NULL && t->prev->next != t) ||
+       (t->next == NULL && owner->thread_tail != t) ||
+       (t->next != NULL && t->next->prev != t)){
+        result.error_code = THREAD_REAP_CORRUPT_PROCESS_LIST;
+        return result;
+    }
+
+    bool was_last_thread = (owner->thread_count == 1);
+
+    if(t->prev != NULL){
+        t->prev->next = t->next;
+    }else{
+        owner->thread_head = t->next;
+    }
+
+    if(t->next != NULL){
+        t->next->prev = t->prev;
+    }else{
+        owner->thread_tail = t->prev;
+    }
+
+    if(owner->main_thread == t){
+        owner->main_thread = NULL;
+    }
+
+    owner->thread_count--;
+
+    if(owner->thread_count == 0){
+        owner->thread_head = NULL;
+        owner->thread_tail = NULL;
+    }
+
+    t->next = NULL;
+    t->prev = NULL;
+    t->q_thread_next = NULL;
+    t->q_thread_prev = NULL;
+    t->flags &= ~THREAD_F_REAPABLE;
+    t->flags |= THREAD_F_REAPED;
+
+    result.reaped_thread = t;
+    result.exit_status = t->exit_status;
+    result.was_last_thread = was_last_thread;
+    result.success = true;
+    result.error_code = 0;
+    return result;
+}
+
+
+destroy_thread_out destroy_thread(thread *t){
+
+    destroy_thread_out result = {0};
+
+    if(t == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_THREAD;
+        return result;
+    }
+
+    proc *owner = t->owning_proc;
+    if(owner == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_OWNER;
+        return result;
+    }
+
+    if(t->ref_count != 1){
+        result.error_code = THREAD_DESTROY_INVALID_REFCOUNT;
+        return result;
+    }
+
+    if(t->state != DYING_T){
+        result.error_code = THREAD_DESTROY_NOT_DYING;
+        return result;
+    }
+
+    if(!(t->flags & THREAD_F_REAPED)){
+        result.error_code = THREAD_DESTROY_NOT_REAPED;
+        return result;
+    }
+
+    if(t->flags & THREAD_F_REAPABLE){
+        result.error_code = THREAD_DESTROY_STILL_REAPABLE;
+        return result;
+    }
+
+    if(t->owner_queue != NULL || t->q_thread_next != NULL || t->q_thread_prev != NULL){
+        result.error_code = THREAD_DESTROY_STILL_QUEUED;
+        return result;
+    }
+
+    if(t->next != NULL || t->prev != NULL ||
+       owner->thread_head == t || owner->thread_tail == t || owner->main_thread == t){
+        result.error_code = THREAD_DESTROY_STILL_PROCESS_ATTACHED;
+        return result;
+    }
+
+    thread *cursor = owner->thread_head;
+    for(uint64_t visited = 0; cursor != NULL && visited < owner->thread_count; visited++){
+        if(cursor == t){
+            result.error_code = THREAD_DESTROY_STILL_PROCESS_ATTACHED;
+            return result;
+        }
+        cursor = cursor->next;
+    }
+
+    if(owner->adress_space == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_ADDRESS_SPACE;
+        return result;
+    }
+
+    if(t->ker_stack_region_ptr == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_KERNEL_STACK_REGION;
+        return result;
+    }
+
+    if(!t->is_kernel && t->usr_stack_region_ptr == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_USER_STACK_REGION;
+        return result;
+    }
+
+    if(t->context == NULL){
+        result.error_code = THREAD_DESTROY_INVALID_CONTEXT;
+        return result;
+    }
+
+    if(t->context->owner_thread != t){
+        result.error_code = THREAD_DESTROY_CONTEXT_OWNER_MISMATCH;
+        return result;
+    }
+
+    uint64_t destroyed_thread_id = t->id;
+
+    if(t->usr_stack_region_ptr != NULL){
+        // destroy_region(owner->adress_space, t->usr_stack_region_ptr);
+    }
+
+    //  destroy_region(owner->adress_space, t->ker_stack_region_ptr);
+
+    t->context->owner_thread = NULL;
+    if(!kfree(t->context)){
+        result.error_code = THREAD_DESTROY_CONTEXT_FREE_FAILED;
+        return result;
+    }
+
+    t->context = NULL;
+    t->owning_proc = NULL;
+    t->ker_stack_region_ptr = NULL;
+    t->usr_stack_region_ptr = NULL;
+    t->ref_count = 0;
+
+    if(!kfree(t)){
+        result.error_code = THREAD_DESTROY_THREAD_FREE_FAILED;
+        return result;
+    }
+
+    result.destroyed_thread_id = destroyed_thread_id;
+    result.success = true;
+    result.error_code = 0;
+    return result;
 }

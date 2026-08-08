@@ -84,4 +84,4 @@ uint64_t scheduler_block_current(thread_queue *wait_queue); // blocks the curren
 uint64_t scheduler_wake_one(thread_queue *wait_queue); // wakes one blocked thread from a wait queue and makes it READY
 uint64_t scheduler_wake_all(thread_queue *wait_queue); // wakes all blocked threads from a wait queue and makes them READY
 
-uint64_t scheduler_mark_dying(thread *t); // marks a thread DYING and moves it to the dying queue for cleanup
+uint64_t scheduler_exit_current(uint64_t cpu_id);
