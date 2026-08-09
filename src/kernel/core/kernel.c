@@ -20,6 +20,7 @@
 #include <vmm.h>
 #include <shell.h>
 #include <console.h>
+#include <loader.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -485,7 +486,34 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     printk("[FB]  pitch=%u  type=%u\r\n",
         fb_snapshot.common.framebuffer_pitch,
         fb_snapshot.common.framebuffer_type);
+
+
+    pic_clear_mask(PIC_TIMER_IRQ);
+    printk("[INT] timer IRQ0 unmasked at interactive stage\r\n");
+    report_timer_irq_smoke_test(timer_ticks_boot, timer_ticks_get());
+
+
+    // Test the new loader..
+    kheap_init();
+    printk("[ELF] Loading ELF.EXE into memory..\n");
+    mem_file_t* memory_file = load_file(&mount, "/ELF.EXE");
+
+    printk("[ELF] ELF.EXE loaded @ %p\n[ELF] mf.name: %s\n[ELF] mf.size: %d\n", memory_file, memory_file->filename, memory_file->size);
+
+    // parse elf file
+    elf_eheader_t elf_header = parse_mem_elf(*memory_file);
+    printk("[ELF] ELF header parsed:\n");
+    printk("[ELF]  e_entry=0x%llx\n", elf_header.e_entry);
+    printk("[ELF]  e_phoff=0x%llx\n", elf_header.e_phoff);
+    printk("[ELF]  e_shoff=0x%llx\n", elf_header.e_shoff);
+    printk("[ELF]  e_phnum=%d\n", elf_header.e_phnum);
+    printk("[ELF]  e_shnum=%d\n", elf_header.e_shnum);
+    printk("[ELF]  e_shstrndx=%d\n", elf_header.e_shstrndx);
+
+
+
     
+    // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");
 
     console_t con = {0};
@@ -501,9 +529,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         shell_ctx_t shell_ctx = {0};
         shell_init(&shell_ctx, &mount, &con);
 
-        pic_clear_mask(PIC_TIMER_IRQ);
-        printk("[INT] timer IRQ0 unmasked at interactive stage\r\n");
-        report_timer_irq_smoke_test(timer_ticks_boot, timer_ticks_get());
 
         console_puts(&con, con.prompt);
         printk("[KBD] debug keypress loop active\r\n");
