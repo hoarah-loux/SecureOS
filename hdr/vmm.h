@@ -158,8 +158,11 @@ typedef struct vm_region{
     uint64_t type; //stack. heap, whatever
     struct vm_region *next;
     struct vm_region *prev;
+    struct vm_region *next_k_g;
+    struct vm_region *prev_k_g;
     uint64_t region_id;
     bool is_kernel_asset;
+    vm_space *owner_space;
     
 
 
@@ -259,6 +262,14 @@ typedef struct reserve_region_request{
 
 
 }reserve_region_request;
+
+typedef struct kernel_asset_list_g{
+
+    vm_region *head;
+    vm_region *tail;
+
+
+}kernel_asset_list_g;
 
 
 
