@@ -1,6 +1,0 @@
-- FAT32-specific mount structures. The current header is FAT12-shaped; FAT32 needs the FAT32 BPB fields, FSInfo sector handling, root cluster, FAT size, and validation of the boot sector and backup boot sector.
-- Cluster-chain logic. FAT32 files are not accessed by fixed root directory layout; you need cluster-to-sector translation, FAT entry decoding, end-of-chain detection, and directory traversal for subdirectories.
-- File and directory APIs. At minimum you need list, open, read, and path resolution. Write support can come later if you want a smaller first milestone.
-- Integration with your kernel filesystem layer. Right now the kernel mostly mounts and reads an initrd tar archive, so FAT32 should either replace that path or be mounted alongside it behind a small filesystem abstraction.
-- A FAT32 disk image in the build/test flow. The current Makefile builds an ISO plus initrd, not a FAT32 volume. You need a partitioned disk image or virtual disk that QEMU boots from, then populate it with test files.
-- Validation tooling. You’ll want a way to format the image, copy sample files into it, boot, mount, and verify reads from the kernel.
