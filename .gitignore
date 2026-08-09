@@ -20,6 +20,8 @@ build/
 # Editor/project files
 .vscode/
 .idea/
+.claude/
+skills-lock.json
 
 # Temporary files
 *~
