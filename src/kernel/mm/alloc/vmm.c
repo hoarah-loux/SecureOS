@@ -21,6 +21,9 @@ static uintptr_t *toptable;
 static uintptr_t adress_toptable;
 static bool is_initialized = false;
 
+// the global kernel asset list of regions
+static kernel_asset_list_g g_kernel_assets = {0};
+
 
 
 //VERY IMPORTANT:
@@ -1778,10 +1781,15 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
        //walk region until u find smth in the right place
 
-       vm_region *kernel_cursor = space->kernel_asset_list;
+       
+       vm_region *kernel_cursor_g = g_kernel_assets.head;
 
+       //adding to global list first, insert to tail always
 
-        if(kernel_cursor == NULL){ //empty list case
+       //empty list case
+
+       if(kernel_cursor_g == NULL){
+
 
         region->va_start = legal_base;
 
@@ -1800,20 +1808,31 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         region->va_end = legal_base + req->size;
         
         region->is_kernel_asset = true;
-        region->map_flags |= KERNEL_ASSET;
+        region->map_flags = req->map_flags;
+
+        region->owner_space = space;
+        region->next_k_g = NULL;
+        region->prev_k_g = NULL;
+        region->permissions = req->perms;
+        region->type = req->type;
+        region->object = req->object;
+        region->object_base_offset = req->backing_offset;
+
+        g_kernel_assets.head = region;
+        g_kernel_assets.tail = region;
         goto insert_to_list_k;
 
-        
+
+
+       }else{
+
+        while(kernel_cursor_g != NULL){
 
 
 
-       }
-
-       while(kernel_cursor != NULL){
-
-        if(kernel_cursor->next == NULL){
+            if(kernel_cursor_g->next_k_g == NULL){
             
-            region->va_start = kernel_cursor->va_end;
+            region->va_start = kernel_cursor_g->va_end;
 
             uintptr_t end = region->va_start + req->size;
             uintptr_t start = region->va_start;
@@ -1829,20 +1848,45 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
             region->va_end = region->va_start + req->size;
             region->is_kernel_asset = true;
-            region->map_flags |= KERNEL_ASSET;
+            
+
+            kernel_cursor_g->next_k_g = region;
+            region->prev_k_g = kernel_cursor_g;
+            region->owner_space = space;
+
+            region->map_flags = req->map_flags;
+
+        
+            region->permissions = req->perms;
+            region->type = req->type;
+            region->object = req->object;
+            region->object_base_offset = req->backing_offset;
+
+            region->next_k_g = NULL;
+
+
+            g_kernel_assets.tail = region;
             goto insert_to_list_k;
+
+            }
+
+            kernel_cursor_g = kernel_cursor_g->next_k_g;
+
+
+
+
 
 
 
         }
 
 
-        kernel_cursor = kernel_cursor->next;
 
-            
+
 
 
        }
+
       
         result.success = false;
         result.error_code = KERNEL_ASSET_ALLOCATION_ERROR;

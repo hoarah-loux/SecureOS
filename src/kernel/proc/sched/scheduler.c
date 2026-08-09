@@ -379,12 +379,7 @@ uint64_t scheduler_exit_current(uint64_t cpu_id){
    return 1;
 
 
-
-    
-     
-
-
-
-
-
 }
+
+
+
