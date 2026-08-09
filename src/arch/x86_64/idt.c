@@ -3,12 +3,14 @@
 #include <idt.h>
 #include <handlers.h>
 #include <pic.h>
+#include <syscall.h>
 
 extern void page_fault_isr(void);
 extern void keyboard_isr(void);
 extern void timer_isr(void);
 extern void yield_isr(void);
 extern void exit_isr(void);
+extern void syscall_isr(void);
 
 static inline void load_idt(struct idt_ptr *idtp);
 
@@ -30,6 +32,10 @@ set_idt_entry(PIC_TIMER_VECTOR, (uintptr_t)timer_isr, 0x8E);
 set_idt_entry(PIC_KEYBOARD_VECTOR, (uintptr_t)keyboard_isr, 0x8E);
 set_idt_entry(YIELD_VECTOR, (uintptr_t)yield_isr, 0x8E);
 set_idt_entry(EXIT_VECTOR, (uintptr_t)exit_isr, 0x8E);
+// DPL=3 (0xEE, vs 0x8E for the ring0-only gates above): ring3 `int 0x80` must
+// be allowed to reach this gate, otherwise the CPU raises #GP before the ISR
+// ever runs.
+set_idt_entry(SYSCALL_VECTOR, (uintptr_t)syscall_isr, 0xEE);
 
 load_idt(&idtp);
 

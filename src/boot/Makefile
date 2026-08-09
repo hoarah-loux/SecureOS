@@ -136,6 +136,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/interrupts/handlers.c \
 	$(KERNEL_DIR)/interrupts/keyboard.c \
 	$(KERNEL_DIR)/interrupts/pic.c \
+	$(KERNEL_DIR)/interrupts/syscall.c \
 	$(KERNEL_DIR)/mm/alloc/pmm.c \
 	$(KERNEL_DIR)/mm/alloc/buddy.c \
 	$(KERNEL_DIR)/mm/alloc/slab.c \
@@ -148,6 +149,7 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/fs/fat32_fs.c \
 	$(KERNEL_DIR)/fs/block_device.c \
 	$(KERNEL_DIR)/fs/tar.c \
+	$(KERNEL_DIR)/fs/fs_syscalls.c \
 	$(KERNEL_DIR)/proc/loader/loader.c
 
 ARCH_C_SRCS = \

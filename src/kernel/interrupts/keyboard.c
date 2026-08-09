@@ -113,3 +113,13 @@ int keyboard_getline(char *buffer, size_t buffer_size) {
     buffer[index] = '\0';
     return (int)index;
 }
+
+int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+
+    char c;
+    if (!keyboard_getchar_nonblock(&c)) {
+        return -1;
+    }
+    return (int64_t)(unsigned char)c;
+}

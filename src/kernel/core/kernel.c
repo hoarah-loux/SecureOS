@@ -21,6 +21,8 @@
 #include <shell.h>
 #include <console.h>
 #include <loader.h>
+#include <syscall.h>
+#include <fs_syscalls.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -125,6 +127,67 @@ static void fat32_print_test_result(const char *name, int passed) {
     printk("[FAT32] test ");
     printk(name);
     printk(passed ? ": PASS\r\n" : ": FAIL\r\n");
+}
+
+static void syscall_print_test_result(const char *name, int passed) {
+    printk("[SYSCALL] test ");
+    printk(name);
+    printk(passed ? ": PASS\r\n" : ": FAIL\r\n");
+}
+
+// Drives the syscall_handler() dispatcher directly with a synthetic
+// trap_frame, bypassing `int 0x80`/ring3 (no usermode entry trampoline
+// exists yet, see TODO.md). Same rdi/rsi/rdx/r10/r8/r9 arg order the real
+// syscall_isr uses, so this exercises the exact dispatch/table/fd-table path
+// a real ring3 caller would hit.
+static int64_t syscall_test_invoke(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    trap_frame tf = {0};
+    tf.rax = nr;
+    tf.rdi = a0;
+    tf.rsi = a1;
+    tf.rdx = a2;
+    tf.r10 = a3;
+    tf.r8  = a4;
+    syscall_handler(&tf, TRAP_REASON_SYSCALL);
+    return (int64_t)tf.rax;
+}
+
+static void run_syscall_tests(void) {
+    printk("[SYSCALL] running syscall dispatch smoke tests\r\n");
+    uint8_t scratch[64] = {0};
+
+    static const char msg[] = "[SYSCALL-TEST] hello via SYS_write\r\n";
+    int64_t write_ret = syscall_test_invoke(SYS_write, 1, (uint64_t)msg, sizeof(msg) - 1, 0, 0);
+    syscall_print_test_result("write stdout", write_ret == (int64_t)(sizeof(msg) - 1));
+
+    int64_t getkey_ret = syscall_test_invoke(SYS_getkey, 0, 0, 0, 0, 0);
+    syscall_print_test_result("getkey with no input == -1", getkey_ret == -1);
+
+    int64_t open_ret = syscall_test_invoke(SYS_open, (uint64_t)"/README.TXT", 0, 0, 0, 0);
+    syscall_print_test_result("open /README.TXT", open_ret >= 3);
+
+    if (open_ret >= 3) {
+        uint64_t fd = (uint64_t)open_ret;
+
+        int64_t read_ret = syscall_test_invoke(SYS_read, fd, (uint64_t)scratch, sizeof(scratch), 0, 0);
+        syscall_print_test_result("read /README.TXT",
+            read_ret > 0 && buffer_starts_with(scratch, (uint32_t)read_ret, "This is SecureOS FAT32 storage."));
+
+        int64_t seek_ret = syscall_test_invoke(SYS_lseek, fd, 0, SYS_SEEK_SET, 0, 0);
+        syscall_print_test_result("lseek back to 0", seek_ret == 0);
+
+        int64_t close_ret = syscall_test_invoke(SYS_close, fd, 0, 0, 0, 0);
+        syscall_print_test_result("close fd", close_ret == 0);
+    }
+
+    int64_t bad_fd_ret = syscall_test_invoke(SYS_read, 99, (uint64_t)scratch, 1, 0, 0);
+    syscall_print_test_result("read on unopened fd == -1", bad_fd_ret == -1);
+
+    int64_t stub_ret = syscall_test_invoke(SYS_exit, 0, 0, 0, 0, 0);
+    syscall_print_test_result("unimplemented syscall (exit) stubbed == -1", stub_ret == -1);
+
+    int64_t bad_nr_ret = syscall_test_invoke(SYS_MAX, 0, 0, 0, 0, 0);
+    syscall_print_test_result("out-of-range syscall number == -1", bad_nr_ret == -1);
 }
 
 static void vmm_print_test_result(const char *name, int passed) {
@@ -308,6 +371,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     } else if (fat32_mount(&mount, &fat32_disk, 0) != 0) {
         printk("[FAT32] mount failed\r\n");
     } else {
+        syscall_fs_init(&mount);
         printk("[FAT32] disk ready: sectors=0x");
         serial_write_hex64(fat32_disk.sector_count);
         printk(" sector_size=0x");
@@ -462,6 +526,8 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
         fat32_print_test_result("root cluster", mount.root_cluster >= 2);
         fat32_print_test_result("fsinfo signature", mount.fsinfo.lead_sig == 0x41615252u && mount.fsinfo.struct_sig == 0x61417272u);
+
+        run_syscall_tests();
     }
 
     volatile char *vga = (volatile char *)0xB8000;
