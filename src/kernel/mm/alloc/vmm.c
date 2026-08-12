@@ -2378,8 +2378,24 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 uint64_t destroy_vm_region(vm_space *space, vm_region *region){
 
 
-    if(region == NULL){return 0;}
+    if(region == NULL || space == NULL){return 0;}
     if(region->owner_space != space){return 0;}
+
+
+     for(uintptr_t start_va = region->va_start; start_va < region->va_end; start_va += 4096){
+
+        if(!(region->map_flags & SHARED)){
+            free_out free_md = vmm_free_page(space->pml4_phys_ptr, start_va);
+            if(!free_md.success){return 0;}
+
+        }else{
+
+            unmap_out unmap_md = vmm_unmap_page(space->pml4_phys_ptr, start_va);
+            if(!unmap_md.success){return 0;}
+
+
+        }
+    }
 
     if(region->map_flags & KERNEL_ASSET){
 
@@ -2476,20 +2492,58 @@ uint64_t destroy_vm_region(vm_space *space, vm_region *region){
 
     }
 
-     for(uintptr_t start_va = region->va_start; start_va < region->va_end; start_va + 4096){
-
-        unmap_out unmap_md = vmm_unmap_page(space->pml4_phys_ptr, start_va);
-        if(!unmap_md.success){return 0;}
-
-        }
+   
 
         kfree(region);
+
+        return 1;
 
 
 
 
 
     
+
+
+}
+
+
+uint64_t destroy_vm_space(vm_space *space){
+
+    if(space == NULL)return 0;
+
+
+    //destroy normal regions first
+
+    vm_region *cursor = space->vm_region_list;
+
+    while(cursor != NULL){
+
+        vm_region *next = cursor->next;
+
+        if(!destroy_vm_region(space, cursor))return 0;
+        cursor = next;
+
+        
+
+
+    }
+
+    vm_region *cursor_k = space->kernel_asset_list;
+    while(cursor_k != NULL){
+
+        vm_region *next_k = cursor_k->next;
+
+        if(!destroy_vm_region(space, cursor_k)) return 0;
+        cursor_k = next_k;
+
+    }
+
+    // destroy the pml4 and shi later
+
+    kfree(space);
+
+    return 1;
 
 
 }
