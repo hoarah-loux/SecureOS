@@ -1613,10 +1613,32 @@ map_out vmm_map_page(
 }
 
 
+/*
+ * UNMAP POLICY (CURRENT KERNEL CONTRACT)
+ * --------------------------------------
+ * This API is intentionally strict 4KiB-unmap semantics.
+ *
+ * Expected behavior:
+ * 1) Input VA is treated as a request to unmap exactly one 4KiB page.
+ * 2) If VA is not present (hole), this is a successful no-op.
+ * 3) If VA currently resolves to a large leaf (2MiB/1GiB), we first split
+ *    to level-4, re-walk, and then clear exactly one PTE.
+ * 4) We invalidate TLB for the faulting VA after clearing the entry.
+ *
+ * Why this policy:
+ * - Lazy allocation is 4KiB-only in the current design.
+ * - Region teardown and partial unmaps must not accidentally drop an entire
+ *   2MiB/1GiB mapping when only one 4KiB page is requested.
+ *
+ * Notes:
+ * - This function removes only the mapping. It does NOT free the backing
+ *   physical frame in PMM.
+ */
 unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
 
     unmap_out result = {0};
     if(root_table == NULL){return result;}
+    const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
 
     walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
     if(!walker_result.success){return result;}
@@ -1629,19 +1651,119 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
         return result;
 
     }
-    
-    if(walker_result.success && walker_result.stop_reason != NOT_PRESENT){
+
+    if(walker_result.stop_reason == NOT_PRESENT){
+        result.unmapped_va = virtual_adress;
+        result.success = true;
+        return result;
+    }
+
+    if(walker_result.stop_reason == LARGE_PAGE){
+        spilt_out split_md = spilt_page(root_table, virtual_adress, 4);
+        if(!split_md.success){return result;}
+
+        walker_result = the_walking_pager2(root_table, virtual_adress);
+        if(!walker_result.success){return result;}
+        if(walker_result.stop_reason == NOT_PRESENT){
+            result.unmapped_va = virtual_adress;
+            result.success = true;
+            return result;
+        }
+    }
+
+    if(walker_result.final_page_level != 4){
+        return result;
+    }
+
     result.v_unmapped_pa_ptr = walker_result.final_entry_pointer;
-    result.unmapped_pa = *walker_result.final_entry_pointer;
+    result.unmapped_pa = (*walker_result.final_entry_pointer) & ADDR_MASK_4K;
     result.unmapped_va = virtual_adress;
     result.success = true;
     *walker_result.final_entry_pointer = (uintptr_t)NULL;
     invlpg((void*)virtual_adress);
+    return result;
 
     
 
-    return result;
+    
+
+}
+
+
+/*
+ * FREE POLICY (CURRENT KERNEL CONTRACT)
+ * -------------------------------------
+ * This API is intentionally strict 4KiB-free semantics for one VA.
+ *
+ * Expected behavior:
+ * 1) Input VA is treated as a request to free exactly one 4KiB mapping.
+ * 2) If VA is not present (hole), this is a successful no-op.
+ * 3) If VA resolves to a large leaf (2MiB/1GiB), we split to level-4,
+ *    re-walk, and operate only on the final 4KiB PTE.
+ * 4) We free the masked 4KiB physical base via PMM, clear the PTE, then
+ *    invalidate TLB for this VA.
+ *
+ * Ownership caveat (important):
+ * - This function assumes the target mapping is PMM-owned private/anonymous
+ *   memory. Do not use it for physmap/device/file-backed/shared mappings
+ *   unless those paths are explicitly integrated with PMM ownership policy.
+ */
+free_out vmm_free_page(uintptr_t *root_table, uintptr_t virtual_adress){
+
+    free_out result = {0};
+    if(root_table == NULL){return result;}
+    const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
+
+    walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
+    if(!walker_result.success){return result;}
+
+    if(walker_result.final_page_level == 1 && walker_result.success){// this case will never happen unless we have a major bug
+
+        
+        result.success = false;
+        result.error_code = UNMAPPING_AT_PML4;
+        return result;
+
     }
+
+    if(walker_result.stop_reason == NOT_PRESENT){
+        result.freed_va = virtual_adress;
+        result.success = true;
+        return result;
+    }
+
+    if(walker_result.stop_reason == LARGE_PAGE){
+        spilt_out split_md = spilt_page(root_table, virtual_adress, 4);
+        if(!split_md.success){return result;}
+
+        walker_result = the_walking_pager2(root_table, virtual_adress);
+        if(!walker_result.success){return result;}
+        if(walker_result.stop_reason == NOT_PRESENT){
+            result.freed_va = virtual_adress;
+            result.success = true;
+            return result;
+        }
+    }
+
+    if(walker_result.final_page_level != 4){
+        return result;
+    }
+
+    uintptr_t entry_value = *walker_result.final_entry_pointer;
+    uintptr_t entry_pa_base = entry_value & ADDR_MASK_4K;
+
+    if(pmm_free_frame(entry_pa_base) == 0){
+        return result;
+    }
+
+    result.v_freed_pa_ptr = walker_result.final_entry_pointer;
+    result.freed_pa = entry_pa_base;
+    result.freed_va = virtual_adress;
+    result.success = true;
+
+    *walker_result.final_entry_pointer = (uintptr_t)NULL;
+    invlpg((void*)virtual_adress);
+    return result;
 
     return result;
 
@@ -1650,6 +1772,7 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
     
 
 }
+
 
 
 
@@ -2247,6 +2370,127 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
 
     }
+
+}
+
+
+
+uint64_t destroy_vm_region(vm_space *space, vm_region *region){
+
+
+    if(region == NULL){return 0;}
+    if(region->owner_space != space){return 0;}
+
+    if(region->map_flags & KERNEL_ASSET){
+
+        // remove form global list 
+        
+        //only element case
+        if(region->next_k_g == NULL && region->prev_k_g == NULL){
+
+
+           
+            g_kernel_assets.head = NULL;
+            g_kernel_assets.tail = NULL;
+            //free in the end
+            
+
+        }else if(region->prev_k_g == NULL){ // head case
+
+            g_kernel_assets.head = region->next_k_g;
+            region->next_k_g->prev_k_g = NULL;
+
+        }else if(region->next_k_g == NULL){// tail case
+
+            g_kernel_assets.tail = region->prev_k_g;
+            region->prev_k_g->next_k_g = NULL;
+
+        }else{ // middle case
+
+            region->next_k_g->prev_k_g = region->prev_k_g;
+            region->prev_k_g->next_k_g = region->next_k_g;
+
+
+        }
+
+        //remove from space list
+
+        if(region->next == NULL && region->prev == NULL){
+
+
+            
+            space->kernel_asset_list = NULL;
+            //free in the end
+            
+
+        }else if(region->prev == NULL){ // head case
+
+            space->kernel_asset_list = region->next;
+            region->next->prev = NULL;
+
+        }else if(region->next == NULL){// tail case
+
+            
+            region->prev->next = NULL;
+
+        }else{ // middle case
+
+            region->next->prev = region->prev;
+            region->prev->next = region->next;
+
+
+        }
+
+
+
+    }else{
+
+        //non kernel asset
+        if(region->next == NULL && region->prev == NULL){
+
+
+            
+            space->vm_region_list = NULL;
+            //free in the end
+            
+
+        }else if(region->prev == NULL){ // head case
+
+            space->vm_region_list = region->next;
+            region->next->prev = NULL;
+
+        }else if(region->next == NULL){// tail case
+
+            
+            region->prev->next = NULL;
+
+        }else{ // middle case
+
+            region->next->prev = region->prev;
+            region->prev->next = region->next;
+
+
+        }
+
+
+
+    }
+
+     for(uintptr_t start_va = region->va_start; start_va < region->va_end; start_va + 4096){
+
+        unmap_out unmap_md = vmm_unmap_page(space->pml4_phys_ptr, start_va);
+        if(!unmap_md.success){return 0;}
+
+        }
+
+        kfree(region);
+
+
+
+
+
+    
+
 
 }
 

@@ -124,6 +124,15 @@ typedef struct unmap_out{
 
 }unmap_out;
 
+typedef struct free_out{
+    bool success;
+    uintptr_t freed_pa;
+    uintptr_t *v_freed_pa_ptr;
+    uintptr_t freed_va;
+    uint64_t error_code;
+
+}free_out;
+
 typedef struct vm_object{
 
 
@@ -306,7 +315,7 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress);
 //IN ALLOC U DONT HAVE THE FRAME, IN MAP U DO
 uint64_t vmm_alloc_page(uintptr_t virtual_adress);
 
-uint64_t vmm_free_page(uintptr_t virtual_adress);
+free_out vmm_free_page(uintptr_t *root_table, uintptr_t virtual_adress);
 
 
 //this function checks if a given virtual adress is mapped or not 
@@ -331,6 +340,8 @@ void vmm_destroy_page_table(uintptr_t *page_table);
 
 create_vm_space_out create_vm_space(uintptr_t *k_root);
 reserve_region_out reserve_region(vm_space* space, reserve_region_request* req);
+uint64_t destroy_vm_region(vm_space *space, vm_region *region);
+uint64_t destroy_vm_space(vm_space *space);
 
 //the further functions here are non essentials but make our vmm much more powerful
 
@@ -353,6 +364,8 @@ uintptr_t* vmm_clone_page_table(uintptr_t *source_page_table);
 
 //same shit
 uintptr_t* vmm_get_active_page_table(void);
+
+
 
 //idk what this does we will get back later
 void vmm_invalidate_tlb(uintptr_t virtual_adress);
