@@ -16,46 +16,46 @@ static volatile uint64_t timer_ticks = 0;
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
 
-    uint64_t error_code = error_code & 0x7;
+    uint64_t err_code = error_code & 0x7;
 
-    if(error_code == 0x0){
+    if(err_code == 0x0){
 
         //a kernel read hit a page that was not present.
 
     }
 
-    if(error_code == 0x1){
+    if(err_code == 0x1){
 
         //a kernel read hit a page that was present but violated protection.
         
     }
 
-    if(error_code == 0x2){
+    if(err_code == 0x2){
 
         //a kernel write hit a page that was not present.
 
     }
 
-    if(error_code == 0x3){
+    if(err_code == 0x3){
 
         //a kernel write hit a page that was present but violated protection.
     }
 
-    if(error_code == 0x4){
+    if(err_code == 0x4){
 
         //a user read hit a page that was not present.
 
 
     }
 
-       if(error_code == 0x5){
+       if(err_code == 0x5){
 
         //a user read hit a page that was present but violated protection.
 
 
     }
 
-       if(error_code == 0x6){
+       if(err_code == 0x6){
 
         //a user write hit a page that was not present.
 
@@ -64,7 +64,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
 
 
 
-       if(error_code == 0x7){
+       if(err_code == 0x7){
 
         //a user write hit a page that was present but violated protection
 
