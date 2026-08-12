@@ -1,0 +1,22 @@
+In lazy alloc, map into large pages only when you explicitly enable a huge-page policy.
+
+Practical rule:
+
+Default path:
+Always map 4K on fault.
+
+Fault-time huge mapping (optional):
+Use 2M or 1G only if all are true:
+
+Fault VA is huge-page aligned.
+
+Entire huge-page range belongs to same region/object and same permissions.
+
+PMM can provide contiguous huge block.
+
+You are not in cases that need fine granularity (COW, mixed protections, file offsets, guard boundaries).
+
+Promotion path (optional, later optimization):
+Start with 4K pages, then merge 512 contiguous compatible 4K pages into 2M.
+
+So for your current kernel: never map large pages in lazy alloc unless you intentionally add this policy.
