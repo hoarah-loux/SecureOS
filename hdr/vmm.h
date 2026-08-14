@@ -6,6 +6,9 @@
 #include <heap.h>
 
 
+vm_space active_space;
+uintptr_t k_root;
+uintptr_t active_pml4_phys;
 
 
 
@@ -286,6 +289,14 @@ typedef struct map_region_out{
     
 }map_region_out;
 
+typedef struct search_region_list_out{
+
+    vm_region *region;
+    bool success;
+
+
+}search_region_list_out;
+
 
 
 
@@ -299,7 +310,7 @@ uint64_t vmm_init(uintptr_t *pgtables);
 map_out vmm_map_page(uintptr_t virtual_adress,
     uintptr_t physical_adress, 
     uintptr_t *root_table, 
-    uint64_t mapping_size, 
+    uint64_t desired_map_lvl, 
     uint64_t flags );
 
 //also pretty obvious, but also incase u are a nutcase, yk what ill just assume anyone reading this is a nutcase.
@@ -369,5 +380,7 @@ uintptr_t* vmm_get_active_page_table(void);
 
 //idk what this does we will get back later
 void vmm_invalidate_tlb(uintptr_t virtual_adress);
+
+search_region_list_out search_region_list(vm_space *space, uintptr_t va);
 
 

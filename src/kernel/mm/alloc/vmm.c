@@ -2548,6 +2548,55 @@ uint64_t destroy_vm_space(vm_space *space){
 
 }
 
+
+search_region_list_out search_region_list(vm_space *space, uintptr_t va){
+
+    search_region_list_out result = {0};
+
+    if(space == NULL) return result;
+
+    
+
+    vm_region *kernel_assets = space->kernel_asset_list;
+    vm_region *normal_regions = space->vm_region_list;
+
+    while(kernel_assets != NULL){
+
+        if((va >= kernel_assets->va_start) && (va < kernel_assets->va_end)){
+
+            result.region = kernel_assets;
+            result.success = true;
+
+            return result;
+        }
+
+        kernel_assets = kernel_assets->next;
+
+    }
+
+    while(normal_regions != NULL){
+
+         if((va >= normal_regions->va_start) && (va < normal_regions->va_end)){
+
+            result.region = normal_regions;
+            result.success = true;
+
+            return result;
+        }
+
+        normal_regions = normal_regions->next;
+
+
+
+    }
+
+    result.success = false;
+
+    return result;
+
+
+}
+
 // i would like to say a word from the bottom of my heart to this file,
 // fuck you and fuck this os shit, idfk what got into my mind starting this,
 // i understand now why terry davis lost his mind doing this shit or
