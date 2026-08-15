@@ -151,17 +151,49 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         //a user read hit a page that was not present.
 
 
+        msg = "user read hit a page that was not present error";
+
+        
+
+         uintptr_t alligned_va = faulting_va & ~0xFFFULL;
+        //get curr active space from scvheduelr
+        scheduler_cpu *this_cpu = scheduler_this_cpu();
+        if(this_cpu == NULL){ panic(msg); }
+        thread *curr_t = scheduler_current(this_cpu->cpu_id);
+        if(curr_t == NULL){ panic(msg); }
+        if(curr_t->owning_proc == NULL){ panic(msg); }
+        vm_space *this_space = curr_t->owning_proc->adress_space;
+        if(this_space == NULL){ panic(msg); }
+        uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
+        search_region_list_out search_md = search_region_list(this_space, faulting_va);
+        if(!search_md.success){ panic(msg); }
+        vm_region *this_region = search_md.region;
+        uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
+        uintptr_t physical_frame = pmm_alloc_frame();
+        if(!physical_frame){ panic(msg); }
+        map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
+        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+
+
     }
 
-       if(err_code == 0x5){
+
+
+
+    if(err_code == 0x5){
 
         //a user read hit a page that was present but violated protection.
 
-        if(error_code & PFEC_ID){ //nx case
+        msg = "a user read hit a page that was present but violated protection.";
 
+        if(error_code & PFEC_ID){//nx case
 
+            msg = "a user read hit a page that was present but violated protection NX CASE.";
 
         }
+
+        //kill process 
+        panic(msg);
 
 
     }
@@ -177,6 +209,31 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         //a user write hit a page that was not present.
 
 
+
+        msg = "user write hit a page that was not present error";
+
+        
+
+         uintptr_t alligned_va = faulting_va & ~0xFFFULL;
+        //get curr active space from scvheduelr
+        scheduler_cpu *this_cpu = scheduler_this_cpu();
+        if(this_cpu == NULL){ panic(msg); }
+        thread *curr_t = scheduler_current(this_cpu->cpu_id);
+        if(curr_t == NULL){ panic(msg); }
+        if(curr_t->owning_proc == NULL){ panic(msg); }
+        vm_space *this_space = curr_t->owning_proc->adress_space;
+        if(this_space == NULL){ panic(msg); }
+        uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
+        search_region_list_out search_md = search_region_list(this_space, faulting_va);
+        if(!search_md.success){ panic(msg); }
+        vm_region *this_region = search_md.region;
+        uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
+        uintptr_t physical_frame = pmm_alloc_frame();
+        if(!physical_frame){ panic(msg); }
+        map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
+        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+
+
     }
 
 
@@ -189,6 +246,17 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
        if(err_code == 0x7){
 
         //a user write hit a page that was present but violated protection
+
+        msg = "a user write hit a page that was present but violated protection.";
+
+        if(error_code & PFEC_ID){//nx case
+
+            msg = "a user write hit a page that was present but violated protection NX CASE.";
+
+        }
+
+        //kill proccess
+        panic(msg);
 
 
     }
