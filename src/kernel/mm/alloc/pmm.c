@@ -266,7 +266,7 @@ uint64_t pmm_free_frame_count(void) {
     
     for (size_t i = 0; i < pmm_managed_frame_count; i++) {
         // In your buddy implementation, we set flags = 0 for free, 1 for used
-        if (frame_metadata[i].flags == 0) {
+        if (fm_base()[i].flags == 0) {
             count++;
         }
     }
@@ -276,7 +276,7 @@ uint64_t pmm_free_frame_count(void) {
 uint64_t pmm_used_frame_count(void) {
     size_t count = 0;
     for (size_t i = 0; i < pmm_managed_frame_count; i++) {
-        if (frame_metadata[i].flags == 1) { // 1 = Allocated
+        if (fm_base()[i].flags == 1) { // 1 = Allocated
             count++;
         }
     }
@@ -362,7 +362,7 @@ uintptr_t pmm_free_frame(uintptr_t address_to_free) {
 
     // find out the order
     size_t frame_idx = address_to_free / frame_size;
-    size_t order = frame_metadata[frame_idx].order; // should always be 0... I hope
+    size_t order = fm_base()[frame_idx].order; // should always be 0... I hope
 
     buddy_free_blocks(address_to_free, order);
     return 1; // Success

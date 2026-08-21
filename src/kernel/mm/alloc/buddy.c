@@ -1,4 +1,5 @@
 #include <buddy.h>
+#include <vmm.h>
 
 
 // list of free blocks
@@ -11,6 +12,22 @@ struct frame* frame_metadata = NULL; // we set this shit in pmm.c to the actual 
 uintptr_t mem_base_addr; // The start of the managed physical memory
 
 
+// Every struct buddy_node* in the free lists holds a PHYSICAL address
+// (buddy_init can be called with base 0). Pre-transition that's directly
+// dereferenceable (entry64_mb2.asm identity-maps the full low 4GiB).
+// Post-transition only phys_to_virt() reaches it (transition() replaces
+// that identity map with just a small kernel-image sliver + the physmap).
+static inline struct buddy_node* node_kva(struct buddy_node* phys_node) {
+    if (!physmap_ready) { return phys_node; }
+    return (struct buddy_node*)phys_to_virt((uintptr_t)phys_node);
+}
+
+// Same problem, different pointer: frame_metadata itself is a raw low
+// address (see pmm.c) that only stays dereferenceable pre-transition.
+struct frame* fm_base(void) {
+    if (!physmap_ready) { return frame_metadata; }
+    return (struct frame*)phys_to_virt((uintptr_t)frame_metadata);
+}
 
 int size_to_order(size_t nbytes) {
     int order = 0;
@@ -34,8 +51,8 @@ void buddy_init(uintptr_t base, size_t size, struct frame* frames) {
 
     // Initialize all frames as free
     for (size_t i = 0; i < managed_frames; i++) {
-        frame_metadata[i].flags = 0; // 0 = free
-        frame_metadata[i].order = 0;
+        fm_base()[i].flags = 0; // 0 = free
+        fm_base()[i].order = 0;
     }
 
 }
@@ -62,13 +79,13 @@ uintptr_t buddy_alloc_blocks(size_t order) {
     // --- BASE CASE ---
     if (free_lists[order] != NULL) {
         struct buddy_node* block = free_lists[order];
-        free_lists[order] = block->next; // Remove block from free list
+        free_lists[order] = node_kva(block)->next; // Remove block from free list
 
         // Mark as used
         // FIX: Cast to uintptr_t so subtraction gives raw bytes, then divide by 4KiB
         size_t block_index = ((uintptr_t)block - mem_base_addr) / MIN_BLOCK_SIZE;
-        frame_metadata[block_index].flags = 1;
-        frame_metadata[block_index].order = order;
+        fm_base()[block_index].flags = 1;
+        fm_base()[block_index].order = order;
 
         return (uintptr_t)block; // Return the address of the allocated block
     }
@@ -85,19 +102,19 @@ uintptr_t buddy_alloc_blocks(size_t order) {
 
         // Add the buddy block to the free list of the requested order
         struct buddy_node* buddy_block = (struct buddy_node*)buddy_addr;
-        buddy_block->next = free_lists[order];
+        node_kva(buddy_block)->next = free_lists[order];
         free_lists[order] = buddy_block;
 
         // Keep track of metadata for buddy
         // FIX: The buddy is FREE, so we mark it as 0. 
         size_t buddy_index = (buddy_addr - mem_base_addr) / MIN_BLOCK_SIZE;
-        frame_metadata[buddy_index].flags = 0; // The buddy block is free
-        frame_metadata[buddy_index].order = order; 
+        fm_base()[buddy_index].flags = 0; // The buddy block is free
+        fm_base()[buddy_index].order = order; 
 
         // Update metadata for the block we are returning
         size_t block_index = (higher_block - mem_base_addr) / MIN_BLOCK_SIZE; 
         // Note: flags is already 1 from the base case. We just update the order.
-        frame_metadata[block_index].order = order; 
+        fm_base()[block_index].order = order; 
 
         return higher_block; // Return the address of the allocated block
     }
@@ -118,10 +135,10 @@ static int remove_from_free_list(size_t order, uintptr_t target) {
 
     while (*curr != NULL) {
         if ((uintptr_t)*curr == target) {
-            *curr = (*curr)->next;
+            *curr = node_kva(*curr)->next;
             return 1;
         }
-        curr = &((*curr)->next);
+        curr = &(node_kva(*curr)->next);
     }
 
     return 0;
@@ -134,7 +151,7 @@ static int in_free_list(size_t order, uintptr_t target) {
         if ((uintptr_t)curr == target) {
             return 1;
         }
-        curr = curr->next;
+        curr = node_kva(curr)->next;
     }
 
     return 0;
@@ -160,48 +177,48 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
 
     if (order >= MAX_ORDER - 1) {
         // Add to the highest possible free list and stop
-        frame_metadata[frame_idx].flags = 0;
-        frame_metadata[frame_idx].order = (uint8_t)order;
+        fm_base()[frame_idx].flags = 0;
+        fm_base()[frame_idx].order = (uint8_t)order;
 
         struct buddy_node* node = (struct buddy_node*)addr;
-        node->next = free_lists[order];
+        node_kva(node)->next = free_lists[order];
         free_lists[order] = node;
         return;
     }
 
     uintptr_t buddy_addr = get_buddy_addr(addr, order);
     if (buddy_addr < mem_base_addr || ((buddy_addr - mem_base_addr) % MIN_BLOCK_SIZE) != 0) {
-        frame_metadata[frame_idx].flags = 0;
-        frame_metadata[frame_idx].order = (uint8_t)order;
+        fm_base()[frame_idx].flags = 0;
+        fm_base()[frame_idx].order = (uint8_t)order;
 
         struct buddy_node* node = (struct buddy_node*)addr;
-        node->next = free_lists[order];
+        node_kva(node)->next = free_lists[order];
         free_lists[order] = node;
         return;
     }
 
     size_t buddy_index = (buddy_addr - mem_base_addr) / MIN_BLOCK_SIZE;
     if (buddy_index >= managed_frames) {
-        frame_metadata[frame_idx].flags = 0;
-        frame_metadata[frame_idx].order = (uint8_t)order;
+        fm_base()[frame_idx].flags = 0;
+        fm_base()[frame_idx].order = (uint8_t)order;
 
         struct buddy_node* node = (struct buddy_node*)addr;
-        node->next = free_lists[order];
+        node_kva(node)->next = free_lists[order];
         free_lists[order] = node;
         return;
     }
 
     // Check if the buddy is free AND of the same order
     // A block can only merge if its buddy is also free and not part of a larger allocation
-    if (frame_metadata[buddy_index].flags == 0 && frame_metadata[buddy_index].order == order) {
+    if (fm_base()[buddy_index].flags == 0 && fm_base()[buddy_index].order == order) {
 
         // Only merge if the buddy is really present in the order free list.
         if (!remove_from_free_list(order, buddy_addr)) {
-            frame_metadata[frame_idx].flags = 0;
-            frame_metadata[frame_idx].order = (uint8_t)order;
+            fm_base()[frame_idx].flags = 0;
+            fm_base()[frame_idx].order = (uint8_t)order;
 
             struct buddy_node* node = (struct buddy_node*)addr;
-            node->next = free_lists[order];
+            node_kva(node)->next = free_lists[order];
             free_lists[order] = node;
             return;
         }
@@ -209,8 +226,8 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
         // 2. Determine the start of the combined block (the lower address)
         uintptr_t merged_addr = (addr < buddy_addr) ? addr : buddy_addr;
         size_t merged_index = (merged_addr - mem_base_addr) / MIN_BLOCK_SIZE;
-        frame_metadata[merged_index].flags = 0;
-        frame_metadata[merged_index].order = (uint8_t)(order + 1);
+        fm_base()[merged_index].flags = 0;
+        fm_base()[merged_index].order = (uint8_t)(order + 1);
 
         // 3. Recursively free the larger merged block
         buddy_free_blocks(merged_addr, order + 1);
@@ -218,11 +235,11 @@ void buddy_free_blocks(uintptr_t addr, size_t order) {
     } else {
         // --- NO MERGING ---
         // Just add the current block back to the free list
-        frame_metadata[(addr - mem_base_addr) / MIN_BLOCK_SIZE].flags = 0;
-        frame_metadata[(addr - mem_base_addr) / MIN_BLOCK_SIZE].order = order;
+        fm_base()[(addr - mem_base_addr) / MIN_BLOCK_SIZE].flags = 0;
+        fm_base()[(addr - mem_base_addr) / MIN_BLOCK_SIZE].order = order;
 
         struct buddy_node* node = (struct buddy_node*)addr;
-        node->next = free_lists[order];
+        node_kva(node)->next = free_lists[order];
         free_lists[order] = node;
     }
 }

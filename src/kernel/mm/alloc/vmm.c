@@ -3,6 +3,7 @@
 uintptr_t k_root;
 uintptr_t active_pml4_phys;
 vm_space active_space;
+bool physmap_ready = false;
 
 #define LOW_BASE 0x100000
 
@@ -804,9 +805,17 @@ uint64_t transition(uintptr_t *old_root){
     toptable = new_root;
     adress_toptable = new_root_phys;
     kroot = toptable;
+    physmap_ready = true;
 
 return 1;
 
+
+}
+
+
+uintptr_t* vmm_get_active_page_table(void){
+
+    return toptable;
 
 }
 
@@ -1784,7 +1793,10 @@ free_out vmm_free_page(uintptr_t *root_table, uintptr_t virtual_adress){
 create_vm_space_out create_vm_space(){
 
     create_vm_space_out result = {0};
-    uintptr_t *kernel_root = kroot;
+    // kroot (like toptable) is always stored as a PHYSICAL address in this
+    // codebase - see the_walking_pager2's phys_to_virt(root_table) at the
+    // top of every walk. Translate before indexing it as an array.
+    uintptr_t *kernel_root = (uintptr_t *)phys_to_virt((uintptr_t)kroot);
     
     free_page_frame_out new_pml4 = free_frame_for_new_page_structure_and_create_it2();
     if(!new_pml4.success){ result.error_code = PML4_ALLOC_FAIL; return result;}

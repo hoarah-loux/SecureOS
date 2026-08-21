@@ -10,6 +10,7 @@ typedef struct vm_space vm_space;
 
 extern uintptr_t k_root;
 extern uintptr_t active_pml4_phys;
+extern bool physmap_ready; // true once transition() has populated the physmap
 
 
 
@@ -257,6 +258,7 @@ typedef struct create_vm_space_out{
 enum region_types{
 
     STACK,
+    ELF_SEGMENT,
 
 
 
