@@ -26,6 +26,7 @@ static bool is_initialized = false;
 
 // the global kernel asset list of regions
 static kernel_asset_list_g g_kernel_assets = {0};
+static uintptr_t *kroot;
 
 
 
@@ -802,6 +803,7 @@ uint64_t transition(uintptr_t *old_root){
 
     toptable = new_root;
     adress_toptable = new_root_phys;
+    kroot = toptable;
 
 return 1;
 
@@ -1779,10 +1781,10 @@ free_out vmm_free_page(uintptr_t *root_table, uintptr_t virtual_adress){
 
 
 
-create_vm_space_out create_vm_space(uintptr_t *kernel_root){
+create_vm_space_out create_vm_space(){
 
     create_vm_space_out result = {0};
-    if(kernel_root == NULL){return result;}
+    uintptr_t *kernel_root = kroot;
     
     free_page_frame_out new_pml4 = free_frame_for_new_page_structure_and_create_it2();
     if(!new_pml4.success){ result.error_code = PML4_ALLOC_FAIL; return result;}
