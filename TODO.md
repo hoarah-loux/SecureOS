@@ -1,17 +1,38 @@
-# Missing/broken — block usermode
+# Missing/broken — blocks usermode
 
-- [ ] **Syscall entry** — none. No int 0x80 gate, no SYSCALL/SYSRET (STAR/LSTAR/SFMASK never written). `TRAP_REASON_SYSCALL` enum exists, unused.
-- [ ] **IDT gate DPL wrong for user traps** — `YIELD_VECTOR`/`EXIT_VECTOR` (0x81/0x82) meant for ring3 but DPL=0 in `idt.c:28-32` — ring3 `int` on them faults. No #GP/#UD handler registered either.
-- [ ] **Page mapper never called** — `vmm_map_page()` (`vmm.c:1412`) zero callers. `create_vm_space()` builds PML4 but nothing fills it. No user page ever gets mapped.
-- [ ] **ELF loader stub only** — `loader.c` reads header, never walks program headers, never copies segments, no user mapping.
-- [ ] **No usermode entry trampoline** — `restore_context()` can build CPL3 IRETQ frame but nothing constructs context from loaded ELF and calls it.
-- [ ] **Fault handler empty** — `page_fault_handler()` (`handlers.c:17-72`) branches all 8 cases, every body empty comment. Ring3 fault = infinite re-fault, no kill/SIGSEGV/panic.
-- [ ] **kmain never boots a process** — `kernel.c` test-parses ELF header only, never calls `scheduler_init`/`create_proc`/`create_thread`. `init_proc.c` empty (0 bytes).
-- [ ] **src/userland/ empty** — no user program source at all.
-- [ ] **No libc/syscall stubs** — `src/stdlib/` empty. No open/read/write/exit wrappers, no crt0 for user binaries.
+- [x] **Syscall entry** — done. `int 0x80` gate registered DPL=3 (`idt.c:40`, `0xEE`), `syscall_isr` (`interrupts.asm`) builds the trap frame, `syscall_handler` (`syscall.c`) dispatches through a real table. `SYS_read/write/open/close/lseek/getkey/getkey_wait` are wired to real fs/keyboard code. `SYS_exit/yield/fork/execve/waitpid/getpid/mmap/munmap/brk/gettime/sleep/fb_present` are still `sys_stub` (`syscall.c:22-33`, return -1).
+- [ ] **IDT gate DPL wrong for user traps** — `YIELD_VECTOR`/`EXIT_VECTOR` (0x81/0x82) still registered `0x8E` (DPL=0) in `idt.c:35-36`. A ring3 `int 0x81`/`int 0x82` still `#GP`s. No `#GP`(13)/`#UD`(6) handler registered either, so that fault has nothing to catch it.
+- [x] **Page mapper never called** — done. `vmm_map_page()` is now called from all four not-present page-fault paths in `handlers.c` (kernel/user × read/write) as part of lazy allocation. `create_vm_space()` also copies kernel PML4 entries into new address spaces (`vmm.c:1817-1822`). Still has a live `//TODO` at `vmm.c:1811-1816`: the US (user/supervisor) page bit is not being enforced on user mappings — ring3 access to a "mapped" page may still fault.
+- [ ] **ELF loader stub only** — `loader.c` is still 39 lines: `load_file()` (read whole file into a `kmalloc` buffer) + `parse_mem_elf()` (magic check + cast to `elf_eheader_t`). No program-header walk, no `PT_LOAD` segment copy, no calls to `vmm_map_page`/`reserve_region`, no user address space population.
+- [ ] **No usermode entry trampoline wired up** — the mechanism itself is built and looks correct: `create_thread()` (`t.c:147-161`) constructs a real CPL3 context (`cs=0x1B`, `ss=0x23`, given `rip`); `restore_context()` (`context_switch.asm`) correctly builds a 5-word IRETQ frame for CPL3, switches CR3, updates TSS RSP0, and `iretq`s; GDT/TSS ring3 selectors are set up at boot (`entry64_mb2.asm:1007-1019`). Nothing calls this chain yet — no code builds a thread from a loaded ELF entry point and hands it to the scheduler.
+- [ ] **Fault handler half-done** — the four not-present cases (`err_code == 0x0/0x2/0x4/0x6`) now do real lazy-alloc (region lookup, frame alloc, map). The four protection-violation cases (`0x1/0x3/0x5/0x7`, present-but-wrong-perms) still just build a message and unconditionally `panic()` the whole kernel — comments say `//kill process` but there's no per-process kill/SIGSEGV path. Any ring3 process hitting a protection fault takes the whole OS down.
+- [ ] **kmain never boots a process** — zero calls to `scheduler_init`/`create_proc`/`create_thread` anywhere in `kernel.c`. `kmain` loads `/ELF.EXE` only to `printk` its header fields, then drops into an interactive shell loop that never returns. `scheduler_init()` is fully implemented but dead code — never called from anywhere in `src/`.
+- [ ] **`init_proc.c` is dead and broken** — body is empty (13 lines, `uint64_t init_proc(void){ }`, UB on return since nothing is returned), and the header declares a *different* name (`hdr/init_proc.h` declares `proc_init`, the .c defines `init_proc`) — calling it as declared would fail to link.
+- [ ] **`src/userland/` empty** — no user program source at all (just `.gitkeep`/a stray note file).
+- [ ] **No libc/syscall stubs** — `src/stdlib/` exists but has zero files. No malloc/free/memcpy/string funcs, no open/read/write/exit wrappers, no crt0 for user binaries.
+
+## Build system was silently incomplete (found + fixed 2026-08-21)
+
+`src/boot/Makefile`'s `KERNEL_SRCS`/`ASM_SOURCES` never included `proc/sched/*.c` (scheduler, queues, context), `proc/ds/*.c` (p.c, t.c), `proc/init_proc.c`, or `context_switch.asm` — the entire scheduler/proc subsystem had never been compiled as part of a real build, let alone linked. Now wired in. Fixing that surfaced (and required fixing) several dormant bugs that only show up once everything actually compiles together:
+
+- [x] `p_states.READY` collided with `queue_type.READY` (same enum value name, different enums) — renamed to `READY_P` (`p.h`).
+- [x] `vm_space` used before declared in `vmm.h` — forward-declared + struct moved above first use.
+- [x] `k_root`/`active_pml4_phys`/`active_space` were non-`extern` globals declared in a header (`vmm.h`) — multiple-definition at link time in every TU that included it. Made `extern`, single definition moved to `vmm.c`.
+- [x] `p.c` had its own unrelated `uintptr_t *k_root` global that collided by name with vmm's `k_root` — renamed to `proc_kernel_root`.
+- [x] Circular include `t.h` ↔ `context.h` — order-dependent whether `thread` was visible when `context.h` needed it. Broken by having `context.h` forward-declare `struct thread` instead of including `t.h`.
+- [x] `vmm.c` `mmap()` assigned `void*` to `uintptr_t` with no cast — added cast.
+- [ ] `context.c` `save_trap_frame()` leaks memory on every call (`kcalloc`s a fresh `context`/`trap_frame` per trap instead of reusing the thread's existing one, per its own comment at line 125) — will exhaust the heap fast once a process is actually taking timer ticks/syscalls under a real scheduler.
+
+## Doom-generic port blockers (surveyed 2026-08-21, none started)
+
+- [ ] **Timer IRQ0 is masked** — `pic_init_for_keyboard()` explicitly masks it (`pic.c:101-102`, "keep timer masked until full runtime validation"). `timer_ticks` is permanently stuck at 0 despite `timer_handler`/`timer_ticks_get` otherwise being ready to serve as `DG_GetTicksMs`/`DG_SleepMs`.
+- [ ] **`kmalloc` capped at 4096 bytes** (`heap.c:43`) — buddy allocator (`buddy.c`, full API) exists but is not wired into `kmalloc`. Cannot service Doom's multi-MB zone allocator or even a full WAD-sized buffer.
+- [ ] **`load_file()` will fail on any file over 4KB** — direct consequence of the `kmalloc` cap above (`loader.c:19` calls `kmalloc(file.entry.file_size)`). A Doom WAD (several MB) cannot be loaded as written today.
+- [ ] **No framebuffer blit/putpixel API exposed** — `fb_putpixel` (`framebuffer.c:4-26`) is `static`; only rect-fill/text helpers are public. `DG_DrawFrame` needs a raw pixel-buffer blit. Framebuffer address/resolution/pitch/bpp are available (`kmain` parses the multiboot2 tag) but not exposed as a reusable API outside `kmain`.
+- [ ] **No arrow-key / extended-scancode handling** — `keymap_base`/`keymap_shift` (`keyboard.c:12-50`) have no entries for arrow keys (0x48/0x50/0x4B/0x4D), and there's no 0xE0 extended-prefix handling at all, so arrow key presses are silently dropped as two separate unmapped scancodes. Doom's directional/menu input is unusable as-is.
 
 ## Bottom line
 
-Hardware scaffolding (GDT/TSS/page bit) ready. Everything trap-in, load-program, map-memory, handle-fault, and userland-side is either stub or unwired from `kmain`.
+Hardware scaffolding (GDT/TSS/page bits, syscall gate, lazy-alloc page fault path, scheduler/proc/thread data structures) is real and — as of today — actually compiles and links for the first time. What's left is almost entirely *wiring*, not missing primitives: nothing calls `scheduler_init`/`create_proc`/`create_thread` from boot, the ELF loader doesn't map segments, protection faults panic instead of killing the process, and the two dormant allocator/timer gates (kmalloc cap, masked PIT) block anything memory- or timing-heavy — including Doom — before userland code is even reachable.
 
-Order: fix IDT DPL → wire `vmm_map_page` into ELF loader → build usermode-entry trampoline → wire fault handler → call from `kmain` → write minimal userland+syscall stubs.
+Order: fix YIELD/EXIT_VECTOR DPL → unmask timer IRQ0 → wire buddy allocator into `kmalloc` → write ELF `PT_LOAD` segment loader (with US-bit mapping) → call `scheduler_init`/`create_proc`/`create_thread` from `kmain` → fix `init_proc.c` name mismatch and give it a real body → make protection-fault paths kill the process instead of `panic()` → fix the `save_trap_frame` leak → write minimal `src/stdlib` (malloc/free/memcpy/string/file wrappers + crt0) → write `src/userland` doom-generic backend (framebuffer blit + arrow keys needed first).
