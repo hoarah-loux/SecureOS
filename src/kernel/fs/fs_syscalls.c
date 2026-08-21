@@ -16,6 +16,12 @@
 
 static fat32_mount_t *g_mount;
 
+struct fs_mmap_backing {
+    fat32_file_t file;
+    size_t file_size;
+    uint32_t refcount;
+};
+
 
 static proc *get_p(void){
 
@@ -229,4 +235,170 @@ int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, ui
     }
 
     return new_pos;
+}
+
+
+fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd) {
+    fs_mmap_pin_out out = {0};
+
+    proc *p = get_p();
+    if (p == NULL) {
+        out.error_code = 1;
+        return out;
+    }
+
+    proc_fd_slot_t *slot = fd_slot_get(fd, p);
+    if (slot == NULL || slot->kind != PROC_FD_FILE) {
+        out.error_code = 1;
+        return out;
+    }
+
+    fs_mmap_backing *backing = kcalloc(1, sizeof(*backing));
+    if (backing == NULL) {
+        out.error_code = 2;
+        return out;
+    }
+
+    backing->file = slot->file;
+    backing->file_size = (size_t)slot->file.entry.file_size;
+    backing->refcount = 1;
+
+    out.success = true;
+    out.backing = backing;
+    out.file_size = backing->file_size;
+    return out;
+}
+
+uint64_t fs_mmap_ref(fs_mmap_backing *backing) {
+    if (backing == NULL) {
+        return 0;
+    }
+
+    if (backing->refcount == UINT32_MAX) {
+        return 0;
+    }
+
+    backing->refcount++;
+    return 1;
+}
+
+fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd) {
+    fs_mmap_file_key key = {0};
+
+    proc *p = get_p();
+    if (p == NULL) {
+        return key;
+    }
+
+    proc_fd_slot_t *slot = fd_slot_get(fd, p);
+    if (slot == NULL || slot->kind != PROC_FD_FILE) {
+        return key;
+    }
+
+    key.mount = slot->file.mount;
+    key.parent_cluster = slot->file.parent_cluster;
+    key.first_cluster = slot->file.entry.first_cluster;
+    for (int i = 0; i < 13; i++) {
+        key.short_name[i] = slot->file.short_name[i];
+        if (key.short_name[i] == '\0') {
+            break;
+        }
+    }
+    key.valid = true;
+    return key;
+}
+
+uint64_t fs_mmap_backing_matches_key(fs_mmap_backing *backing, const fs_mmap_file_key *key) {
+    if (backing == NULL || key == NULL || !key->valid) {
+        return 0;
+    }
+
+    if (backing->file.mount != key->mount) {
+        return 0;
+    }
+
+    if (backing->file.parent_cluster != key->parent_cluster) {
+        return 0;
+    }
+
+    if (backing->file.entry.first_cluster != key->first_cluster) {
+        return 0;
+    }
+
+    for (int i = 0; i < 13; i++) {
+        if (backing->file.short_name[i] != key->short_name[i]) {
+            return 0;
+        }
+        if (backing->file.short_name[i] == '\0') {
+            break;
+        }
+    }
+
+    return 1;
+}
+
+int64_t fs_mmap_read(fs_mmap_backing *backing, uint64_t file_offset, uint8_t *dst, uint64_t count) {
+    if (backing == NULL || dst == NULL) {
+        return -1;
+    }
+
+    if (file_offset > UINT32_MAX) {
+        return -1;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (file_offset >= backing->file_size) {
+        for (uint64_t i = 0; i < count; i++) {
+            dst[i] = 0;
+        }
+        return 0;
+    }
+
+    uint64_t max_read = backing->file_size - file_offset;
+    uint64_t to_read = count;
+    if (to_read > max_read) {
+        to_read = max_read;
+    }
+
+    if (to_read > UINT32_MAX) {
+        return -1;
+    }
+
+    if (fat32_file_seek(&backing->file, (uint32_t)file_offset) != 0) {
+        return -1;
+    }
+
+    int rc = fat32_file_read(&backing->file, dst, (uint32_t)to_read);
+    if (rc < 0) {
+        return -1;
+    }
+
+    uint64_t read_bytes = (uint64_t)rc;
+    for (uint64_t i = read_bytes; i < count; i++) {
+        dst[i] = 0;
+    }
+
+    return (int64_t)read_bytes;
+}
+
+uint64_t fs_mmap_unpin(fs_mmap_backing *backing) {
+    if (backing == NULL) {
+        return 0;
+    }
+
+    if (backing->refcount == 0) {
+        return 0;
+    }
+
+    backing->refcount--;
+    if (backing->refcount == 0) {
+        if (!kfree(backing)) {
+            return 0;
+        }
+    }
+
+    return 1;
 }

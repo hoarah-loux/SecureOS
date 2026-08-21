@@ -1,4 +1,6 @@
 #include <vmm.h>
+#include <fs_syscalls.h>
+#include <scheduler.h>
 
 uintptr_t k_root;
 uintptr_t active_pml4_phys;
@@ -1878,13 +1880,16 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     if(req->object == NULL && !(req->map_flags & KERNEL_ASSET)){
 
-        region->object = NULL;
+        kfree(region);
+
+        return result;
 
 
     }else if(req->object != NULL && !(req->map_flags & KERNEL_ASSET)){
 
         region->object = req->object;
         region->object->type = req->object->type;
+        
 
 
     }
@@ -1970,6 +1975,7 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         region->type = req->type;
         region->object = req->object;
         region->object_base_offset = req->backing_offset;
+        
 
         g_kernel_assets.head = region;
         g_kernel_assets.tail = region;
@@ -2174,7 +2180,7 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         }
 
         
-
+        region->object->ref_count++;
         result.success = true;
         result.region_ptr = (vm_region *) region;
         result.space_ptr = (vm_space *) space;
@@ -2523,6 +2529,21 @@ uint64_t destroy_vm_region(vm_space *space, vm_region *region){
 
         }
 
+        region->object->ref_count --;
+
+        if(region->object->ref_count == 0 && region->object->type == FILE){
+
+            if(!fs_mmap_unpin(region->object->backing_ctx)){return 0;}
+            kfree(region->object);
+
+            
+        }else if(region->object->ref_count == 0 && region->object->type == ANON){
+
+            kfree(region->object);
+
+
+        }
+
 
 
     }
@@ -2637,48 +2658,90 @@ void *mmap(void* addr, size_t len, uint64_t perms,
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset){
 
-                if(len == 0 || perms == 0 || len < 0){return NULL;}
+                if(len == 0 || perms == 0){return NULL;}
+                if((file_offset & 0xFFFULL) != 0){return NULL;}
 
+                scheduler_cpu *cpu = scheduler_this_cpu();
+                if(cpu == NULL){return NULL;}
 
+                thread *t = scheduler_current(cpu->cpu_id);
+                if(t == NULL || t->owning_proc == NULL){return NULL;}
 
+                vm_space *space = t->owning_proc->adress_space;
+                if(space == NULL){return NULL;}
 
                 vm_object *object = kcalloc(1, sizeof(vm_object));
+                if(object == NULL){return NULL;}
+
+                bool acquired_backing = false;
+
+                object->size_bytes = len;
+                object->flags = map_flags;
+                object->ref_count = 0;
+                object->phys_base = 0;
+                object->ref_list_region = NULL;
+                object->ref_list_space = NULL;
 
                 if(file_descriptor == 0){
-
-                    object = NULL;
-
+                    object->type = ANON;
+                    object->backing_ctx = NULL;
                 }else{
+                    fs_mmap_file_key file_key = fs_mmap_file_key_from_fd(file_descriptor);
+                    if(!file_key.valid){
+                        kfree(object);
+                        return NULL;
+                    }
+
+                    fs_mmap_backing *matching_backing = NULL;
+                    vm_region *cursor = space->vm_region_list;
+                    while(cursor != NULL){
+                        if(cursor->object != NULL &&
+                           cursor->object->type == FILE &&
+                           cursor->object->backing_ctx != NULL &&
+                           fs_mmap_backing_matches_key(cursor->object->backing_ctx, &file_key)){
+                            matching_backing = cursor->object->backing_ctx;
+                            break;
+                        }
+                        cursor = cursor->next;
+                    }
 
                     object->type = FILE;
-                    object->size_bytes = len;
-                    object->ref_count = 1;
-                    object->flags = map_flags;
-                    object->backing_ctx = 0000; //bolbol did the fs idfk what to put here
-                    object->phys_base = 0; // this is only useful with hardware stuff and mmio so not for files
-                    object->ref_list_region = NULL;
-                    object->ref_list_space = NULL;
-
-
-
+                    if(matching_backing != NULL){
+                        if(!fs_mmap_ref(matching_backing)){
+                            kfree(object);
+                            return NULL;
+                        }
+                        object->backing_ctx = matching_backing;
+                        acquired_backing = true;
+                    }else{
+                        fs_mmap_pin_out pin_md = fs_mmap_pin_fd(file_descriptor);
+                        if(!pin_md.success || pin_md.backing == NULL){
+                            kfree(object);
+                            return NULL;
+                        }
+                        object->backing_ctx = pin_md.backing;
+                        acquired_backing = true;
+                    }
                 }
 
-                reserve_region_request *req = kcalloc(1, sizeof(req));
+                reserve_region_request req = {0};
+                req.hint_va = (uintptr_t)addr;
+                req.backing_offset = file_offset;
+                req.map_flags = map_flags;
+                req.perms = perms;
+                req.size = len;
+                req.object = object;
 
-                req->hint_va = (uintptr_t)addr;
-                req->backing_offset = file_offset;
-                req->map_flags = map_flags;
-                req->perms = perms;
-                req->size = len;
-                req->object = object;
+                reserve_region_out reserve_md = reserve_region(space, &req);
+                if(!reserve_md.success || reserve_md.region_ptr == NULL){
+                    if(acquired_backing){
+                        (void)fs_mmap_unpin(object->backing_ctx);
+                    }
+                    kfree(object);
+                    return NULL;
+                }
 
-                //alr i give up alot of file system shit i need bolbol see ya
-
-                
-
-
-
-
+                return (void*)reserve_md.region_ptr->va_start;
 }
 
 // i would like to say a word from the bottom of my heart to this file,

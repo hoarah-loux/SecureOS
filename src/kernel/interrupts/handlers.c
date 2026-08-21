@@ -4,6 +4,7 @@
 #include <keyboard.h>
 #include <handlers.h>
 #include <serial.h>
+#include <fs_syscalls.h>
 
 
 void panic(const char *msg){
@@ -29,6 +30,44 @@ static inline uint8_t inb(uint16_t port) {
 
 
 static volatile uint64_t timer_ticks = 0;
+
+static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, uintptr_t physical_frame) {
+    if (region == NULL) {
+        return 0;
+    }
+
+    uint8_t *frame_buf = (uint8_t *)phys_to_virt(physical_frame);
+    if (frame_buf == NULL) {
+        return 0;
+    }
+
+    if (region->object != NULL &&
+        region->object->type == FILE &&
+        region->object->backing_ctx != NULL) {
+
+        if (alligned_va < region->va_start) {
+            return 0;
+        }
+
+        uint64_t page_delta = (uint64_t)(alligned_va - region->va_start);
+        uint64_t file_offset = (uint64_t)region->object_base_offset + page_delta;
+        if (file_offset < page_delta) {
+            return 0;
+        }
+
+        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, 4096) < 0) {
+            return 0;
+        }
+
+        return 1;
+    }
+
+    for (uint64_t i = 0; i < 4096; i++) {
+        frame_buf[i] = 0;
+    }
+
+    return 1;
+}
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
 
@@ -59,6 +98,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
         if(!physical_frame){ panic(msg); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
         if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
         
@@ -115,6 +155,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
         if(!physical_frame){ panic(msg); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
         if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
 
@@ -171,6 +212,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
         if(!physical_frame){ panic(msg); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
         if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
 
@@ -230,6 +272,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
         if(!physical_frame){ panic(msg); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
         if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
 

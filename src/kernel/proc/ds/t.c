@@ -25,9 +25,27 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     vm_space *space = owning_process->adress_space;
     if(space == NULL){return result;}
+    vm_object *object_stack_usr = NULL;
+    vm_region *usr_stack = NULL;
+    vm_region *ker_stack = NULL;
+    
+    
 
 
     if(!t_k){
+
+        object_stack_usr = kcalloc(1, sizeof(vm_object));
+        if(object_stack_usr == NULL){
+            kfree(t);
+            result.success = false;
+            result.error_code = USER_STACK_RESERVE_ERROR;
+            return result;
+        }
+
+        object_stack_usr->type = ANON;
+        object_stack_usr->backing_ctx = NULL;
+        object_stack_usr->size_bytes = user_stack_size;
+        object_stack_usr->ref_count = 0;
 
         reserve_region_request stack_request_usr = {
 
@@ -35,6 +53,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
             .type = STACK,
             .map_flags = TOPDOWN | GROWDOWN | PRIVATE,
             .perms =  USER_STACK_FLAGS,
+            .object = object_stack_usr
           
         };
 
@@ -42,6 +61,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
         reserve_region_out usr_stack_md = reserve_region(space, req_u);
         if(!usr_stack_md.success){
+            kfree(object_stack_usr);
             kfree(t);
             result.success = false;
             result.error_code = USER_STACK_RESERVE_ERROR;
@@ -49,7 +69,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
         }
 
-        vm_region *usr_stack = usr_stack_md.region_ptr;
+        usr_stack = usr_stack_md.region_ptr;
 
         uintptr_t u_stack_va_start = usr_stack->va_start;
         uintptr_t u_stack_va_end = usr_stack->va_end;
@@ -82,6 +102,9 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     reserve_region_out ker_stack_md = reserve_region(space, req_k);
     if(!ker_stack_md.success){
+        if(usr_stack != NULL){
+            (void)destroy_vm_region(space, usr_stack);
+        }
         kfree(t);
         result.success = false;
         result.error_code = KERNEL_STACK_RESERVE_ERROR;
@@ -89,8 +112,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
 
     }
-
-    vm_region *ker_stack = ker_stack_md.region_ptr;
+    ker_stack = ker_stack_md.region_ptr;
 
     uintptr_t k_stack_va_start = ker_stack->va_start;
     uintptr_t k_stack_va_end = ker_stack->va_end;
@@ -130,6 +152,12 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     context *c = kcalloc(1, sizeof(context));
     if(c == NULL){
+        if(ker_stack != NULL){
+            (void)destroy_vm_region(space, ker_stack);
+        }
+        if(usr_stack != NULL){
+            (void)destroy_vm_region(space, usr_stack);
+        }
         kfree(t);
         result.error_code = CONTEXT_ALLOC_FAIL;
         result.success = false;        
