@@ -1,5 +1,9 @@
 #include <p.h>
 
+static uint64_t pid_count = 1;
+static uint64_t pcount = 1;
+
+
 uintptr_t *k_root;
 
 create_proc_out create_proc(bool k){
@@ -18,7 +22,8 @@ create_proc_out create_proc(bool k){
         return result;
     }
 
-    p->id = 0;
+    p->id = pid_count;
+    pid_count += 1;
     p->parent_pid = 0;
     p->next = NULL;
     p->prev = NULL;
@@ -42,6 +47,7 @@ create_proc_out create_proc(bool k){
     p->sibling_prev = NULL;
     p->sibling_next = NULL;
     p->parent = NULL;
+    pcount ++;
 
     result.proc = p;
     result.success = true;
@@ -76,16 +82,25 @@ destroy_proc_out destroy_proc(proc *p){
         return result;
     }
 
-    if(p->adress_space != NULL){
 
-        //destroy space
-    }
-
+  
+   
     if(p->child_head != NULL){
 
         result.error_code = PROC_STILL_HAS_CHILD;
         result.success = false;
         return result;
+    }
+
+    if(p->adress_space != NULL){
+
+        if(!destroy_vm_space(p->adress_space)){
+
+            result.error_code = DESTROY_SPACE_FAIL;
+            result.success = false;
+
+            return result;
+        }
     }
 
     if(p->prev != NULL){
@@ -100,6 +115,10 @@ destroy_proc_out destroy_proc(proc *p){
 
     p->child_head = NULL;
     p->child_tail = NULL;
+
+
+     
+
     
 
 

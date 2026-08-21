@@ -271,6 +271,14 @@ void keyboard_interrupt_handler(int irq, void *data) {
     pic_send_eoi(PIC_KEYBOARD_IRQ);
 }
 
+void mouse_interrupt_handler(int irq, void *data) {
+    (void)irq;
+    (void)data;
+
+    (void)inb(0x60);
+    pic_send_eoi(PIC_MOUSE_IRQ);
+}
+
 
 void timer_handler(trap_frame *frame, trap_reason trap_reason){
     

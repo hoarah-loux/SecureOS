@@ -12,6 +12,7 @@
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip);
 void keyboard_interrupt_handler(int irq, void *data);
+void mouse_interrupt_handler(int irq, void *data);
 
 
 

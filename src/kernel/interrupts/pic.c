@@ -98,7 +98,17 @@ void pic_init_for_keyboard(void) {
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 
-    // Keep timer masked until full runtime validation; keyboard stays enabled.
+    // Keep timer masked until full runtime validation.
     pic_set_mask(PIC_TIMER_IRQ);
+
+    // Enable keyboard IRQ1.
     pic_clear_mask(PIC_KEYBOARD_IRQ);
+}
+
+void pic_enable_mouse_irq(void) {
+    // Enable cascade on master IRQ2 so slave IRQs can be forwarded.
+    pic_clear_mask(2u);
+
+    // Enable mouse IRQ12 on the slave PIC.
+    pic_clear_mask(PIC_MOUSE_IRQ);
 }

@@ -1,7 +1,8 @@
 #include <t.h>
 
 
-
+static uint64_t tid_count = 1;
+static uint64_t tcount = 1;
 
 //rip in this fucntion means the entry point were the therad would tart executing
 create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t thread_flags, size_t user_stack_size){
@@ -57,6 +58,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
         t->user_stack_va_end = u_stack_va_end;
         t->user_stack_size = usr_stack->size_rounded;
         t->usr_stack_region_ptr = usr_stack;
+        t->t_region_list = usr_stack;
 
     }
     
@@ -96,10 +98,13 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
     t->kernel_stack_va_end = k_stack_va_end;
     t->kernel_stack_va_start = k_stack_va_start;
     t->ker_stack_region_ptr = ker_stack;
+    t->t_k_a_region_list = ker_stack;
 
     //fill put the rest of the metadata
 
-    t->id = 0; //counter of some type we will see
+    t->id = tid_count; //counter of some type we will see
+    tid_count += 1;
+    tcount ++;
     t->next = NULL;
     t->prev = NULL;
     t->q_thread_next = NULL;
@@ -154,6 +159,14 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
 
     }
+
+    // appened to thread list 
+
+    //kernel list
+
+    
+
+    
 
 
     //append to procs thread list
@@ -218,6 +231,8 @@ thread_exit_out thread_exit(thread *t, uint64_t exit_status){
         return result;
     }
 
+    proc *owner = t->owning_proc;
+
     if(t->ref_count == 0){
         result.error_code = THREAD_EXIT_INVALID_REFCOUNT;
         return result;
@@ -241,6 +256,19 @@ thread_exit_out thread_exit(thread *t, uint64_t exit_status){
     if(t->owner_queue != NULL){
         result.error_code = THREAD_EXIT_STILL_QUEUED;
         return result;
+    }
+
+    if(owner->thread_count == 1){
+        if(owner->thread_head != t || owner->thread_tail != t){
+            result.error_code = THREAD_EXIT_CORRUPT_PROCESS_LIST;
+            return result;
+        }
+
+        proc_exit_out proc_exit_md = proc_exit(owner);
+        if(!proc_exit_md.success){
+            result.error_code = THREAD_EXIT_PROC_EXIT_FAILED;
+            return result;
+        }
     }
 
     t->exit_status = exit_status;
@@ -354,6 +382,14 @@ reap_thread_out reap_thread(thread *t){
     t->flags &= ~THREAD_F_REAPABLE;
     t->flags |= THREAD_F_REAPED;
 
+    if(was_last_thread){
+        reap_proc_out proc_reap_md = reap_proc(owner);
+        if(!proc_reap_md.success){
+            result.error_code = THREAD_REAP_PROC_REAP_FAILED;
+            return result;
+        }
+    }
+
     result.reaped_thread = t;
     result.exit_status = t->exit_status;
     result.was_last_thread = was_last_thread;
@@ -445,11 +481,53 @@ destroy_thread_out destroy_thread(thread *t){
 
     uint64_t destroyed_thread_id = t->id;
 
-    if(t->usr_stack_region_ptr != NULL){
-        // destroy_region(owner->adress_space, t->usr_stack_region_ptr);
+
+    //destroy normal list
+    vm_region *cursor_n = t->t_region_list;
+
+    while(cursor_n != NULL){
+
+        vm_region *next_n = cursor_n->next_t;
+
+        if(!destroy_vm_region(owner->adress_space, cursor_n)){
+
+            result.success = false;
+            result.error_code = REGION_DESTROY_FAIL;
+            return result;
+        }
+
+        cursor_n = next_n;
+
+
+
     }
 
-    //  destroy_region(owner->adress_space, t->ker_stack_region_ptr);
+    //destroy kernel list
+
+    vm_region *cursor_k = t->t_k_a_region_list;
+
+    while(cursor_k != NULL){
+
+        vm_region *next_k = cursor_k->next_t;
+
+        if(!destroy_vm_region(owner->adress_space, cursor_k)){
+
+            result.success = false;
+            result.error_code = REGION_DESTROY_FAIL;
+            return result;
+
+
+        }
+
+        cursor_k = next_k;
+
+
+
+
+    }
+
+
+
 
     t->context->owner_thread = NULL;
     if(!kfree(t->context)){
@@ -466,6 +544,13 @@ destroy_thread_out destroy_thread(thread *t){
     if(!kfree(t)){
         result.error_code = THREAD_DESTROY_THREAD_FREE_FAILED;
         return result;
+    }
+
+    if(owner->thread_count == 0 &&
+       owner->thread_head == NULL &&
+       owner->thread_tail == NULL &&
+       owner->main_thread == NULL){
+        (void)destroy_proc(owner);
     }
 
     result.destroyed_thread_id = destroyed_thread_id;

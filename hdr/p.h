@@ -89,6 +89,7 @@ enum destroy_proc_error{
     PROCESS_IS_REFED,
     PROC_NOT_TERMINATED,
     PROC_STILL_HAS_CHILD,
+    DESTROY_SPACE_FAIL,
     
 
 };
