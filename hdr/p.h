@@ -2,8 +2,33 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <vmm.h>
+#include <fat32_fs.h>
+
+#define PROC_FD_BASE 3
+#define PROC_MAX_OPEN_FILES 16
 
 struct thread;
+
+typedef enum proc_fd{
+
+PROC_FD_NONE,
+PROC_FD_STDIN,
+PROC_FD_STDOUT,
+PROC_FD_STDERR,
+PROC_FD_FILE,
+
+}proc_fd_kind;
+
+
+typedef struct proc_fd_slot_t{
+
+    bool in_use;
+    proc_fd_kind kind;
+    fat32_file_t file;
+
+
+
+}proc_fd_slot_t;
 
 
 typedef struct proc{
@@ -35,7 +60,9 @@ typedef struct proc{
     struct proc *sibling_next;    // previous sibling in parent's child list 
     struct proc *sibling_prev;     // next sibling in parent's child list
     struct proc *parent;         // direct parent process pointer
+    
 
+    proc_fd_slot_t fd_table[PROC_MAX_OPEN_FILES];
 
     
     

@@ -4,7 +4,7 @@ static uint64_t pid_count = 1;
 static uint64_t pcount = 1;
 
 
-static uintptr_t *proc_kernel_root;
+
 
 create_proc_out create_proc(bool k){
 
@@ -16,7 +16,7 @@ create_proc_out create_proc(bool k){
         return result;
     }
 
-    create_vm_space_out space_md = create_vm_space(proc_kernel_root);
+    create_vm_space_out space_md = create_vm_space();
     if(space_md.success == false){
         kfree(p);
         return result;
@@ -41,6 +41,16 @@ create_proc_out create_proc(bool k){
     p->lock = 0;
     p->thread_count = 0;
     p->exit_status = 0;
+
+    
+    p->fd_table[0].in_use = true;
+    p->fd_table[0].kind = PROC_FD_STDIN;
+    p->fd_table[1].in_use = true;
+    p->fd_table[1].kind = PROC_FD_STDOUT;
+    p->fd_table[2].in_use = true;
+    p->fd_table[2].kind = PROC_FD_STDERR;
+    
+
 
     p->child_head = NULL;
     p->child_tail = NULL;

@@ -379,7 +379,7 @@ uintptr_t* vmm_create_page_table(void);
 void vmm_destroy_page_table(uintptr_t *page_table);
 
 
-create_vm_space_out create_vm_space(uintptr_t *k_root);
+create_vm_space_out create_vm_space();
 reserve_region_out reserve_region(vm_space* space, reserve_region_request* req);
 uint64_t destroy_vm_region(vm_space *space, vm_region *region);
 uint64_t destroy_vm_space(vm_space *space);
