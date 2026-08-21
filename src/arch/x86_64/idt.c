@@ -32,11 +32,11 @@ set_idt_entry(14, (uintptr_t)page_fault_isr, 0x8E);
 set_idt_entry(PIC_TIMER_VECTOR, (uintptr_t)timer_isr, 0x8E);
 set_idt_entry(PIC_KEYBOARD_VECTOR, (uintptr_t)keyboard_isr, 0x8E);
 set_idt_entry(PIC_MOUSE_VECTOR, (uintptr_t)mouse_isr, 0x8E);
-set_idt_entry(YIELD_VECTOR, (uintptr_t)yield_isr, 0x8E);
-set_idt_entry(EXIT_VECTOR, (uintptr_t)exit_isr, 0x8E);
-// DPL=3 (0xEE, vs 0x8E for the ring0-only gates above): ring3 `int 0x80` must
-// be allowed to reach this gate, otherwise the CPU raises #GP before the ISR
-// ever runs.
+// DPL=3 (0xEE, vs 0x8E for the ring0-only gates above): ring3 `int` must be
+// allowed to reach these gates, otherwise the CPU raises #GP before the ISR
+// ever runs. Yield/exit/syscall are all invoked by user threads.
+set_idt_entry(YIELD_VECTOR, (uintptr_t)yield_isr, 0xEE);
+set_idt_entry(EXIT_VECTOR, (uintptr_t)exit_isr, 0xEE);
 set_idt_entry(SYSCALL_VECTOR, (uintptr_t)syscall_isr, 0xEE);
 
 load_idt(&idtp);

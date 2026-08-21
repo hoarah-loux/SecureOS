@@ -267,7 +267,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     pit_init(100);
     __asm__ volatile("sti" ::: "memory");
     timer_ticks_boot = timer_ticks_get();
-    printk("[INT] IDT loaded; PIC remapped; keyboard IRQ1 active (timer IRQ0 masked)\r\n");
+    printk("[INT] IDT loaded; PIC remapped; timer IRQ0 and keyboard IRQ1 active\r\n");
     printk("[SecureOS] kernel mb2_magic=0x");
     serial_write_hex32(mb2_magic);
     printk("\r\n");
@@ -554,8 +554,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         fb_snapshot.common.framebuffer_type);
 
 
-    pic_clear_mask(PIC_TIMER_IRQ);
-    printk("[INT] timer IRQ0 unmasked at interactive stage\r\n");
     report_timer_irq_smoke_test(timer_ticks_boot, timer_ticks_get());
 
 
@@ -576,9 +574,19 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     printk("[ELF]  e_shnum=%d\n", elf_header.e_shnum);
     printk("[ELF]  e_shstrndx=%d\n", elf_header.e_shstrndx);
 
+    // Full pipeline test: create_proc -> elf_map_segments -> create_thread.
+    // Buddy allocator's phys/virt bug (buddy.c) is fixed now (node_kva()
+    // helper, phase-gated on physmap_ready) and the two companion bugs
+    // (proc_kernel_root NULL, missing stack .perms) were fixed upstream -
+    // this should map/build a real process+thread with no panic.
+    printk("[ELF-LOAD] loading /RING3.EXE as a process (create_proc+map+create_thread)..\n");
+    elf_load_out load_md = elf_load_process(&mount, "/RING3.EXE");
+    if (load_md.success) {
+        printk("[ELF-LOAD] test elf_load_process: PASS (pid=%d)\n", (int)load_md.p->id);
+    } else {
+        printk("[ELF-LOAD] test elf_load_process: FAIL error_code=%d\n", (int)load_md.error_code);
+    }
 
-
-    
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");
 

@@ -63,6 +63,11 @@ CC = gcc
 # - We use GNU ld to link the final kernel ELF image with our linker script.
 LD = ld
 
+# GNU assembler, used for the GAS-syntax userland test binaries at the
+# project root (elf.S / elf_ring3_test.S) - distinct from $(ASM)/NASM,
+# which only handles the kernel's own .asm sources.
+AS = as
+
 # GRUB ISO builder.
 # - grub-mkrescue creates a bootable ISO image containing GRUB and our files.
 GRUB_MKRESCUE = grub-mkrescue
@@ -354,10 +359,21 @@ run-debug: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-s -S
 
 
+# ---------------- Userland test binaries ----------------
+
+# This-OS-native ELF test binary (int 0x80 SYS_write, not Linux syscall) -
+# used to verify the ELF loader end-to-end. Built the same way elf.elf
+# presumably was (no prior rule existed for either).
+RING3_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_test.elf
+
+$(RING3_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_test.S $(PROJECT_ROOT)/elf_ring3_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_test.S -o $(BUILD_DIR)/elf_ring3_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_test.ld $(BUILD_DIR)/elf_ring3_test.o -o $@
+
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
-$(FAT32_IMAGE):
+$(FAT32_IMAGE): $(RING3_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -366,6 +382,7 @@ $(FAT32_IMAGE):
 	@echo "IT WORKS" > $(FAT32_ROOT)/boot/pwned.txt
 	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
 	cp $(PROJECT_ROOT)/elf.elf $(FAT32_ROOT)/ELF.exe
+	cp $(RING3_TEST_ELF) $(FAT32_ROOT)/RING3.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -373,6 +390,7 @@ $(FAT32_IMAGE):
 	$(MCOPY) -i $@ $(FAT32_ROOT)/boot/pwned.txt ::/boot/PWNED.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/ELF.exe ::ELF.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3.exe ::RING3.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

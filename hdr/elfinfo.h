@@ -19,6 +19,17 @@ typedef struct {
     uint16_t	e_shstrndx;		/* Section header string table index */
 } elf_eheader_t;
 
+#define PT_NULL    0
+#define PT_LOAD    1
+#define PT_DYNAMIC 2
+#define PT_INTERP  3
+#define PT_NOTE    4
+#define PT_PHDR    6
+
+#define PF_X 0x1
+#define PF_W 0x2
+#define PF_R 0x4
+
 typedef struct {
     uint32_t	p_type;			/* Segment type */
     uint32_t	p_flags;		/* Segment flags */

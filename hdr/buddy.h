@@ -17,6 +17,13 @@ struct frame {
 
 int size_to_order(size_t nbytes);
 
+// frame_metadata is a raw low/physical address (set in pmm.c, right after
+// the kernel image) - only directly dereferenceable pre-transition (full
+// low 4GiB identity map) or post-transition via phys_to_virt() (transition()
+// only preserves a small identity-mapped sliver around the kernel image).
+// Always index through this instead of frame_metadata directly.
+struct frame* fm_base(void);
+
 void buddy_init(uintptr_t base, size_t size, struct frame* frames);
 uintptr_t buddy_alloc_blocks(size_t order);
 void buddy_free_blocks(uintptr_t addr, size_t order);
