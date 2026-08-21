@@ -1,5 +1,8 @@
 #include <vmm.h>
 
+uintptr_t k_root;
+uintptr_t active_pml4_phys;
+vm_space active_space;
 
 #define LOW_BASE 0x100000
 
@@ -2648,7 +2651,7 @@ void *mmap(void* addr, size_t len, uint64_t perms,
 
                 reserve_region_request *req = kcalloc(1, sizeof(req));
 
-                req->hint_va = addr;
+                req->hint_va = (uintptr_t)addr;
                 req->backing_offset = file_offset;
                 req->map_flags = map_flags;
                 req->perms = perms;

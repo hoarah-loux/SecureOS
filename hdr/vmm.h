@@ -6,9 +6,10 @@
 #include <heap.h>
 
 
-vm_space active_space;
-uintptr_t k_root;
-uintptr_t active_pml4_phys;
+typedef struct vm_space vm_space;
+
+extern uintptr_t k_root;
+extern uintptr_t active_pml4_phys;
 
 
 
@@ -227,6 +228,8 @@ typedef struct vm_space{
 
 
 }vm_space;
+
+extern vm_space active_space;
 
 enum create_vm_space_error{
 

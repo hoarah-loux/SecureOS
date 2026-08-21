@@ -267,8 +267,15 @@ void keyboard_interrupt_handler(int irq, void *data) {
     (void)data;
 
     uint8_t scancode = inb(0x60);
-    keyboard_handle_scancode(scancode);
+    int got_char = keyboard_handle_scancode(scancode);
     pic_send_eoi(PIC_KEYBOARD_IRQ);
+
+    if (got_char) {
+        scheduler_cpu *cpu = scheduler_this_cpu();
+        if (cpu != NULL) {
+            scheduler_wake_one(cpu->cpu_id, cpu->keyboard_wait_queue);
+        }
+    }
 }
 
 void mouse_interrupt_handler(int irq, void *data) {
