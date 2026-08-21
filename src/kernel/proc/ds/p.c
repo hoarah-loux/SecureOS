@@ -4,7 +4,7 @@ static uint64_t pid_count = 1;
 static uint64_t pcount = 1;
 
 
-uintptr_t *k_root;
+static uintptr_t *proc_kernel_root;
 
 create_proc_out create_proc(bool k){
 
@@ -16,7 +16,7 @@ create_proc_out create_proc(bool k){
         return result;
     }
 
-    create_vm_space_out space_md = create_vm_space(k_root);
+    create_vm_space_out space_md = create_vm_space(proc_kernel_root);
     if(space_md.success == false){
         kfree(p);
         return result;

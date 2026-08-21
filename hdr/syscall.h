@@ -17,6 +17,7 @@ enum syscall_number {
     SYS_close,
     SYS_lseek,
     SYS_getkey,
+    SYS_getkey_wait,
     SYS_exit,
     SYS_yield,
     SYS_fork,

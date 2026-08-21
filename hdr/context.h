@@ -3,10 +3,9 @@
 #include <stdint.h>
 #include <vmm.h>
 #include <stdbool.h>
-#include <t.h>
 #include <heap.h>
 
-
+struct thread;
 
 
 typedef struct context {
@@ -54,6 +53,6 @@ typedef struct save_trap_frame_out{
 }save_trap_frame_out;
 
 
-save_trap_frame_out save_trap_frame(trap_frame *frame, thread *t);
+save_trap_frame_out save_trap_frame(trap_frame *frame, struct thread *t);
 
 extern void restore_context(context *c) __attribute__((noreturn));

@@ -57,7 +57,12 @@ scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id){
         result.error_code = SCHED_DYING_QUEUE_INIT_FAIL;
         return result;
     }
-   
+    thread_queue_init_out keyboard_q =  thread_queue_init(KEYBOARD_WAIT);
+    if(!keyboard_q.success){
+        result.error_code = SCHED_KEYBOARD_WAIT_QUEUE_INIT_FAIL;
+        return result;
+    }
+
 
     cpu->current_thread = NULL;
     cpu->tick_count = 0;
@@ -67,6 +72,7 @@ scheduler_cpu_init_out scheduler_cpu_init(uint64_t cpu_id){
     cpu->need_resched = false;
     cpu->ready_queue = ready_q.q;
     cpu->sleep_queue = sleeping_q.q;
+    cpu->keyboard_wait_queue = keyboard_q.q;
 
     result.success = true;
     result.cpu_id = cpu_id;
@@ -378,6 +384,65 @@ uint64_t scheduler_exit_current(uint64_t cpu_id){
 
    return 1;
 
+
+}
+
+
+uint64_t scheduler_block_current(uint64_t cpu_id, thread_queue *wait_queue){
+
+    if(cpu_id >= MAX_CPUS){return 0;}
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+
+    if(!cpu->present || !cpu->is_initialized){return 0;}
+    if(wait_queue == NULL){return 0;}
+
+    thread *current = cpu->current_thread;
+    if(current == NULL){return 0;}
+    if(current->owner_queue != NULL){return 0;}
+
+    current->state = BLOCKED_T;
+
+    if(!thread_queue_push(wait_queue, current)){
+        current->state = RUNNING_T;
+        return 0;
+    }
+
+    cpu->current_thread = NULL;
+
+    return 1;
+
+}
+
+
+uint64_t scheduler_wake_one(uint64_t cpu_id, thread_queue *wait_queue){
+
+    if(cpu_id >= MAX_CPUS){return 0;}
+    if(wait_queue == NULL){return 0;}
+
+    thread_queue_pop_out popped_md = thread_queue_pop(wait_queue);
+    if(!popped_md.success){return 0;}
+
+    sched_add_ready_out add_md = scheduler_add_ready(cpu_id, popped_md.popped_t);
+
+    return add_md.success ? 1 : 0;
+
+}
+
+
+uint64_t scheduler_wake_all(uint64_t cpu_id, thread_queue *wait_queue){
+
+    if(cpu_id >= MAX_CPUS){return 0;}
+    if(wait_queue == NULL){return 0;}
+
+    uint64_t woken = 0;
+
+    while(wait_queue->thread_count > 0){
+        if(!scheduler_wake_one(cpu_id, wait_queue)){break;}
+        woken++;
+    }
+
+    return woken;
 
 }
 

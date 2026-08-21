@@ -64,7 +64,7 @@ typedef struct destroy_proc_out{
 enum p_states{
 
     NEW,        // process object was created but not runnable yet
-    READY,      // process has runnable threads and can be scheduled
+    READY_P,    // process has runnable threads and can be scheduled
     RUNNING,    // process currently has at least one running thread
     WAITING,    // process has no runnable threads and is blocked
     TERMINATED, // process has exited and is awaiting final cleanup/reap

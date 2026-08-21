@@ -121,7 +121,8 @@ LDFLAGS = -T $(BOOT_DIR)/grub/linker.ld -nostdlib
 # - This contains the Multiboot2 header and the mode/paging setup.
 ASM_SOURCES = \
 	$(BOOT_DIR)/grub/entry64_mb2.asm \
-	$(SRC_DIR)/arch/x86_64/interrupts.asm
+	$(SRC_DIR)/arch/x86_64/interrupts.asm \
+	$(SRC_DIR)/arch/x86_64/context_switch.asm
 
 # Kernel C sources.
 # - Add files here as you split the kernel into modules.
@@ -150,7 +151,13 @@ KERNEL_SRCS = \
 	$(KERNEL_DIR)/fs/block_device.c \
 	$(KERNEL_DIR)/fs/tar.c \
 	$(KERNEL_DIR)/fs/fs_syscalls.c \
-	$(KERNEL_DIR)/proc/loader/loader.c
+	$(KERNEL_DIR)/proc/loader/loader.c \
+	$(KERNEL_DIR)/proc/init_proc.c \
+	$(KERNEL_DIR)/proc/ds/p.c \
+	$(KERNEL_DIR)/proc/ds/t.c \
+	$(KERNEL_DIR)/proc/sched/scheduler.c \
+	$(KERNEL_DIR)/proc/sched/queues.c \
+	$(KERNEL_DIR)/proc/sched/context.c
 
 ARCH_C_SRCS = \
 	$(SRC_DIR)/arch/x86_64/idt.c
@@ -166,7 +173,8 @@ GRUB_CFG = $(BOOT_DIR)/grub/grub.cfg
 # Object file produced by assembling the entry stub.
 ASM_OBJS = \
 	$(BUILD_DIR)/entry64_mb2.o \
-	$(BUILD_DIR)/arch/x86_64/interrupts.o
+	$(BUILD_DIR)/arch/x86_64/interrupts.o \
+	$(BUILD_DIR)/arch/x86_64/context_switch.o
 
 # Object files produced by compiling kernel C sources.
 # - We mirror the src/kernel directory structure under the build directory.

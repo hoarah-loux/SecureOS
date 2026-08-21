@@ -59,25 +59,28 @@ static void keyboard_enqueue(char c) {
     keyboard_head = next_head;
 }
 
-void keyboard_handle_scancode(uint8_t scancode) {
+int keyboard_handle_scancode(uint8_t scancode) {
     if (scancode == 0x2A || scancode == 0x36) {
         keyboard_shift_down = 1;
-        return;
+        return 0;
     }
 
     if (scancode == 0xAA || scancode == 0xB6) {
         keyboard_shift_down = 0;
-        return;
+        return 0;
     }
 
     if (scancode & 0x80u) {
-        return;
+        return 0;
     }
 
     char c = keyboard_shift_down ? keymap_shift[scancode] : keymap_base[scancode];
     if (c != 0) {
         keyboard_enqueue(c);
+        return 1;
     }
+
+    return 0;
 }
 
 int keyboard_getchar_nonblock(char *out_char) {
@@ -120,6 +123,16 @@ int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t 
     char c;
     if (!keyboard_getchar_nonblock(&c)) {
         return -1;
+    }
+    return (int64_t)(unsigned char)c;
+}
+
+int64_t sys_getkey_wait(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+
+    char c;
+    if (!keyboard_getchar_nonblock(&c)) {
+        return SYS_WOULD_BLOCK;
     }
     return (int64_t)(unsigned char)c;
 }

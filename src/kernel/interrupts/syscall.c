@@ -1,6 +1,7 @@
 #include <syscall.h>
 #include <fs_syscalls.h>
 #include <keyboard.h>
+#include <scheduler.h>
 
 // Everything below is out of scope for keyboard/filesystem work (process
 // control, memory, time, framebuffer) and is stubbed until its owner wires
@@ -17,6 +18,7 @@ static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_close]      = sys_close,
     [SYS_lseek]      = sys_lseek,
     [SYS_getkey]     = sys_getkey,
+    [SYS_getkey_wait] = sys_getkey_wait,
     [SYS_exit]       = sys_stub,
     [SYS_yield]      = sys_stub,
     [SYS_fork]       = sys_stub,
@@ -45,5 +47,34 @@ void syscall_handler(trap_frame *frame, trap_reason trap_reason) {
     }
 
     int64_t ret = syscall_table[nr](frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
+
+    if (nr == SYS_getkey_wait && ret == SYS_WOULD_BLOCK) {
+        // Rewind past `int 0x80` (2-byte opcode) so the blocked thread
+        // re-executes the syscall from scratch on wake, naturally
+        // re-checking the keyboard buffer instead of resuming mid-syscall.
+        frame->rip -= 2;
+
+        scheduler_cpu *cpu = scheduler_this_cpu();
+        if (cpu == NULL) { frame->rax = (uint64_t)-1; return; }
+
+        thread *current = cpu->current_thread;
+        if (current == NULL) { frame->rax = (uint64_t)-1; return; }
+
+        save_trap_frame_out frame_md = save_trap_frame(frame, current);
+        if (!frame_md.success) { frame->rax = (uint64_t)-1; return; }
+
+        if (!scheduler_block_current(cpu->cpu_id, cpu->keyboard_wait_queue)) {
+            frame->rax = (uint64_t)-1;
+            return;
+        }
+
+        thread *next = scheduler_pick_next(cpu->cpu_id);
+        if (next == NULL) { return; } // idle thread fallback TODO, matches rest of scheduler.c
+
+        if (!scheduler_set_current(cpu->cpu_id, next)) { return; }
+
+        restore_context(next->context);
+    }
+
     frame->rax = (uint64_t)ret;
 }
