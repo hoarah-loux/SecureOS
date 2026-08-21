@@ -7,6 +7,7 @@
 
 extern void page_fault_isr(void);
 extern void keyboard_isr(void);
+extern void mouse_isr(void);
 extern void timer_isr(void);
 extern void yield_isr(void);
 extern void exit_isr(void);
@@ -30,6 +31,7 @@ idtp.base  = (uint64_t)&idt;
 set_idt_entry(14, (uintptr_t)page_fault_isr, 0x8E);
 set_idt_entry(PIC_TIMER_VECTOR, (uintptr_t)timer_isr, 0x8E);
 set_idt_entry(PIC_KEYBOARD_VECTOR, (uintptr_t)keyboard_isr, 0x8E);
+set_idt_entry(PIC_MOUSE_VECTOR, (uintptr_t)mouse_isr, 0x8E);
 set_idt_entry(YIELD_VECTOR, (uintptr_t)yield_isr, 0x8E);
 set_idt_entry(EXIT_VECTOR, (uintptr_t)exit_isr, 0x8E);
 // DPL=3 (0xEE, vs 0x8E for the ring0-only gates above): ring3 `int 0x80` must

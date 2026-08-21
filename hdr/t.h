@@ -12,6 +12,7 @@ struct thread_queue;
 
 
 
+
 typedef struct thread{
 
     uint64_t id;
@@ -36,6 +37,8 @@ typedef struct thread{
     uint64_t exit_status;
     vm_region *ker_stack_region_ptr;//pointers to regions to free mem
     vm_region *usr_stack_region_ptr;
+    vm_region *t_region_list; //thread region list
+    vm_region *t_k_a_region_list; //kernel asset thread region list
     struct thread_queue *owner_queue;
 
 
@@ -95,6 +98,8 @@ enum thread_exit_error {
     THREAD_EXIT_ALREADY_REAPED,
     THREAD_EXIT_NOT_RUNNING,
     THREAD_EXIT_STILL_QUEUED,
+    THREAD_EXIT_CORRUPT_PROCESS_LIST,
+    THREAD_EXIT_PROC_EXIT_FAILED,
 };
 
 
@@ -117,6 +122,7 @@ enum reap_thread_error {
     THREAD_REAP_EMPTY_PROCESS_LIST,
     THREAD_REAP_NOT_IN_PROCESS,
     THREAD_REAP_CORRUPT_PROCESS_LIST,
+    THREAD_REAP_PROC_REAP_FAILED,
 };
 
 
@@ -142,6 +148,7 @@ enum destroy_thread_error {
     THREAD_DESTROY_CONTEXT_OWNER_MISMATCH,
     THREAD_DESTROY_CONTEXT_FREE_FAILED,
     THREAD_DESTROY_THREAD_FREE_FAILED,
+    REGION_DESTROY_FAIL,
 };
 
 

@@ -1796,7 +1796,7 @@ create_vm_space_out create_vm_space(uintptr_t *kernel_root){
 
     new_space->is_kernel = false;
     new_space->pml4_phys = new_pml4.physical_adress;
-    new_space->pml4_phys_ptr = new_pml4.pgtable_pointer;
+    new_space->pml4_phys_ptr = (uintptr_t *)new_pml4.physical_adress;
     new_space->pml4_ptr = (uintptr_t *)phys_to_virt(new_pml4.physical_adress);
     
     //copy the kernel mappings
@@ -1858,6 +1858,19 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
     vm_region* region = kcalloc( 1, sizeof(vm_region));
     if(region == NULL) return result;
+
+    if(req->object == NULL && !(req->map_flags & KERNEL_ASSET)){
+
+        region->object = NULL;
+
+
+    }else if(req->object != NULL && !(req->map_flags & KERNEL_ASSET)){
+
+        region->object = req->object;
+        region->object->type = req->object->type;
+
+
+    }
 
    
 
@@ -2111,6 +2124,11 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         }
 
         insert_to_list:
+
+        region->permissions = req->perms;
+        region->owner_space = space;
+        region->map_flags = req->map_flags;
+        region->object_base_offset = req->backing_offset;
 
         vm_region* curr = space->vm_region_list;
         vm_region* prev = NULL;
@@ -2593,6 +2611,55 @@ search_region_list_out search_region_list(vm_space *space, uintptr_t va){
     result.success = false;
 
     return result;
+
+
+}
+
+
+void *mmap(void* addr, size_t len, uint64_t perms, 
+            uint64_t map_flags, uint64_t file_descriptor, 
+            uint64_t file_offset){
+
+                if(len == 0 || perms == 0 || len < 0){return NULL;}
+
+
+
+
+                vm_object *object = kcalloc(1, sizeof(vm_object));
+
+                if(file_descriptor == 0){
+
+                    object = NULL;
+
+                }else{
+
+                    object->type = FILE;
+                    object->size_bytes = len;
+                    object->ref_count = 1;
+                    object->flags = map_flags;
+                    object->backing_ctx = 0000; //bolbol did the fs idfk what to put here
+                    object->phys_base = 0; // this is only useful with hardware stuff and mmio so not for files
+                    object->ref_list_region = NULL;
+                    object->ref_list_space = NULL;
+
+
+
+                }
+
+                reserve_region_request *req = kcalloc(1, sizeof(req));
+
+                req->hint_va = addr;
+                req->backing_offset = file_offset;
+                req->map_flags = map_flags;
+                req->perms = perms;
+                req->size = len;
+                req->object = object;
+
+                //alr i give up alot of file system shit i need bolbol see ya
+
+                
+
+
 
 
 }

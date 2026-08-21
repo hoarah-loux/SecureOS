@@ -1,0 +1,13 @@
+CompileFlags:
+  Add:
+    - -I./hdr
+    - -ffreestanding
+    - -nostdlib
+    - -m64
+    - -mno-red-zone
+    - -mcmodel=kernel
+    - -mno-mmx
+    - -mno-sse
+    - -mno-sse2
+    - -fno-pic
+    - -fno-pie

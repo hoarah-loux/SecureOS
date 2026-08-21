@@ -136,10 +136,17 @@ typedef struct free_out{
 
 }free_out;
 
+typedef enum object_type{
+    FILE,
+    ANON,
+
+
+}object_type;
+
 typedef struct vm_object{
 
 
-        uint64_t type; //file, anon, hardware etc..
+        object_type type; //file, anon, hardware etc..
         uint64_t size_bytes;
         uint64_t flags; //shared, private, cow, shared, pinned,writeback
         uint64_t ref_count; // num of regions referencing this object, important for freeing the object and its resources when no longer used
@@ -154,6 +161,24 @@ typedef struct vm_object{
 
 
 }vm_object;
+
+
+// we have multiple types of region lists and each has there own pointers
+
+// global kenrel asset list accessed via  *next_k_g and  *prev_k_g;
+
+
+//space lists
+
+//kernel assets via space->kenrel asset list and use next prev normally
+//normal list via space->region list next and prev normally
+
+
+//threads
+ 
+//kerneal assets via t->kernel assets and use next_t and prev_t normally
+//normal list via t->region list and use next_t and prev_t normally
+    
 
 typedef struct vm_region{
 
@@ -172,6 +197,8 @@ typedef struct vm_region{
     struct vm_region *prev;
     struct vm_region *next_k_g;
     struct vm_region *prev_k_g;
+    struct vm_region *next_t;
+    struct vm_region *prev_t;
     uint64_t region_id;
     bool is_kernel_asset;
     vm_space *owner_space;
