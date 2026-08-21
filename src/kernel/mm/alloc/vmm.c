@@ -2654,7 +2654,7 @@ search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 }
 
 
-void *mmap(void* addr, size_t len, uint64_t perms, 
+void *sys_mmap(void* addr, size_t len, uint64_t perms, 
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset){
 

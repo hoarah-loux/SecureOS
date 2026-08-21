@@ -2,6 +2,7 @@
 #include <fs_syscalls.h>
 #include <keyboard.h>
 #include <scheduler.h>
+#include <vmm.h>
 
 // Everything below is out of scope for keyboard/filesystem work (process
 // control, memory, time, framebuffer) and is stubbed until its owner wires
@@ -10,6 +11,8 @@ static int64_t sys_stub(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
     return -1;
 }
+
+
 
 static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_read]       = sys_read,
@@ -25,7 +28,7 @@ static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_execve]     = sys_stub,
     [SYS_waitpid]    = sys_stub,
     [SYS_getpid]     = sys_stub,
-    [SYS_mmap]       = sys_stub,
+    [SYS_mmap]       = sys_mmap,
     [SYS_munmap]     = sys_stub,
     [SYS_brk]        = sys_stub,
     [SYS_gettime]    = sys_stub,
