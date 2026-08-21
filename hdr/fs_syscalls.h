@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <fat.h>
+#include <p.h>
 
 // open() flags. Only O_CREAT is understood right now (created if the path is
 // missing); everything else is opened read/write via the existing fat32 API.
@@ -16,6 +17,23 @@
 // reach the syscall gate.
 void syscall_fs_init(fat32_mount_t *mount);
 
+typedef struct fs_mmap_backing fs_mmap_backing;
+
+typedef struct fs_mmap_pin_out {
+    bool success;
+    fs_mmap_backing *backing;
+    size_t file_size;
+    uint64_t error_code;
+} fs_mmap_pin_out;
+
+typedef struct fs_mmap_file_key {
+    fat32_mount_t *mount;
+    uint32_t parent_cluster;
+    uint32_t first_cluster;
+    char short_name[13];
+    bool valid;
+} fs_mmap_file_key;
+
 // All five match `syscall_fn` from syscall.h so they can sit directly in the
 // dispatch table:
 //   sys_open(path, flags, mode, _, _, _)   -> fd or -1
@@ -28,3 +46,11 @@ int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a
 int64_t sys_read(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, uint64_t a4, uint64_t a5);
 int64_t sys_write(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, uint64_t a4, uint64_t a5);
 int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, uint64_t a4, uint64_t a5);
+
+
+fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd);
+uint64_t fs_mmap_ref(fs_mmap_backing *backing);
+fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd);
+uint64_t fs_mmap_backing_matches_key(fs_mmap_backing *backing, const fs_mmap_file_key *key);
+int64_t fs_mmap_read(fs_mmap_backing *backing, uint64_t file_offset, uint8_t *dst, uint64_t count);
+uint64_t fs_mmap_unpin(fs_mmap_backing *backing);

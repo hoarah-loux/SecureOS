@@ -100,10 +100,25 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
         uintptr_t seg_start = phdr->p_vaddr & ~0xFFFULL;
         uintptr_t seg_end = ALIGN_UP(phdr->p_vaddr + phdr->p_memsz, 4096);
 
+        vm_object *seg_object = (vm_object *)kcalloc(1, sizeof(vm_object));
+        if (seg_object == NULL) {
+            result.error_code = ELF_MAP_RESERVE_FAILED;
+            return result;
+        }
+
+        seg_object->type = ANON;
+        seg_object->size_bytes = seg_end - seg_start;
+        seg_object->flags = PRIVATE | FIXED;
+        seg_object->ref_count = 0;
+        seg_object->phys_base = 0;
+        seg_object->backing_ctx = NULL;
+        seg_object->ref_list_region = NULL;
+        seg_object->ref_list_space = NULL;
+
         reserve_region_request req = {
             .size = seg_end - seg_start,
             .type = ELF_SEGMENT,
-            .object = NULL,
+            .object = seg_object,
             .perms = perms,
             .map_flags = FIXED,
             .hint_va = seg_start,
@@ -112,14 +127,18 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
 
         reserve_region_out reserve_md = reserve_region(space, &req);
         if (!reserve_md.success) {
+            kfree(seg_object);
             result.error_code = ELF_MAP_RESERVE_FAILED;
             return result;
         }
+
+        vm_region *seg_region = reserve_md.region_ptr;
 
         for (uintptr_t page_va = seg_start; page_va < seg_end; page_va += 4096) {
 
             uintptr_t frame = pmm_alloc_frame();
             if (frame == 0) {
+                (void)destroy_vm_region(space, seg_region);
                 result.error_code = ELF_MAP_FRAME_ALLOC_FAILED;
                 return result;
             }
@@ -145,6 +164,8 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
                 // self-check: a silently wrong copy here is a silently
                 // broken process later, so verify it before moving on.
                 if (memcmp((uint8_t*)page_kva + page_offset, file->data + file_offset, copy_len) != 0) {
+                    pmm_free_frame(frame);
+                    (void)destroy_vm_region(space, seg_region);
                     result.error_code = ELF_MAP_COPY_VERIFY_FAILED;
                     return result;
                 }
@@ -156,6 +177,8 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
             // already-virtual pml4_ptr.
             map_out map_md = vmm_map_page(page_va, frame, space->pml4_phys_ptr, 4, perms);
             if (!map_md.success) {
+                pmm_free_frame(frame);
+                (void)destroy_vm_region(space, seg_region);
                 result.error_code = ELF_MAP_PAGE_MAP_FAILED;
                 return result;
             }

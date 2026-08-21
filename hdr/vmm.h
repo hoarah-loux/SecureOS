@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <pmm.h>
 #include <heap.h>
+#include <fs_syscalls.h>
 
 
 typedef struct vm_space vm_space;
@@ -21,6 +22,8 @@ extern bool physmap_ready; // true once transition() has populated the physmap
 
 #define KERNEL_STACK_FLAGS (PTE_RW | PTE_NX)           // 0x8000000000000002ULL
 #define USER_STACK_FLAGS   (PTE_RW | PTE_US | PTE_NX)
+
+typedef struct fs_mmap_backing fs_mmap_backing;
 
 
 //this struct is the output of the walker funciton
@@ -162,7 +165,7 @@ typedef struct vm_object{
         uint64_t flags; //shared, private, cow, shared, pinned,writeback
         uint64_t ref_count; // num of regions referencing this object, important for freeing the object and its resources when no longer used
         uintptr_t phys_base; //base of the physical memory backing this object, can be 0 for non-physically backed objects like swap or file backed objects
-        void* backing_ctx; //pointer to file struct if file backed,and pointer to the actual hardware if hardware backed, can be NULL for anon 
+        fs_mmap_backing* backing_ctx; //pointer to file struct if file backed,and pointer to the actual hardware if hardware backed, can be NULL for anon 
         //this is a poinetr to an inode for example
 
 
