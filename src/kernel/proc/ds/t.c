@@ -34,6 +34,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
             .size = user_stack_size,
             .type = STACK,
             .map_flags = TOPDOWN | GROWDOWN | PRIVATE,
+            .perms =  USER_STACK_FLAGS,
           
         };
 
@@ -72,6 +73,7 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
         .size = 16 * 1024,
         .type = STACK,
         .map_flags = KERNEL_ASSET | PRIVATE,
+        .perms = KERNEL_STACK_FLAGS
 
     };
 

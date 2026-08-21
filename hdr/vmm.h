@@ -13,6 +13,15 @@ extern uintptr_t active_pml4_phys;
 
 
 
+
+#define PTE_RW  (1ULL << 1)   // writable
+#define PTE_US  (1ULL << 2)   // user-accessible
+#define PTE_NX  (1ULL << 63)  // non-executable
+
+#define KERNEL_STACK_FLAGS (PTE_RW | PTE_NX)           // 0x8000000000000002ULL
+#define USER_STACK_FLAGS   (PTE_RW | PTE_US | PTE_NX)
+
+
 //this struct is the output of the walker funciton
 typedef struct walker_out{
 
