@@ -12,9 +12,9 @@ struct thread;
 typedef enum proc_fd{
 
 PROC_FD_NONE,
-PROC_FD_STDIN,
-PROC_FD_STDOUT,
-PROC_FD_STDERR,
+PROC_FD_STDIN = 0,
+PROC_FD_STDOUT = 1,
+PROC_FD_STDERR = 2,
 PROC_FD_FILE,
 
 }proc_fd_kind;
