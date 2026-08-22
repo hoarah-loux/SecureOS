@@ -859,6 +859,7 @@ uint64_t transition(uintptr_t *old_root){
 
     toptable = new_root;
     adress_toptable = new_root_phys;
+    k_root = new_root_phys;
     kroot = toptable;
     physmap_ready = true;
 
@@ -1429,6 +1430,10 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
                     //Just verify no architecture-specific high bits sneak through.
 
                     //Minor thing.
+
+                    //uint64_t link_flags = (old_leaf_entry & ~ADDR_MASK_4K) & ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
+
+                    // 
                     {
                         uint64_t link_flags = (old_leaf_entry & ~ADDR_MASK_4K) & ~BIT_PS_OR_PTE_PAT;
                         *walker_result.final_entry_pointer = (new_page.physical_adress & ADDR_MASK_4K) | link_flags;
