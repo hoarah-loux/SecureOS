@@ -135,7 +135,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         // this code is a duplicate of the first case but we need to isolate for future additions
         // just to be safe 
 
-        msg = "kenrel read hit a page that was not present error";
+        msg = "kernel write hit a page that was not present error";
 
         //a kernel write hit a page that was not present.
 

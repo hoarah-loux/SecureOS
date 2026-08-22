@@ -1,6 +1,7 @@
 #include <ide_pio.h>
 
 #include <serial.h>
+#include <vmm.h>
 
 enum {
     IDE_PRIMARY_IO_BASE = 0x1F0,
@@ -59,6 +60,43 @@ static void ide_log_probe(uint16_t io_base, uint8_t device_select, const char *r
     serial_write_string(" ");
     serial_write_string(result);
     serial_write_string("\r\n");
+}
+
+static int ide_buffer_range_mapped(const uint8_t *buffer, uint64_t byte_count) {
+    if (buffer == NULL) {
+        return 0;
+    }
+
+    if (byte_count == 0) {
+        return 1;
+    }
+
+    uintptr_t start = (uintptr_t)buffer;
+    uintptr_t end = start + (uintptr_t)(byte_count - 1u);
+    if (end < start) {
+        return 0;
+    }
+
+    uintptr_t page = start & ~((uintptr_t)0xFFFu);
+    uintptr_t last_page = end & ~((uintptr_t)0xFFFu);
+
+    for (;;) {
+        if (vmm_query_page2(page) == 0) {
+            return 0;
+        }
+
+        if (page == last_page) {
+            break;
+        }
+
+        if (page > UINTPTR_MAX - (uintptr_t)0x1000u) {
+            return 0;
+        }
+
+        page += (uintptr_t)0x1000u;
+    }
+
+    return 1;
 }
 
 static int ide_wait_for_drq(ide_pio_backend_t *backend) {
@@ -143,6 +181,11 @@ static int ide_pio_read(void *context, uint64_t sector, uint32_t count, uint8_t 
         return 0;
     }
 
+    if (!ide_buffer_range_mapped(buffer, (uint64_t)count * (uint64_t)IDE_SECTOR_SIZE)) {
+        serial_write_string("[IDE] read rejected: unmapped destination buffer\r\n");
+        return -1;
+    }
+
     if (backend->sector_count != 0) {
         if (sector >= backend->sector_count || count > backend->sector_count - sector) {
             return -1;
@@ -179,6 +222,11 @@ static int ide_pio_write(void *context, uint64_t sector, uint32_t count, const u
 
     if (count == 0) {
         return 0;
+    }
+
+    if (!ide_buffer_range_mapped(buffer, (uint64_t)count * (uint64_t)IDE_SECTOR_SIZE)) {
+        serial_write_string("[IDE] write rejected: unmapped source buffer\r\n");
+        return -1;
     }
 
     if (backend->sector_count != 0) {

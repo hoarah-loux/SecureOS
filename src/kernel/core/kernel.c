@@ -291,9 +291,21 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     uintptr_t kmain_va = (uintptr_t)&kmain;
     uintptr_t kernel_low_window_start_va = ((uintptr_t)&_kernel_start) & TWO_MIB_PAGE_MASK;
+    uintptr_t kernel_low_window_end_va =
+        (((uintptr_t)&_kernel_end) + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
+    uintptr_t kernel_low_window_pages = 0;
+    uintptr_t kernel_start_pa_pre = (uintptr_t)vmm_query_page((uintptr_t)&_kernel_start);
+    uintptr_t kernel_end_last_pa_pre = (uintptr_t)vmm_query_page(((uintptr_t)&_kernel_end) - 1);
+    uintptr_t low_identity_unmap_start_va = 0;
+    uintptr_t low_identity_unmap_end_va = 0;
     uintptr_t kmain_higher_half_va = 0;
     if (kmain_va >= kernel_low_window_start_va) {
         kmain_higher_half_va = (uintptr_t)(KERNEL_IMAGE_BASE_VA + (kmain_va - kernel_low_window_start_va));
+    }
+
+    if (kernel_low_window_end_va > kernel_low_window_start_va) {
+        kernel_low_window_pages =
+            (kernel_low_window_end_va - kernel_low_window_start_va) / 4096;
     }
 
     uintptr_t before_transition_pa = (uintptr_t)vmm_query_page(kmain_va);
@@ -308,6 +320,50 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
+
+    if (transition_ok == 1 && kernel_start_pa_pre != 0 && kernel_end_last_pa_pre != 0) {
+        uintptr_t kernel_end_pa_exclusive = kernel_end_last_pa_pre + 1;
+
+        if (kernel_end_pa_exclusive > kernel_end_last_pa_pre) {
+            low_identity_unmap_start_va = kernel_start_pa_pre & TWO_MIB_PAGE_MASK;
+            low_identity_unmap_end_va =
+                (kernel_end_pa_exclusive + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
+        } else {
+            printk("[VMM] low identity unmap skipped: end overflow\r\n");
+        }
+    } else {
+        printk("[VMM] low identity unmap skipped: preconditions failed\r\n");
+    }
+
+    if (low_identity_unmap_end_va > low_identity_unmap_start_va) {
+        uintptr_t low_window_pages =
+            (low_identity_unmap_end_va - low_identity_unmap_start_va) / 4096;
+
+        if (kernel_low_window_pages != 0 && low_window_pages > kernel_low_window_pages) {
+            printk("[VMM] low identity unmap clamped pages=0x");
+            serial_write_hex64(low_window_pages);
+            printk(" max=0x");
+            serial_write_hex64(kernel_low_window_pages);
+            printk("\r\n");
+            low_window_pages = kernel_low_window_pages;
+        }
+
+        for (uintptr_t i = 0; i < low_window_pages; i++) {
+            uintptr_t va = low_identity_unmap_start_va + (i * 4096);
+            unmap_out unmap_md = vmm_unmap_page((uintptr_t *)k_root, va);
+
+            if (!unmap_md.success) {
+                printk("[VMM] low identity unmap failed at VA=0x");
+                serial_write_hex64(va);
+                printk(" err=0x");
+                serial_write_hex64(unmap_md.error_code);
+                printk("\r\n");
+                break;
+            }
+        }
+    } else {
+        printk("[VMM] low identity unmap skipped: invalid range\r\n");
+    }
 
     printk("[VMM] kmain higher-half VA=0x");
     serial_write_hex64(kmain_higher_half_va);
@@ -540,16 +596,18 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         run_syscall_tests();
     }
 
-    volatile char *vga = (volatile char *)0xB8000;
-    for (int i = 0; i < 80 * 25 * 2; i += 2) {
-        vga[i] = ' ';
-        vga[i + 1] = 0x0F;
-    }
+    volatile char *vga = (volatile char *)phys_to_virt(0xB8000);
+    if (vga != NULL) {
+        for (int i = 0; i < 80 * 25 * 2; i += 2) {
+            vga[i] = ' ';
+            vga[i + 1] = 0x0F;
+        }
 
-    const char *msg = "KERNEL RUNNING!";
-    for (int i = 0; msg[i] && i < 80; i++) {
-        vga[i * 2] = msg[i];
-        vga[i * 2 + 1] = 0x0F;
+        const char *msg = "KERNEL RUNNING!";
+        for (int i = 0; msg[i] && i < 80; i++) {
+            vga[i * 2] = msg[i];
+            vga[i * 2 + 1] = 0x0F;
+        }
     }
 
     // dump framebuffer info to serial
@@ -640,9 +698,8 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         console_puts(&con, con.prompt);
         printk("[KBD] debug keypress loop active\r\n");
 
-        // Find some random spot in memory to save buffer to:
-        char* line_buffer = (char*)0x800000;
-        size_t buffer_size = 256;
+        char line_buffer[256] = {0};
+        size_t buffer_size = sizeof(line_buffer);
         size_t index = 0;
         while (index < buffer_size-1) {
             char c;
