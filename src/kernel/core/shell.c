@@ -9,6 +9,7 @@ static const char shell_commands[][16] = {
     "rm",         // rm
     "touch",      // touch
     "info",       // show file perms
+    "pf",         // induce page fault for handler testing
 };
 
 // add sigma command as sudo
@@ -146,6 +147,19 @@ static int shell_write_file(shell_ctx_t *ctx) {
     return 1;
 }
 
+static int shell_trigger_page_fault(shell_ctx_t *ctx) {
+    (void)ctx;
+
+    console_puts(ctx->con, "Triggering page fault via unmapped VA write...\n");
+
+    // Canonical low-half VA chosen outside current kernel/physmap mappings.
+    volatile uint64_t *fault_va = (volatile uint64_t *)0x0000400000000000ULL;
+    *fault_va = 0x504641554C54554CULL;
+
+    console_puts(ctx->con, "pf: unexpected return (fault did not trigger)\n");
+    return 1;
+}
+
 int shell_eval(shell_ctx_t *ctx) {
     const char *cmd;
 
@@ -228,6 +242,10 @@ int shell_eval(shell_ctx_t *ctx) {
 
         console_printf(ctx->con, "name=%s size=%p attr=%p\n", entry.name, entry.file_size, entry.attributes);
         return 1;
+    }
+
+    if (!strcmp(cmd, shell_commands[8])) {
+        return shell_trigger_page_fault(ctx);
     }
 
     console_printf(ctx->con, "unknown command: %s\n", cmd);

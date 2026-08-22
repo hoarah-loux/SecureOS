@@ -142,8 +142,8 @@ ASMFLAGS = -f elf64
 # - `-Wall -Wextra`:
 #     Enable common and extra warnings.
 CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone \
-		 -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden -Wall -Wextra \
-		 -I$(INCLUDE_DIR)
+                -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden -Wall -Wextra \
+                -I$(INCLUDE_DIR)
 
 # Linker flags.
 # - `-T <script>`:
@@ -157,47 +157,48 @@ LDFLAGS = -T $(BOOT_DIR)/grub/linker.ld -nostdlib
 # Assembly entry stub source.
 # - This contains the Multiboot2 header and the mode/paging setup.
 ASM_SOURCES = \
-	$(BOOT_DIR)/grub/entry64_mb2.asm \
-	$(SRC_DIR)/arch/x86_64/interrupts.asm \
-	$(SRC_DIR)/arch/x86_64/context_switch.asm
+       $(BOOT_DIR)/grub/entry64_mb2.asm \
+       $(SRC_DIR)/arch/x86_64/interrupts.asm \
+       $(SRC_DIR)/arch/x86_64/context_switch.asm
 
 # Kernel C sources.
 # - Add files here as you split the kernel into modules.
 # - $(wildcard ...) entries are optional and won't error if the file doesn't exist yet.
 KERNEL_SRCS = \
-	$(KERNEL_DIR)/core/kernel.c \
-	$(KERNEL_DIR)/core/framebuffer.c \
-	$(KERNEL_DIR)/core/multiboot2_utils.c \
-	$(KERNEL_DIR)/core/console.c \
-	$(KERNEL_DIR)/core/serial.c \
-	$(KERNEL_DIR)/core/shell.c \
-	$(KERNEL_DIR)/interrupts/handlers.c \
-	$(KERNEL_DIR)/interrupts/keyboard.c \
-	$(KERNEL_DIR)/interrupts/pic.c \
-	$(KERNEL_DIR)/interrupts/syscall.c \
-	$(KERNEL_DIR)/mm/alloc/pmm.c \
-	$(KERNEL_DIR)/mm/alloc/buddy.c \
-	$(KERNEL_DIR)/mm/alloc/slab.c \
-	$(KERNEL_DIR)/mm/alloc/heap.c \
-	$(KERNEL_DIR)/mm/alloc/vmm.c \
-	$(KERNEL_DIR)/fs/ide_pio.c \
-	$(KERNEL_DIR)/fs/fat.c \
-	$(KERNEL_DIR)/fs/fat32_cluster.c \
-	$(KERNEL_DIR)/fs/fat32_dir.c \
-	$(KERNEL_DIR)/fs/fat32_fs.c \
-	$(KERNEL_DIR)/fs/block_device.c \
-	$(KERNEL_DIR)/fs/tar.c \
-	$(KERNEL_DIR)/fs/fs_syscalls.c \
-	$(KERNEL_DIR)/proc/loader/loader.c \
-	$(KERNEL_DIR)/proc/init_proc.c \
-	$(KERNEL_DIR)/proc/ds/p.c \
-	$(KERNEL_DIR)/proc/ds/t.c \
-	$(KERNEL_DIR)/proc/sched/scheduler.c \
-	$(KERNEL_DIR)/proc/sched/queues.c \
-	$(KERNEL_DIR)/proc/sched/context.c
+       $(KERNEL_DIR)/core/kernel.c \
+       $(KERNEL_DIR)/core/framebuffer.c \
+       $(KERNEL_DIR)/core/multiboot2_utils.c \
+       $(KERNEL_DIR)/core/console.c \
+       $(KERNEL_DIR)/core/serial.c \
+       $(KERNEL_DIR)/core/shell.c \
+       $(KERNEL_DIR)/interrupts/handlers.c \
+       $(KERNEL_DIR)/interrupts/keyboard.c \
+       $(KERNEL_DIR)/interrupts/pic.c \
+       $(KERNEL_DIR)/interrupts/syscall.c \
+       $(KERNEL_DIR)/mm/alloc/pmm.c \
+       $(KERNEL_DIR)/mm/alloc/buddy.c \
+       $(KERNEL_DIR)/mm/alloc/slab.c \
+       $(KERNEL_DIR)/mm/alloc/heap.c \
+       $(KERNEL_DIR)/mm/alloc/vmm.c \
+       $(KERNEL_DIR)/fs/ide_pio.c \
+       $(KERNEL_DIR)/fs/fat.c \
+       $(KERNEL_DIR)/fs/fat32_cluster.c \
+       $(KERNEL_DIR)/fs/fat32_dir.c \
+       $(KERNEL_DIR)/fs/fat32_fs.c \
+       $(KERNEL_DIR)/fs/block_device.c \
+       $(KERNEL_DIR)/fs/tar.c \
+       $(KERNEL_DIR)/fs/fs_syscalls.c \
+       $(KERNEL_DIR)/proc/loader/loader.c \
+       $(KERNEL_DIR)/proc/init_proc.c \
+       $(KERNEL_DIR)/proc/ds/p.c \
+       $(KERNEL_DIR)/proc/ds/t.c \
+       $(KERNEL_DIR)/proc/sched/scheduler.c \
+       $(KERNEL_DIR)/proc/sched/queues.c \
+       $(KERNEL_DIR)/proc/sched/context.c
 
 ARCH_C_SRCS = \
-	$(SRC_DIR)/arch/x86_64/idt.c
+          $(SRC_DIR)/arch/x86_64/idt.c \
+          $(SRC_DIR)/arch/x86_64/arch_tables.c
 
 # Linker script.
 LINKER_SCRIPT = $(BOOT_DIR)/grub/linker.ld
@@ -209,9 +210,9 @@ GRUB_CFG = $(BOOT_DIR)/grub/grub.cfg
 
 # Object file produced by assembling the entry stub.
 ASM_OBJS = \
-	$(BUILD_DIR)/entry64_mb2.o \
-	$(BUILD_DIR)/arch/x86_64/interrupts.o \
-	$(BUILD_DIR)/arch/x86_64/context_switch.o
+       $(BUILD_DIR)/entry64_mb2.o \
+       $(BUILD_DIR)/arch/x86_64/interrupts.o \
+       $(BUILD_DIR)/arch/x86_64/context_switch.o
 
 # Object files produced by compiling kernel C sources.
 # - We mirror the src/kernel directory structure under the build directory.
@@ -414,7 +415,6 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF)
 	@echo "This is SecureOS FAT32 storage." > $(FAT32_ROOT)/README.TXT
 	@echo "IT WORKS" > $(FAT32_ROOT)/boot/pwned.txt
 	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
-	cp $(PROJECT_ROOT)/elf.elf $(FAT32_ROOT)/ELF.exe
 	cp $(RING3_TEST_ELF) $(FAT32_ROOT)/RING3.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
@@ -422,7 +422,6 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/README.TXT ::/README.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/boot/pwned.txt ::/boot/PWNED.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
-	$(MCOPY) -i $@ $(FAT32_ROOT)/ELF.exe ::ELF.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3.exe ::RING3.EXE
 	@echo "==> FAT32 image created: $@"
 
