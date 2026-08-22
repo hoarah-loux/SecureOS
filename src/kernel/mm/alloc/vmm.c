@@ -1,6 +1,7 @@
 #include <vmm.h>
 #include <fs_syscalls.h>
 #include <scheduler.h>
+#include <arch_tables.h>
 
 uintptr_t k_root;
 uintptr_t active_pml4_phys;
@@ -804,10 +805,71 @@ uint64_t transition(uintptr_t *old_root){
 
     cr3_switch_t(new_root_phys);
 
+    if(!arch_rebase_and_reload_gdt_tss(src_start_va, src_end_va, KERNEL_IMAGE_BASE)){
+        return 0;
+    }
+
+    // Rebase the current frame so function epilogue and RET continue via higher-half aliases.
+    uintptr_t current_rbp = 0;
+    uintptr_t current_rsp = 0;
+    uintptr_t saved_caller_rbp = 0;
+    uintptr_t saved_return_rip = 0;
+
+    asm volatile(
+        "mov %%rbp, %0\n\t"
+        "mov %%rsp, %1\n\t"
+        "mov (%%rbp), %2\n\t"
+        "mov 8(%%rbp), %3"
+        : "=r"(current_rbp), "=r"(current_rsp), "=r"(saved_caller_rbp), "=r"(saved_return_rip)
+        :
+        : "memory");
+
+    if(saved_return_rip < src_start_va || saved_return_rip >= src_end_va){
+        return 0;
+    }
+
+    uintptr_t higher_half_return_rip = KERNEL_IMAGE_BASE + (saved_return_rip - src_start_va);
+    if(higher_half_return_rip < KERNEL_IMAGE_BASE){
+        return 0;
+    }
+
+    uintptr_t higher_half_saved_caller_rbp = saved_caller_rbp;
+    if(saved_caller_rbp >= src_start_va && saved_caller_rbp < src_end_va){
+        higher_half_saved_caller_rbp = KERNEL_IMAGE_BASE + (saved_caller_rbp - src_start_va);
+        if(higher_half_saved_caller_rbp < KERNEL_IMAGE_BASE){
+            return 0;
+        }
+    }
+
+    uintptr_t higher_half_current_rbp = current_rbp;
+    if(current_rbp >= src_start_va && current_rbp < src_end_va){
+        higher_half_current_rbp = KERNEL_IMAGE_BASE + (current_rbp - src_start_va);
+        if(higher_half_current_rbp < KERNEL_IMAGE_BASE){
+            return 0;
+        }
+    }
+
+    uintptr_t higher_half_current_rsp = current_rsp;
+    if(current_rsp >= src_start_va && current_rsp < src_end_va){
+        higher_half_current_rsp = KERNEL_IMAGE_BASE + (current_rsp - src_start_va);
+        if(higher_half_current_rsp < KERNEL_IMAGE_BASE){
+            return 0;
+        }
+    }
+
     toptable = new_root;
     adress_toptable = new_root_phys;
     kroot = toptable;
     physmap_ready = true;
+
+    asm volatile(
+        "mov %0, (%%rbp)\n\t"
+        "mov %1, 8(%%rbp)\n\t"
+        "mov %2, %%rbp\n\t"
+        "mov %3, %%rsp"
+        :
+        : "r"(higher_half_saved_caller_rbp), "r"(higher_half_return_rip), "r"(higher_half_current_rbp), "r"(higher_half_current_rsp)
+        : "memory");
 
 return 1;
 

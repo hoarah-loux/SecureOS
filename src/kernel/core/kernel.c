@@ -23,6 +23,7 @@
 #include <loader.h>
 #include <syscall.h>
 #include <fs_syscalls.h>
+#include <heap.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -152,6 +153,12 @@ static int64_t syscall_test_invoke(uint64_t nr, uint64_t a0, uint64_t a1, uint64
     return (int64_t)tf.rax;
 }
 
+static void idle_thread_entry(void) {
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
 static void run_syscall_tests(void) {
     printk("[SYSCALL] running syscall dispatch smoke tests\r\n");
     uint8_t scratch[64] = {0};
@@ -262,19 +269,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     serial_init();
     printk("[SecureOS] kmain reached\r\n");
-    idt_init();
-    pic_init_for_keyboard();
-    pit_init(100);
-    __asm__ volatile("sti" ::: "memory");
-    timer_ticks_boot = timer_ticks_get();
-    printk("[INT] IDT loaded; PIC remapped; timer IRQ0 and keyboard IRQ1 active\r\n");
-    printk("[SecureOS] kernel mb2_magic=0x");
-    serial_write_hex32(mb2_magic);
-    printk("\r\n");
-    printk("[SecureOS] kernel mb2_info_ptr=0x");
-    serial_write_hex32(mb2_info_ptr);
-    printk("\r\n");
-
+   
     {
         const struct multiboot_tag_framebuffer *fb_pre =
             (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
@@ -310,6 +305,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     printk("\r\n");
     vmm_print_test_result("query kmain via vmm_query_page", before_transition_pa != 0);
 
+
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
 
@@ -332,6 +328,20 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     if (before_transition_pa != 0 && after_transition_high_pa != 0) {
         vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_high_pa);
     }
+
+     idt_init();
+    pic_init_for_keyboard();
+    pit_init(100);
+    __asm__ volatile("sti" ::: "memory");
+    timer_ticks_boot = timer_ticks_get();
+    printk("[INT] IDT loaded; PIC remapped; timer IRQ0 and keyboard IRQ1 active\r\n");
+    printk("[SecureOS] kernel mb2_magic=0x");
+    serial_write_hex32(mb2_magic);
+    printk("\r\n");
+    printk("[SecureOS] kernel mb2_info_ptr=0x");
+    serial_write_hex32(mb2_info_ptr);
+    printk("\r\n");
+
 
     if (fb_snapshot_valid) {
         uintptr_t fb_pa = (uintptr_t)fb_snapshot.common.framebuffer_addr;
@@ -556,29 +566,16 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     report_timer_irq_smoke_test(timer_ticks_boot, timer_ticks_get());
 
-
-    // Test the new loader..
-    kheap_init();
-    printk("[ELF] Loading ELF.EXE into memory..\n");
-    mem_file_t* memory_file = load_file(&mount, "/ELF.EXE");
-
-    printk("[ELF] ELF.EXE loaded @ %p\n[ELF] mf.name: %s\n[ELF] mf.size: %d\n", memory_file, memory_file->filename, memory_file->size);
-
-    // parse elf file
-    elf_eheader_t elf_header = parse_mem_elf(*memory_file);
-    printk("[ELF] ELF header parsed:\n");
-    printk("[ELF]  e_entry=0x%llx\n", elf_header.e_entry);
-    printk("[ELF]  e_phoff=0x%llx\n", elf_header.e_phoff);
-    printk("[ELF]  e_shoff=0x%llx\n", elf_header.e_shoff);
-    printk("[ELF]  e_phnum=%d\n", elf_header.e_phnum);
-    printk("[ELF]  e_shnum=%d\n", elf_header.e_shnum);
-    printk("[ELF]  e_shstrndx=%d\n", elf_header.e_shstrndx);
-
-    // Full pipeline test: create_proc -> elf_map_segments -> create_thread.
+// Full pipeline test: create_proc -> elf_map_segments -> create_thread.
     // Buddy allocator's phys/virt bug (buddy.c) is fixed now (node_kva()
     // helper, phase-gated on physmap_ready) and the two companion bugs
     // (proc_kernel_root NULL, missing stack .perms) were fixed upstream -
     // this should map/build a real process+thread with no panic.
+
+    // init heap before ELF load to use heap
+    kheap_init();
+    
+
     printk("[ELF-LOAD] loading /RING3.EXE as a process (create_proc+map+create_thread)..\n");
     elf_load_out load_md = elf_load_process(&mount, "/RING3.EXE");
     if (load_md.success) {
@@ -586,6 +583,42 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     } else {
         printk("[ELF-LOAD] test elf_load_process: FAIL error_code=%d\n", (int)load_md.error_code);
     }
+  
+ 
+    if (load_md.success) {
+        printk("[SCHED] scheduler_init..\n");
+        scheduler_init_out sched_md = scheduler_init();
+        if (!sched_md.success) {
+            printk("[SCHED] scheduler_init FAILED\n");
+        } else {
+            create_proc_out idle_proc_md = create_proc(true); // kernel process
+            create_thread_out idle_t_md = {0};
+            if (idle_proc_md.success) {
+                idle_t_md = create_thread(idle_proc_md.proc, (uintptr_t)idle_thread_entry,
+                                           THREAD_F_MAIN_THREAD, 0);
+            }
+ 
+            if (!idle_proc_md.success || !idle_t_md.success ||
+                !scheduler_set_idle_thread(0, idle_t_md.thread)) {
+                printk("[SCHED] idle thread setup FAILED\n");
+            } else {
+                sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
+                if (!ready_md.success) {
+                    printk("[SCHED] scheduler_add_ready(RING3.EXE) FAILED error_code=%d\n",
+                           (int)ready_md.error_code);
+                } else {
+                    thread *first = scheduler_pick_next(0);
+                    if (first == NULL || !scheduler_set_current(0, first)) {
+                        printk("[SCHED] initial scheduler_pick_next/set_current FAILED\n");
+                    } else {
+                        printk("[SCHED] kicking off scheduler, handing off to tid=%d ..\n",
+                               (int)first->id);
+                      restore_context(first->context); // noreturn on success
+                    }
+                }
+            }
+        }
+    } 
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");
