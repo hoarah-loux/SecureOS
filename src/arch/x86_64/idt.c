@@ -9,7 +9,12 @@
 #define HIGHER_HALF_BASE_ 0xFFFF800000000000ULL // slot 256 in the pml4
 #define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
 
+// CPU exception vectors we install gates for.
+#define GP_FAULT_VECTOR   13
+#define PAGE_FAULT_VECTOR 14
+
 extern void page_fault_isr(void);
+extern void gp_fault_isr(void);
 extern void keyboard_isr(void);
 extern void mouse_isr(void);
 extern void timer_isr(void);
@@ -21,6 +26,7 @@ static inline void load_idt(struct idt_ptr *idtp);
 
 
 uintptr_t page_fault_isr_off = (uintptr_t)&page_fault_isr + KERNEL_IMAGE_BASE;
+uintptr_t gp_fault_isr_off = (uintptr_t)&gp_fault_isr + KERNEL_IMAGE_BASE;
 uintptr_t keyboard_isr_off = (uintptr_t)&keyboard_isr + KERNEL_IMAGE_BASE;
 uintptr_t mouse_isr_off = (uintptr_t)&mouse_isr + KERNEL_IMAGE_BASE;
 uintptr_t timer_isr_off = (uintptr_t)&timer_isr + KERNEL_IMAGE_BASE;
@@ -50,7 +56,11 @@ idtp.limit = sizeof(struct idt_entry) * 256 - 1;
 // -mcmodel=kernel, which forces absolute addressing for data references).
 idtp.base = (uint64_t)&idt;
 
-set_idt_entry(14, page_fault_isr_off, 0x8E);
+set_idt_entry(PAGE_FAULT_VECTOR, page_fault_isr_off, 0x8E);
+// DPL=0: #GP is raised by the CPU, never reached via a ring3 `int`, so the
+// gate must not be user-callable. Before this existed vector 13 had no gate,
+// which turned every #GP into #DF and then a triple fault with no output.
+set_idt_entry(GP_FAULT_VECTOR, gp_fault_isr_off, 0x8E);
 set_idt_entry(PIC_TIMER_VECTOR, timer_isr_off, 0x8E);
 set_idt_entry(PIC_KEYBOARD_VECTOR, keyboard_isr_off, 0x8E);
 set_idt_entry(PIC_MOUSE_VECTOR, mouse_isr_off, 0x8E);

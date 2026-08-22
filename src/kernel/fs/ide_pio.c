@@ -3,6 +3,23 @@
 #include <serial.h>
 #include <vmm.h>
 
+#define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
+
+// Same rebase the IDT gates and the syscall table need (see the *_isr_off
+// globals in src/arch/x86_64/idt.c and KIMG_ALIAS in
+// src/kernel/interrupts/syscall.c). A static initializer stores a link-time
+// *absolute* address and the kernel is linked at 1 MiB
+// (src/boot/grub/linker.ld), so an un-rebased ops table holds low-identity
+// pointers. That used to be survivable; it is not any more, because kmain()
+// now unmaps the low-identity window right after transition(). The very
+// first device->ops->read() call takes #PF (error 0x10, instruction fetch,
+// not-present) on the low address of ide_pio_read.
+//
+// The addition folds into the relocation addend at link time, so these stay
+// compile-time constants.
+#define KIMG_READ(fun)  ((block_device_read_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
+#define KIMG_WRITE(fun) ((block_device_write_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
+
 enum {
     IDE_PRIMARY_IO_BASE = 0x1F0,
     IDE_PRIMARY_CONTROL_BASE = 0x3F6,
@@ -266,8 +283,8 @@ static int ide_pio_write(void *context, uint64_t sector, uint32_t count, const u
 }
 
 static const block_device_ops_t ide_pio_device_ops = {
-    .read = ide_pio_read,
-    .write = ide_pio_write,
+    .read = KIMG_READ(ide_pio_read),
+    .write = KIMG_WRITE(ide_pio_write),
 };
 
 static int ide_try_probe(block_device_t *device, const char *name, uint16_t io_base, uint16_t control_base, uint8_t device_select) {

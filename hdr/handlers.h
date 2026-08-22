@@ -11,6 +11,12 @@
 #define PFEC_SGX      (1ULL << 15) // SGX violation
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip);
+
+// #GP (vector 13). The error code is a segment selector when the fault was
+// raised by a descriptor-table reference, and 0 for everything else - which
+// includes the common case in long mode, a non-canonical memory reference.
+void general_protection_handler(uint64_t error_code, uint64_t fault_rip, uint64_t fault_cs);
+
 void keyboard_interrupt_handler(int irq, void *data);
 void mouse_interrupt_handler(int irq, void *data);
 

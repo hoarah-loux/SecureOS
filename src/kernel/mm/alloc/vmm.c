@@ -15,6 +15,27 @@ bool physmap_ready = false;
 #define PHYS_MAP_BASE 0xFFFF800000000000ULL //slot 256 in the pml4
 #define HIGHER_HALF_BASE_ 0xFFFF800000000000ULL // slot 256 in the pml4
 #define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
+
+// Ceiling for user address space. NOT HIGHER_HALF_BASE_ - that is the bottom
+// of the *kernel* half, and everything between the top of the canonical low
+// half (2^47) and it is the non-canonical hole. Using the kernel base as the
+// user ceiling let TOPDOWN place a stack with va_end = 0xFFFF800000000000, and
+// create_thread() uses a region's exclusive va_end verbatim as the initial
+// user RSP - so the first push landed on 0xFFFF7FFFFFFFFFF8 and took #GP
+// before any page walk could happen.
+//
+// One guard page below 2^47 so that va_end is itself canonical: at exactly
+// 0x0000800000000000 the RSP value would be the first non-canonical address.
+#define USER_SPACE_LIMIT_ 0x00007FFFFFFFF000ULL
+
+// Physical address field of a paging-structure entry that points at another
+// table: bits 51:12. Extracting it by clearing only the low 12 bits is wrong - that clears the
+// low flags but leaves NX (63) and the available bits 62:52 in the value, so
+// any entry with NX set yields a pointer like 0x8000_0000_xxxx_xxxx. The
+// leaf-level equivalents are the per-function ADDR_MASK_4K/2M/1G constants;
+// this is the file-scope one for intermediate descriptors, which are always
+// 4KiB-aligned tables regardless of the leaf page size below them.
+#define PAGE_TABLE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 uint64_t MAX_PHYS; //first 4gib
 uint64_t BUDDY_MAX_PHYS;// all ram
 
@@ -82,7 +103,7 @@ uint64_t vmm_init(uintptr_t *pgtables){
     }
 
     //pdpt adress(removing the flags form the entry (low 12 bits))
-    uintptr_t first_pdpt_adress = first_entry & ~0xFFF;
+    uintptr_t first_pdpt_adress = first_entry & PAGE_TABLE_ADDR_MASK;
 
     if(first_pdpt_adress==0 || (first_pdpt_adress % allign_const) != 0){
         return 0;
@@ -189,7 +210,7 @@ static size_t align_size_up(size_t value, size_t alignment){
 
     result.pml4_entry = pml4_entry;
 
-    uintptr_t pdpt_adress = pml4_entry & ~0xFFF;
+    uintptr_t pdpt_adress = pml4_entry & PAGE_TABLE_ADDR_MASK;
 
     curr = (uintptr_t *)pdpt_adress;
 
@@ -214,7 +235,12 @@ static size_t align_size_up(size_t value, size_t alignment){
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 1048576; //1gib in kib
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 30) - 1);
+        // Mask the 52-bit physical address field, not just the low offset
+        // bits. ~((1ULL << 30) - 1) clears bits 29:0 but leaves NX (63) and
+        // the available/PKE bits 62:52 in the result, so a query against any
+        // NX page returned 0x8000_0000_xxxx_xxxx instead of a usable PA.
+        // Same masks the_walking_pager2 already uses (ADDR_MASK_1G/2M/4K).
+        uintptr_t physical_base = final_entry_value & 0x000FFFFFC0000000ULL;
         result.physical_base_adress = physical_base;
         
 
@@ -223,7 +249,7 @@ static size_t align_size_up(size_t value, size_t alignment){
     }
     
 
-    uintptr_t pd_adress = pdpt_entry & ~0xFFF;
+    uintptr_t pd_adress = pdpt_entry & PAGE_TABLE_ADDR_MASK;
 
 
     curr = (uintptr_t *)pd_adress;
@@ -249,14 +275,14 @@ static size_t align_size_up(size_t value, size_t alignment){
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 2048; //2mib in kib
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 21) - 1);
+        uintptr_t physical_base = final_entry_value & 0x000FFFFFFFE00000ULL;
         result.physical_base_adress = physical_base;
 
                 return result;
 
     }
 
-    uintptr_t pt_adress = pd_entry & ~0xFFF;
+    uintptr_t pt_adress = pd_entry & PAGE_TABLE_ADDR_MASK;
 
     curr = (uintptr_t *)pt_adress;
 
@@ -277,7 +303,7 @@ static size_t align_size_up(size_t value, size_t alignment){
 
         uintptr_t final_entry_value = * result.final_entry_pointer;
         result.page_size = 4; 
-        uintptr_t physical_base = final_entry_value & ~((1ULL << 12) - 1);
+        uintptr_t physical_base = final_entry_value & 0x000FFFFFFFFFF000ULL;
         result.physical_base_adress = physical_base;
 
     return result;
@@ -459,7 +485,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
         root_table = new_pdpt_table_metadata.pgtable_pointer;
     }else{
 
-    root_table = (uintptr_t *)(pml4_entry & ~0xFFF);    }
+    root_table = (uintptr_t *)(pml4_entry & PAGE_TABLE_ADDR_MASK);    }
     uintptr_t pdpt_entry = root_table[index_in_pdpt];
     if((pdpt_entry & 1) == 0 || pdpt_entry == 0){
 
@@ -473,7 +499,7 @@ static uint64_t populate2m_into_table(uintptr_t *root_table, uintptr_t virtual_a
     }else{
 
     if((pdpt_entry & (1ULL << 7)) != 0){return 0;} //if this pdpt entry is a 1gib large page we cannot descend into a pd from it here
-    root_table = (uintptr_t *)(pdpt_entry & ~0xFFF); //strip the flags from the existing pdpt entry so root_table now points to the real pd page
+    root_table = (uintptr_t *)(pdpt_entry & PAGE_TABLE_ADDR_MASK); //strip the flags from the existing pdpt entry so root_table now points to the real pd page
     }
 
     uint64_t pdpt_page_size_bit = (pdpt_entry & (1ULL << 7));
@@ -532,7 +558,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
 
     }else{
-        root_table = (uintptr_t *)(pml4_entry & ~0xFFF);
+        root_table = (uintptr_t *)(pml4_entry & PAGE_TABLE_ADDR_MASK);
 
     }
 
@@ -552,7 +578,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
     }else{
         if((pdpt_entry & (1ULL << 7)) != 0){return 0;} //if this pdpt entry is a 1gib large page we cannot descend into a pd from it here
-        root_table = (uintptr_t *)(pdpt_entry & ~0xFFF); //strip the flags from the existing pdpt entry so root_table now points to the real pd page
+        root_table = (uintptr_t *)(pdpt_entry & PAGE_TABLE_ADDR_MASK); //strip the flags from the existing pdpt entry so root_table now points to the real pd page
 
     }
 
@@ -571,7 +597,7 @@ static uint64_t populate4k_into_table(uintptr_t *root_table, uintptr_t virtual_a
 
     }else{
         if((pd_entry & (1ULL << 7)) != 0){return 0;} //if this pd entry is a 2mib large page we cannot descend into a pt from it here
-        root_table = (uintptr_t *)(pd_entry & ~0xFFF); //strip the flags from the existing pd entry so root_table now points to the real pt page
+        root_table = (uintptr_t *)(pd_entry & PAGE_TABLE_ADDR_MASK); //strip the flags from the existing pd entry so root_table now points to the real pt page
 
     }
 
@@ -954,7 +980,7 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
     uintptr_t *pml4_entry_adress = &curr[index_in_pml4];
 
     if((pml4_entry & 1) == 0 || pml4_entry == 0){
-        
+
         result.final_page_walked_ptr = curr;
         result.final_entry_pointer = pml4_entry_adress;
         result.physical_base_adress = (uintptr_t)NULL;
@@ -964,6 +990,21 @@ static walker_out2 the_walking_pager2(uintptr_t *root_table, uintptr_t virtual_a
         result.error_code = STOP_AT_PML4;
         result.stop_reason =  NOT_PRESENT;
 
+        // The PDPT/PD not-present branches below both report their parent, and
+        // spilt_page() reads parent_flags to build the new table's link entry.
+        // This branch used to leave all four parent_* fields at their {0}
+        // initialiser, so a caller could not tell "parent has no flags set"
+        // from "parent was never reported" - and spilt_page() silently built a
+        // directory with no R/W bit.
+        //
+        // There is no level above PML4, so the honest answer is the root
+        // itself: the entry is the one we are about to fill, and it has no
+        // inheritable flags. parent_lvl 0 says "this is the root, there is
+        // nothing above it".
+        result.parent_flags = 0;
+        result.parent_entry = pml4_entry;
+        result.parent_table_ptr = curr;
+        result.parent_lvl = 0;
 
         return result;
     }
@@ -1280,8 +1321,66 @@ uintptr_t vmm_query_page2(uintptr_t virtual_adress){
 
 
 
-//there is a problem here that i dont remember now i will remember when we debug, probably 
+//there is a problem here that i dont remember now i will remember when we debug, probably
 //debug for 3 hours and then say ohhh yes this was the issue i forgot
+
+
+// Flag policy for an *intermediate* (directory) entry - a PML4E/PDPTE/PDE
+// that points at the next table rather than at a page.
+//
+// The CPU builds the effective permission for a page by combining the bits at
+// EVERY level of the walk, not just the leaf: the page is writable only if
+// R/W is set all the way down, user-accessible only if U/S is set all the way
+// down, and executable only if NX is clear all the way down. So a directory
+// that restricts anything silently overrides the leaf beneath it, and the
+// leaf can never widen it back.
+//
+// Policy: directories stay permissive, the leaf PTE is authoritative. That is
+// already what vmm_map_page() assumes - it writes the caller's flags into the
+// leaf only and never revisits the directories above it - and it is the only
+// policy that composes, since a directory is shared by up to 512 leaves that
+// may each want different permissions.
+//
+// PS (7) and the large-page PAT (12) are cleared because this entry points at
+// a table, not a page. NX is cleared for the same reason U/S is forced: an
+// inherited NX - from a parent directory, or from the large leaf being split -
+// would pin an entire subtree non-executable with no way for a later leaf to
+// opt back in.
+//
+// allow_user gates U/S so kernel-half directories are not blanket-opened;
+// pass (virtual_adress < HIGHER_HALF_BASE_).
+//
+// R/W is forced for the same reason U/S is. A fresh PML4 slot has no entry
+// above it to inherit from, so inherited_flags is 0 there and the directory
+// would be created read-only - and because each level then re-reads the entry
+// the previous iteration just wrote, that read-only-ness propagated all the
+// way down to the leaf. vmm_map_page() writes the caller's flags into the leaf
+// only and never revisits the directories, so the PTE looked correct while the
+// page was in fact unwritable (the CPU ANDs R/W across all four levels, and
+// CR0.WP is set, so this denied kernel writes too).
+static uint64_t directory_entry_flags(uint64_t inherited_flags, uint64_t allow_user){
+
+    const uint64_t BIT_PRESENT   = 1ULL;
+    const uint64_t BIT_RW        = (1ULL << 1);
+    const uint64_t BIT_US        = (1ULL << 2);
+    const uint64_t BIT_PS        = (1ULL << 7);
+    const uint64_t BIT_LARGE_PAT = (1ULL << 12);
+    const uint64_t BIT_NX        = (1ULL << 63);
+
+    uint64_t flags = inherited_flags;
+
+    flags |= BIT_PRESENT;
+    flags |= BIT_RW;
+
+    if(allow_user){
+        flags |= BIT_US;
+    }
+
+    flags &= ~(BIT_PS | BIT_LARGE_PAT);
+    flags &= ~BIT_NX;
+
+    return flags;
+}
 
 
 static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uint64_t desired_spilt_lvl){
@@ -1296,7 +1395,8 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
     const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
     const uint64_t ADDR_MASK_2M = 0x000FFFFFFFE00000ULL;
     const uint64_t ADDR_MASK_1G = 0x000FFFFFC0000000ULL;
-    const uint64_t BIT_PRESENT = 1ULL;
+    // BIT_PRESENT dropped: directory_entry_flags() owns the present bit for
+    // every intermediate entry this function writes.
     const uint64_t BIT_PS_OR_PTE_PAT = (1ULL << 7);
     const uint64_t BIT_LARGE_PAT = (1ULL << 12);
 
@@ -1334,27 +1434,23 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
 
                 if(!new_page.success){return result;}
 
-                if(walker_result.final_entry_pointer == NULL){return result;}
-                if(walker_result.final_page_walked_ptr == NULL){return result;}
+                // Both of these bail out *after* the allocation above, so the
+                // new paging-structure frame has to go back to the PMM or it
+                // is leaked - nothing has linked it into a table yet, so
+                // teardown will never find it.
+                if(walker_result.final_entry_pointer == NULL){ pmm_free_frame(new_page.physical_adress); return result;}
+                if(walker_result.final_page_walked_ptr == NULL){ pmm_free_frame(new_page.physical_adress); return result;}
 
                 last_new_table_ptr = new_page.pgtable_pointer;
                 last_old_table_ptr = walker_result.final_page_walked_ptr;
 
                 uint64_t inherited_flags = walker_result.parent_flags;
 
-                uint64_t enforced_flags = inherited_flags;
-
-                if(virtual_adress < HIGHER_HALF_BASE_){
-
-                    uint64_t us_bit = (1ULL << 2);
-
-
-                    enforced_flags = ((inherited_flags | BIT_PRESENT) | us_bit) & ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
-                    
-                }
-                else{
-                 enforced_flags = (inherited_flags | BIT_PRESENT) & ~(BIT_PS_OR_PTE_PAT | BIT_LARGE_PAT);
-                }
+                // Previously this inherited the parent's NX bit, which pinned
+                // the whole new subtree non-executable. See
+                // directory_entry_flags().
+                uint64_t enforced_flags =
+                    directory_entry_flags(inherited_flags, virtual_adress < HIGHER_HALF_BASE_);
 
                 
 
@@ -1395,16 +1491,19 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
                     free_page_frame_out new_page = free_frame_for_new_page_structure_and_create_it2();
                     if(!new_page.success){return result;}
 
-                    if(walker_result.final_page_walked_ptr == NULL){return result;}
+                    // Same as the NOT_PRESENT path: these return after the
+                    // allocation and before anything links the frame in, so
+                    // hand it back to the PMM instead of leaking it.
+                    if(walker_result.final_page_walked_ptr == NULL){ pmm_free_frame(new_page.physical_adress); return result;}
 
                     last_new_table_ptr = new_page.pgtable_pointer;
                     last_old_table_ptr = walker_result.final_page_walked_ptr;
 
-                    uintptr_t parent_physical_base = walker_result.physical_base_adress; 
+                    uintptr_t parent_physical_base = walker_result.physical_base_adress;
 
                     //KEEP AN EYE FOR THIS L;ATER IF WE WANT TO ACCES THE ZERO AREA
 
-                    if (parent_physical_base == 0) {result.error_code = PARENT_PA_IS_0; return  result;}
+                    if (parent_physical_base == 0) { pmm_free_frame(new_page.physical_adress); result.error_code = PARENT_PA_IS_0; return  result;}
 
                     for(uint32_t i = 0; i < 512; i++){
 
@@ -1435,7 +1534,17 @@ static spilt_out spilt_page(uintptr_t *root_table, uintptr_t virtual_adress, uin
 
                     // 
                     {
-                        uint64_t link_flags = (old_leaf_entry & ~ADDR_MASK_4K) & ~BIT_PS_OR_PTE_PAT;
+                        // The old leaf's U/S and NX must not survive onto the
+                        // entry that replaces it. Those bits now live on the
+                        // 512 child leaves built above (leaf_flags carries
+                        // them), so keeping them here as well would mean a
+                        // kernel-only or NX large page could never be split to
+                        // host a user or executable 4KiB page inside it - the
+                        // directory would keep vetoing the child.
+                        // See directory_entry_flags().
+                        uint64_t link_flags =
+                            directory_entry_flags(old_leaf_entry & ~ADDR_MASK_4K,
+                                                  virtual_adress < HIGHER_HALF_BASE_);
                         *walker_result.final_entry_pointer = (new_page.physical_adress & ADDR_MASK_4K) | link_flags;
                         invlpg((void*)virtual_adress);
                     }
@@ -1910,7 +2019,7 @@ create_vm_space_out create_vm_space(){
     new_space->kernel_base = KERNEL_IMAGE_BASE;//fill this 
     new_space->kernel_limit = UINTPTR_MAX; //and this too
     new_space->user_base = 0;
-    new_space->user_limit = HIGHER_HALF_BASE_; //also fill this
+    new_space->user_limit = USER_SPACE_LIMIT_; //also fill this
     new_space->kernel_adress_space_base = HIGHER_HALF_BASE_;
 
     
@@ -1969,7 +2078,7 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
     uintptr_t legal_base;
 
     if(space->is_kernel == false){
-        legal_limit = HIGHER_HALF_BASE_;
+        legal_limit = USER_SPACE_LIMIT_;
         legal_base = 0;
 
     }else{
