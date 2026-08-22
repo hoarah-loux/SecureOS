@@ -4,6 +4,9 @@
 #include <scheduler.h>
 #include <vmm.h>
 
+#define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
+#define KIMG_ALIAS(fun) ((syscall_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
+
 // Everything below is out of scope for keyboard/filesystem work (process
 // control, memory, time, framebuffer) and is stubbed until its owner wires
 // it up. Returns -1 (ENOSYS-equivalent, no errno table yet).
@@ -15,25 +18,25 @@ static int64_t sys_stub(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint
 
 
 static const syscall_fn syscall_table[SYS_MAX] = {
-    [SYS_read]       = sys_read,
-    [SYS_write]      = sys_write,
-    [SYS_open]       = sys_open,
-    [SYS_close]      = sys_close,
-    [SYS_lseek]      = sys_lseek,
-    [SYS_getkey]     = sys_getkey,
-    [SYS_getkey_wait] = sys_getkey_wait,
-    [SYS_exit]       = sys_stub,
-    [SYS_yield]      = sys_stub,
-    [SYS_fork]       = sys_stub,
-    [SYS_execve]     = sys_stub,
-    [SYS_waitpid]    = sys_stub,
-    [SYS_getpid]     = sys_stub,
-    [SYS_mmap]       = sys_mmap,
-    [SYS_munmap]     = sys_stub,
-    [SYS_brk]        = sys_stub,
-    [SYS_gettime]    = sys_stub,
-    [SYS_sleep]      = sys_stub,
-    [SYS_fb_present] = sys_stub,
+    [SYS_read]       = KIMG_ALIAS(sys_read),
+    [SYS_write]      = KIMG_ALIAS(sys_write),
+    [SYS_open]       = KIMG_ALIAS(sys_open),
+    [SYS_close]      = KIMG_ALIAS(sys_close),
+    [SYS_lseek]      = KIMG_ALIAS(sys_lseek),
+    [SYS_getkey]     = KIMG_ALIAS(sys_getkey),
+    [SYS_getkey_wait] = KIMG_ALIAS(sys_getkey_wait),
+    [SYS_exit]       = KIMG_ALIAS(sys_stub),
+    [SYS_yield]      = KIMG_ALIAS(sys_stub),
+    [SYS_fork]       = KIMG_ALIAS(sys_stub),
+    [SYS_execve]     = KIMG_ALIAS(sys_stub),
+    [SYS_waitpid]    = KIMG_ALIAS(sys_stub),
+    [SYS_getpid]     = KIMG_ALIAS(sys_stub),
+    [SYS_mmap]       = KIMG_ALIAS(sys_mmap),
+    [SYS_munmap]     = KIMG_ALIAS(sys_stub), // SET THIS TO ACTUAL MUNMAP
+    [SYS_brk]        = KIMG_ALIAS(sys_stub),
+    [SYS_gettime]    = KIMG_ALIAS(sys_stub),
+    [SYS_sleep]      = KIMG_ALIAS(sys_stub),
+    [SYS_fb_present] = KIMG_ALIAS(sys_stub),
 };
 
 void syscall_handler(trap_frame *frame, trap_reason trap_reason) {
