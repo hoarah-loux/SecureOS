@@ -127,6 +127,13 @@ sched_add_ready_out scheduler_add_ready(uint64_t cpu_id ,thread *t){
 
     if(cpu == NULL || !cpu->present || !cpu->is_initialized){return result;}
 
+    if(t == cpu->idle_thread){
+        // idle thread is never queue-managed - always implicitly available
+        // as scheduler_pick_next's fallback, so just no-op success here.
+        result.success = true;
+        return result;
+    }
+
     if(cpu->ready_queue == NULL){
 
         result.error_code = SCHED_NOT_READY;
@@ -204,7 +211,13 @@ thread *scheduler_pick_next(uint64_t cpu_id){
     if(cpu->ready_queue == NULL){return NULL;}
 
     thread_queue_pop_out tmd = thread_queue_pop(cpu->ready_queue);
-    if(!tmd.success){return NULL;}
+    if(!tmd.success){
+        if(cpu->idle_thread != NULL){
+            cpu->idle_thread->state = RUNNING_T;
+            return cpu->idle_thread;
+        }
+        return NULL;
+    }
 
     thread *t = tmd.popped_t;
 
@@ -236,6 +249,22 @@ uint64_t scheduler_set_current(uint64_t cpu_id ,thread *t){
     
 
 
+
+}
+
+
+uint64_t scheduler_set_idle_thread(uint64_t cpu_id, thread *t){
+
+    if(cpu_id >= MAX_CPUS) return 0;
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+
+    if(cpu == NULL || !cpu->present || !cpu->is_initialized){return 0;}
+    if(t == NULL){return 0;}
+
+    cpu->idle_thread = t;
+
+    return 1;
 
 }
 

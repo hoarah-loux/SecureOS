@@ -101,16 +101,48 @@ ASMFLAGS = -f elf64
 #     Compile for x86_64.
 # - `-mno-red-zone`:
 #     Disable the x86_64 “red zone” (interrupts/exceptions could clobber it).
-# - `-mcmodel=kernel`:
-#     Use the kernel code model (assumptions suitable for kernel addresses).
 # - `-mno-mmx -mno-sse -mno-sse2`:
 #     Avoid using MMX/SSE registers/instructions (no FPU/SIMD init yet).
-# - `-fno-pic -fno-pie`:
-#     Do not emit position-independent code/executable; we link at fixed VAs.
+# - `-fpie`:
+#     Position-independent code. NOT for relocatability (we still link at a
+#     fixed VA, LDFLAGS below has no -pie/-shared, so ld resolves everything
+#     to concrete values at link time - no runtime relocator exists or is
+#     needed). This is here because the kernel runs the *same physical
+#     image* through multiple valid VA aliases at once (its low-identity
+#     boot address, the physmap alias, and its higher-half alias -
+#     see kmain_highhalf() in kernel.c) - -fno-pic (the previous setting)
+#     bakes in one fixed absolute address for every global/static symbol
+#     reference, which is only correct under whichever single alias was
+#     "live" when that address was captured. -fpie makes every such
+#     reference RIP-relative instead, so it resolves correctly no matter
+#     which alias the referencing code is currently executing from.
+#     Previously used `-mcmodel=kernel`, which is mutually exclusive with
+#     -fpic/-fpie at the compiler level (hard error) - dropped in favor of
+#     the default (small) code model, which is also the architecturally
+#     correct one for an image actually linked in the low 2GB (1MiB),
+#     unlike -mcmodel=kernel which assumes the negative/high 2GB.
+# - `-fvisibility=hidden`:
+#     Under -fpie, taking a *function's* address as a value (not calling
+#     it - e.g. storing it in syscall_table[], or passing it to
+#     set_idt_entry()) still goes through a GOT slot by default, unless
+#     the compiler knows the symbol can't be interposed from outside this
+#     link unit. A GOT slot holds a fixed value the static linker writes
+#     once - reading it does NOT track whichever alias the reading code
+#     is currently executing from, unlike a direct RIP-relative
+#     computation, so it silently reintroduces the exact bug -fpie was
+#     added to fix, just for function pointers instead of data. There is
+#     no shared library boundary here (one fully static link, verified via
+#     `readelf -d`: no dynamic section, no relocations), so nothing is
+#     genuinely interposable - hidden visibility tells the compiler that
+#     and it emits a direct RIP-relative load instead. Symbols defined in
+#     hand-written assembly (the ISR entry points in idt.c's extern
+#     declarations) aren't touched by this C compiler flag on their
+#     definition side, so those get the same attribute explicitly at each
+#     extern declaration instead.
 # - `-Wall -Wextra`:
 #     Enable common and extra warnings.
-CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone -mcmodel=kernel \
-		 -mno-mmx -mno-sse -mno-sse2 -fno-pic -fno-pie -Wall -Wextra \
+CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone \
+		 -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden -Wall -Wextra \
 		 -I$(INCLUDE_DIR)
 
 # Linker flags.
@@ -347,6 +379,7 @@ run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 
 # Force debug-friendly compile flags for this target and its prerequisites.
 run-debug: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
+	cp $(OVMF_VARS) $(OVMF_VARS_COPY)
 	qemu-system-x86_64 \
 		-machine pc \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \

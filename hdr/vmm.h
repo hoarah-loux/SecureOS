@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <pmm.h>
 #include <heap.h>
-#include <fs_syscalls.h>
 
 
 typedef struct vm_space vm_space;
@@ -426,9 +425,12 @@ uintptr_t* vmm_get_active_page_table(void);
 void vmm_invalidate_tlb(uintptr_t virtual_adress);
 
 search_region_list_out search_region_list(vm_space *space, uintptr_t va);
-void *sys_mmap(void* addr, size_t len, uint64_t perms, 
+void *mmap(void* addr, size_t len, uint64_t perms, 
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset);
 
+int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, 
+            uint64_t map_flags, uint64_t file_descriptor, 
+            uint64_t file_offset);
 
 

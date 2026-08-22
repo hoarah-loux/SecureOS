@@ -1,4 +1,6 @@
 #include <t.h>
+#include <pmm.h>
+#include <string.h>
 
 
 static uint64_t tid_count = 1;
@@ -116,6 +118,32 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     uintptr_t k_stack_va_start = ker_stack->va_start;
     uintptr_t k_stack_va_end = ker_stack->va_end;
+
+    // Kernel stacks can never be lazily faulted in: the #PF handler itself
+    // runs on the current stack (CPL0 exceptions don't get an automatic
+    // TSS.RSP0 stack switch - that only happens on ring3->ring0 entry), so
+    // a fault caused by touching an unmapped kernel stack has nowhere safe
+    // to deliver the exception frame and immediately cascades into a
+    // double/triple fault. Back it eagerly, same pattern as
+    // elf_map_segments() in loader.c.
+    for (uintptr_t page_va = k_stack_va_start; page_va < k_stack_va_end; page_va += 4096) {
+        uintptr_t frame = pmm_alloc_frame();
+        if (frame == 0) {
+            kfree(t);
+            result.error_code = KERNEL_STACK_RESERVE_ERROR;
+            return result;
+        }
+
+        void *page_kva = (void*)phys_to_virt(frame);
+        memset(page_kva, 0, 4096);
+
+        map_out map_md = vmm_map_page(page_va, frame, space->pml4_phys_ptr, 4, KERNEL_STACK_FLAGS);
+        if (!map_md.success) {
+            kfree(t);
+            result.error_code = KERNEL_STACK_RESERVE_ERROR;
+            return result;
+        }
+    }
 
     t->_rsp_k = k_stack_va_end;
     t->kernel_stack_size = 16 * 1024;
