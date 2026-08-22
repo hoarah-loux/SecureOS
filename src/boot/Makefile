@@ -404,10 +404,21 @@ $(RING3_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_test.S $(PROJECT_ROOT)/elf_ring3_te
 	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_test.S -o $(BUILD_DIR)/elf_ring3_test.o
 	$(LD) -T $(PROJECT_ROOT)/elf_ring3_test.ld $(BUILD_DIR)/elf_ring3_test.o -o $@
 
+# Second ring3 test binary. elf_ring3_test.S never touches its stack, so it
+# passes whether or not the user stack is usable; this one writes to the stack
+# at every step (push/pop, a call frame with locals, and a frame deep enough to
+# demand-fault a second page) and prints which step failed, if any.
+# Lands on the FAT32 image as /RING3S.EXE - see the mcopy below.
+RING3_STACK_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_stack_test.elf
+
+$(RING3_STACK_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_stack_test.S $(PROJECT_ROOT)/elf_ring3_stack_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_stack_test.S -o $(BUILD_DIR)/elf_ring3_stack_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_stack_test.ld $(BUILD_DIR)/elf_ring3_stack_test.o -o $@
+
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
-$(FAT32_IMAGE): $(RING3_TEST_ELF)
+$(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -416,6 +427,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF)
 	@echo "IT WORKS" > $(FAT32_ROOT)/boot/pwned.txt
 	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
 	cp $(RING3_TEST_ELF) $(FAT32_ROOT)/RING3.exe
+	cp $(RING3_STACK_TEST_ELF) $(FAT32_ROOT)/RING3S.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -423,6 +435,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/boot/pwned.txt ::/boot/PWNED.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3.exe ::RING3.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3S.exe ::RING3S.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

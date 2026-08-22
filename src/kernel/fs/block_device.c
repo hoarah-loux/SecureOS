@@ -1,5 +1,14 @@
 #include <block_device.h>
 
+#define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
+
+// See the matching comment in src/kernel/fs/ide_pio.c: a static initializer
+// stores a link-time absolute (low-identity) address, and kmain() unmaps the
+// low-identity window right after transition(), so an un-rebased ops table
+// faults on the first dispatch through it.
+#define KIMG_READ(fun)  ((block_device_read_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
+#define KIMG_WRITE(fun) ((block_device_write_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
+
 static int block_memory_read(void *context, uint64_t sector, uint32_t count, uint8_t *buffer) {
     block_memory_backend_t *backend = (block_memory_backend_t *)context;
 
@@ -67,8 +76,8 @@ static int block_memory_write(void *context, uint64_t sector, uint32_t count, co
 }
 
 static const block_device_ops_t memory_device_ops = {
-    .read = block_memory_read,
-    .write = block_memory_write,
+    .read = KIMG_READ(block_memory_read),
+    .write = KIMG_WRITE(block_memory_write),
 };
 
 int block_device_init_memory(block_device_t *device, const char *name, void *base, uint64_t size_bytes, uint32_t sector_size) {

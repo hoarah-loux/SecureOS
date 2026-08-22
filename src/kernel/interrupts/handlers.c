@@ -9,10 +9,11 @@
 
 void panic(const char *msg){
 
-    printk("stop fucking around");
-    printk("u chose this");
-    printk("dont act surprised its not working");
+    printk("stop fucking around\n");
+    printk("u chose this\n");
+    printk("dont act surprised its not working\n");
     printk(msg);
+    printk("\n");
 
 
     for(;;){ __asm__ volatile("hlt"); }
@@ -67,6 +68,54 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
     }
 
     return 1;
+}
+
+// #GP, vector 13.
+//
+// Until this existed vector 13 had no gate at all, so every #GP escalated
+// straight to #DF and then triple fault - a silent reboot with nothing on the
+// serial line. There is no recovery path yet (nothing here can safely resume a
+// thread that executed an illegal operation), so this is a diagnostic: print
+// enough to identify the fault, then stop.
+//
+// error_code is a segment selector when a descriptor-table reference raised
+// the fault, and 0 otherwise. In long mode 0 is the common case and almost
+// always means a non-canonical memory reference - typically a bad stack
+// pointer, since a push to a non-canonical address faults here rather than
+// producing a page fault.
+void general_protection_handler(uint64_t error_code, uint64_t fault_rip, uint64_t fault_cs){
+
+    printk("[#GP] general protection fault\n");
+    printk("[#GP]  rip=0x%llx cs=0x%llx cpl=%d\n",
+           (unsigned long long)fault_rip,
+           (unsigned long long)fault_cs,
+           (int)(fault_cs & 3));
+    printk("[#GP]  error_code=0x%llx\n", (unsigned long long)error_code);
+
+    if(error_code == 0){
+
+        printk("[#GP]  no selector - non-canonical address or illegal operation\n");
+
+    }else{
+
+        // Selector error code: bit 0 external, bits 2:1 table, bits 15:3 index.
+        const char *table;
+
+        switch((error_code >> 1) & 0x3){
+            case 0:  table = "GDT";  break;
+            case 1:  table = "IDT";  break;
+            case 2:  table = "LDT";  break;
+            default: table = "IDT";  break;
+        }
+
+        printk("[#GP]  selector table=%s index=%d external=%d\n",
+               table,
+               (int)((error_code >> 3) & 0x1FFF),
+               (int)(error_code & 1));
+    }
+
+    //kill process once ring3 faults are recoverable
+    panic("general protection fault");
 }
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){

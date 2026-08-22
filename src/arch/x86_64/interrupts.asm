@@ -1,4 +1,5 @@
 global page_fault_isr
+global gp_fault_isr
 global keyboard_isr
 global mouse_isr
 global timer_isr
@@ -6,6 +7,7 @@ global yield_isr
 global exit_isr
 global syscall_isr
 extern page_fault_handler
+extern general_protection_handler
 extern keyboard_interrupt_handler
 extern mouse_interrupt_handler
 extern timer_handler
@@ -52,6 +54,63 @@ call page_fault_handler
 
 mov rsp, r12
 
+
+pop r15
+pop r14
+pop r13
+pop r12
+pop r11
+pop r10
+pop r9
+pop r8
+pop rbp
+pop rdi
+pop rsi
+pop rdx
+pop rcx
+pop rbx
+pop rax
+
+add rsp, 8
+
+iretq
+
+; #GP, vector 13. Like #PF this pushes an error code, so the frame layout
+; matches page_fault_isr's and the same `add rsp, 8` is needed before iretq.
+; There is no CR2 equivalent - the error code is a selector when a descriptor
+; reference caused the fault, and 0 otherwise (a non-canonical address, which
+; is the usual cause in long mode, reports 0).
+gp_fault_isr:
+
+push rax
+push rbx
+push rcx
+push rdx
+push rsi
+push rdi
+push rbp
+push r8
+push r9
+push r10
+push r11
+push r12
+push r13
+push r14
+push r15
+
+;;error code
+mov rdi, [rsp + 15*8]
+;;rip
+mov rsi, [rsp + 15*8 + 8]
+;;cs - the low two bits give the CPL the fault came from
+mov rdx, [rsp + 15*8 + 16]
+
+mov r12, rsp
+and rsp, -16
+
+call general_protection_handler
+
+mov rsp, r12
 
 pop r15
 pop r14
