@@ -118,6 +118,15 @@ void pmm_init(uint32_t mb2_info_ptr, uintptr_t kernel_start, uintptr_t kernel_en
             // Set runtime managed size, clamped to our static 4GiB store.
             uint64_t managed_phys_end = (pmm_max_phys_end > max_pyhs) ? max_pyhs : pmm_max_phys_end;
 
+            // pmm_max_phys_end was collected across ALL multiboot mmap entry
+            // types (not just usable RAM) - under UEFI/OVMF that includes
+            // huge high-address MMIO/reserved apertures (~1TiB range on this
+            // machine), way past any real RAM. Clamp it to what the
+            // allocator actually manages so BUDDY_MAX_PHYS (and everything
+            // derived from it - physmap sizing, kernel-asset VA placement)
+            // reflects real backed memory instead of firmware MMIO noise.
+            pmm_max_phys_end = managed_phys_end;
+
             if (managed_phys_end == 0) {
                 pmm_managed_frame_count = 0;
                 pmm_managed_bitmap_size = 0;

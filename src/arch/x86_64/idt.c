@@ -26,7 +26,15 @@ struct idt_ptr idtp;
 void idt_init(){
 
 idtp.limit = sizeof(struct idt_entry) * 256 - 1;
-idtp.base  = (uint64_t)&idt;
+
+// idt_init() runs from kmain_highhalf, at the kernel's higher-half alias.
+// &idt and every ISR symbol's address below are now RIP-relative (the
+// kernel is built with -fpie - see src/boot/Makefile), so they resolve to
+// addresses in whichever alias this code is *currently* executing from,
+// not a fixed link-time value - no manual phys_to_virt() translation
+// needed here (that was only required back when the build used
+// -mcmodel=kernel, which forces absolute addressing for data references).
+idtp.base = (uint64_t)&idt;
 
 set_idt_entry(14, (uintptr_t)page_fault_isr, 0x8E);
 set_idt_entry(PIC_TIMER_VECTOR, (uintptr_t)timer_isr, 0x8E);

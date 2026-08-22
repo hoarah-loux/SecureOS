@@ -65,6 +65,7 @@
     ; Export `_start` so the linker can mark it as the ELF entry point.
     GLOBAL _start
     GLOBAL tss64
+    GLOBAL gdt64
 
     ; Symbols resolved from other compilation units / the linker script.
     ; - `kmain` is the C entry point we call after CPU setup.

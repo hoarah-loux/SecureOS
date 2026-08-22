@@ -2653,8 +2653,17 @@ search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 
 }
 
+int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, uint64_t map_flags, uint64_t file_descriptor, uint64_t file_offset){
 
-void *sys_mmap(void* addr, size_t len, uint64_t perms, 
+    void *mapped_addr = mmap((void*)addr, len, perms, map_flags, file_descriptor, file_offset);
+    if(mapped_addr == NULL){
+        return -1; // Indicate failure
+    }
+    return (int64_t)mapped_addr; // Return the mapped address as an integer
+}
+
+
+void *mmap(void* addr, size_t len, uint64_t perms, 
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset){
 
