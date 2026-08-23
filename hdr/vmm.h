@@ -429,44 +429,6 @@ void *mmap(void* addr, size_t len, uint64_t perms,
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset);
 
-// Full-control form of mmap(). mmap() is a thin wrapper over this that fills
-// in the current thread's address space and leaves everything else at its
-// syscall-visible default.
-//
-// Two things here are not reachable through the syscall form and exist for
-// in-kernel callers such as the ELF loader:
-//
-//   space   - the target address space. The syscall path always means "the
-//             caller's own", but a loader populates the address space of a
-//             process that is not running (and is not scheduler_current()),
-//             so it has to be passed explicitly. NULL keeps the old
-//             behaviour and resolves the current thread's space.
-//
-//   backing - an already-pinned file backing, used instead of looking up a
-//             file descriptor. fd lookup goes through the *current* process's
-//             fd table, which is again the wrong table when populating
-//             another process. mmap_ex() takes its own reference on the
-//             backing for every region it creates, so the caller keeps
-//             ownership of the reference it passed in and must unpin it
-//             when done.
-//
-// region_type lands in vm_region->type (STACK, ELF_SEGMENT, ...).
-typedef struct mmap_request{
-
-    vm_space *space;              // NULL = current thread's address space
-    void *addr;
-    size_t len;                   // byte length; bytes past it in the final page read as zero
-    uint64_t perms;               // page table permission bits for the region
-    uint64_t map_flags;           // FIXED / PRIVATE / SHARED / TOPDOWN ...
-    uint64_t file_descriptor;     // 0 = anonymous; ignored when backing != NULL
-    uint64_t file_offset;         // must be page aligned
-    fs_mmap_backing *backing;     // pre-pinned backing, bypasses the fd table
-    uint64_t region_type;
-
-}mmap_request;
-
-void *mmap_ex(const mmap_request *request);
-
 int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, 
             uint64_t map_flags, uint64_t file_descriptor, 
             uint64_t file_offset);

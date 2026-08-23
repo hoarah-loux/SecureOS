@@ -42,15 +42,6 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
         return 0;
     }
 
-    // Zero first, unconditionally. Anonymous regions want a zero page, and a
-    // file region only ever covers region->size_bytes of file - the rest of
-    // the final page (an ELF segment's .bss tail, or just the slack of a
-    // non-page-multiple length) must read as zero, not as whatever bytes
-    // happen to follow in the file.
-    for (uint64_t i = 0; i < 4096; i++) {
-        frame_buf[i] = 0;
-    }
-
     if (region->object != NULL &&
         region->object->type == FILE &&
         region->object->backing_ctx != NULL) {
@@ -60,25 +51,20 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
         }
 
         uint64_t page_delta = (uint64_t)(alligned_va - region->va_start);
-
-        // Past the file-backed extent of the region: pure zero page, no read.
-        if (page_delta >= (uint64_t)region->size_bytes) {
-            return 1;
-        }
-
         uint64_t file_offset = (uint64_t)region->object_base_offset + page_delta;
         if (file_offset < page_delta) {
             return 0;
         }
 
-        uint64_t remaining = (uint64_t)region->size_bytes - page_delta;
-        uint64_t to_read = (remaining < 4096) ? remaining : 4096;
-
-        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, to_read) < 0) {
+        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, 4096) < 0) {
             return 0;
         }
 
         return 1;
+    }
+
+    for (uint64_t i = 0; i < 4096; i++) {
+        frame_buf[i] = 0;
     }
 
     return 1;
@@ -132,6 +118,28 @@ void general_protection_handler(uint64_t error_code, uint64_t fault_rip, uint64_
     panic("general protection fault");
 }
 
+// A page fault the handler cannot service is fatal, but "not present" on its
+// own says nothing about what went wrong. Dump the address, the faulting
+// instruction, the raw error code and which step gave up before halting.
+static void pf_panic(const char *msg, const char *stage, uint64_t faulting_va,
+                     uint64_t error_code, uint64_t fault_rip){
+
+    printk("[#PF] unhandled page fault\n");
+    printk("[#PF]  va=0x%llx rip=0x%llx error_code=0x%llx\n",
+           (unsigned long long)faulting_va,
+           (unsigned long long)fault_rip,
+           (unsigned long long)error_code);
+    printk("[#PF]  present=%d write=%d user=%d reserved=%d ifetch=%d\n",
+           (int)((error_code >> 0) & 1),
+           (int)((error_code >> 1) & 1),
+           (int)((error_code >> 2) & 1),
+           (int)((error_code >> 3) & 1),
+           (int)((error_code >> 4) & 1));
+    printk("[#PF]  gave up at: %s\n", stage);
+
+    panic(msg);
+}
+
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
 
     uint64_t err_code = error_code & 0x7;
@@ -148,22 +156,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ panic(msg); }
+        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ panic(msg); }
-        if(curr_t->owning_proc == NULL){ panic(msg); }
+        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ panic(msg); }
+        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ panic(msg); }
+        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ panic(msg); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
         
 
     }
@@ -183,7 +191,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
             msg = "a kernel read hit a page that was present but violated protection NX CASE.";
 
         }
-        panic(msg);
+        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
         
     }
 
@@ -205,22 +213,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
          uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ panic(msg); }
+        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ panic(msg); }
-        if(curr_t->owning_proc == NULL){ panic(msg); }
+        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ panic(msg); }
+        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ panic(msg); }
+        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ panic(msg); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
 
     }
 
@@ -241,7 +249,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
             msg = "a kernel write hit a page that was present but violated protection NX CASE.";
 
         }
-        panic(msg);
+        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
 
     }
 
@@ -262,22 +270,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
          uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ panic(msg); }
+        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ panic(msg); }
-        if(curr_t->owning_proc == NULL){ panic(msg); }
+        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ panic(msg); }
+        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ panic(msg); }
+        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ panic(msg); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
 
 
     }
@@ -298,7 +306,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         }
 
         //kill process 
-        panic(msg);
+        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
 
 
     }
@@ -322,22 +330,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
          uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ panic(msg); }
+        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ panic(msg); }
-        if(curr_t->owning_proc == NULL){ panic(msg); }
+        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ panic(msg); }
+        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ panic(msg); }
+        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ panic(msg); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); panic(msg); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
 
 
     }
@@ -362,7 +370,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         }
 
         //kill proccess
-        panic(msg);
+        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
 
 
     }

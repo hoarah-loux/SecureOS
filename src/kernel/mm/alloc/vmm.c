@@ -1835,25 +1835,19 @@ unmap_out vmm_unmap_page(uintptr_t *root_table, uintptr_t virtual_adress){
     walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
     if(!walker_result.success){return result;}
 
-    // Order matters: a walk that stopped at the PML4 because the entry is not
-    // present has to be read as "nothing mapped here", not as an attempted
-    // unmap of the PML4 itself. That distinction did not exist while every
-    // region was populated eagerly - an untouched region was impossible - but
-    // a demand-paged region that was never faulted on has no PML4 entry at
-    // all, and tearing it down is routine.
-    if(walker_result.stop_reason == NOT_PRESENT){
-        result.unmapped_va = virtual_adress;
-        result.success = true;
-        return result;
-    }
-
-    if(walker_result.final_page_level == 1){// this case will never happen unless we have a major bug
+    if(walker_result.final_page_level == 1 && walker_result.success){// this case will never happen unless we have a major bug
 
         
         result.success = false;
         result.error_code = UNMAPPING_AT_PML4;
         return result;
 
+    }
+
+    if(walker_result.stop_reason == NOT_PRESENT){
+        result.unmapped_va = virtual_adress;
+        result.success = true;
+        return result;
     }
 
     if(walker_result.stop_reason == LARGE_PAGE){
@@ -1915,22 +1909,19 @@ free_out vmm_free_page(uintptr_t *root_table, uintptr_t virtual_adress){
     walker_out2 walker_result = the_walking_pager2(root_table, virtual_adress);
     if(!walker_result.success){return result;}
 
-    // Same ordering fix as vmm_unmap_page(): "not present at the PML4" means
-    // there is nothing to free, which is the normal state of a demand-paged
-    // region that was never faulted on.
-    if(walker_result.stop_reason == NOT_PRESENT){
-        result.freed_va = virtual_adress;
-        result.success = true;
-        return result;
-    }
-
-    if(walker_result.final_page_level == 1){// this case will never happen unless we have a major bug
+    if(walker_result.final_page_level == 1 && walker_result.success){// this case will never happen unless we have a major bug
 
         
         result.success = false;
         result.error_code = UNMAPPING_AT_PML4;
         return result;
 
+    }
+
+    if(walker_result.stop_reason == NOT_PRESENT){
+        result.freed_va = virtual_adress;
+        result.success = true;
+        return result;
     }
 
     if(walker_result.stop_reason == LARGE_PAGE){
@@ -2337,7 +2328,6 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
         region->owner_space = space;
         region->map_flags = req->map_flags;
         region->object_base_offset = req->backing_offset;
-        region->type = req->type;
 
         vm_region* curr = space->vm_region_list;
         vm_region* prev = NULL;
@@ -2750,42 +2740,6 @@ uint64_t destroy_vm_region(vm_space *space, vm_region *region){
 }
 
 
-// Frees a page table frame and, below PT level, every table frame under it.
-//
-// level follows the walker's convention: 1 = PML4, 2 = PDPT, 3 = PD, 4 = PT.
-// A PT's own entries are leaf data frames, which destroy_vm_region() has
-// already returned via vmm_free_page() - only the table frame itself is freed
-// here. An entry with PS set at PDPT or PD level is a large data mapping
-// rather than a link to a table, so it is skipped for the same reason.
-static void destroy_page_table_subtree(uintptr_t table_phys, uint64_t level){
-
-    const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
-    const uint64_t BIT_PRESENT  = 1ULL;
-    const uint64_t BIT_PS       = (1ULL << 7);
-
-    if(table_phys == 0){return;}
-
-    if(level < 4){
-
-        uintptr_t *table = (uintptr_t *)phys_to_virt(table_phys);
-        if(table == NULL){return;}
-
-        for(int i = 0; i < 512; i++){
-
-            uintptr_t entry = table[i];
-
-            if(!(entry & BIT_PRESENT)){continue;}
-            if(entry & BIT_PS){continue;}
-
-            destroy_page_table_subtree(entry & ADDR_MASK_4K, level + 1);
-            table[i] = 0;
-        }
-    }
-
-    (void)pmm_free_frame(table_phys);
-}
-
-
 uint64_t destroy_vm_space(vm_space *space){
 
     if(space == NULL)return 0;
@@ -2817,54 +2771,7 @@ uint64_t destroy_vm_space(vm_space *space){
 
     }
 
-    // Return the page tables themselves. Until this existed the regions and
-    // their data frames were freed but the paging structures were not, so
-    // every process that was ever created cost at least its PML4 frame
-    // permanently, plus every table built under it.
-    //
-    // Only the user half is ours to free. create_vm_space() populates PML4
-    // entries [ker_index..511] by copying the kernel root's entries, so those
-    // point at page tables shared with the kernel and every other address
-    // space - freeing them would pull the kernel's own mappings out from
-    // under it.
-    if(space->pml4_phys != 0){
-
-        uintptr_t current_cr3;
-        asm volatile("mov %%cr3, %0" : "=r"(current_cr3) :: "memory");
-
-        const uint64_t ADDR_MASK_4K = 0x000FFFFFFFFFF000ULL;
-        const uint64_t BIT_PRESENT  = 1ULL;
-        const uint64_t BIT_PS       = (1ULL << 7);
-
-        // Refuse to free the tables the CPU is currently translating through.
-        // Nothing does this today (a space is torn down from another context),
-        // but getting it wrong here is a triple fault with no diagnostic.
-        if((current_cr3 & ADDR_MASK_4K) == (space->pml4_phys & ADDR_MASK_4K)){
-            return 0;
-        }
-
-        uintptr_t *pml4 = (uintptr_t *)phys_to_virt(space->pml4_phys);
-        int ker_index = (HIGHER_HALF_BASE_ >> 39) & 0x1FF;
-
-        if(pml4 != NULL){
-
-            for(int i = 0; i < ker_index; i++){
-
-                uintptr_t entry = pml4[i];
-
-                if(!(entry & BIT_PRESENT)){continue;}
-                if(entry & BIT_PS){continue;}
-
-                destroy_page_table_subtree(entry & ADDR_MASK_4K, 2);
-                pml4[i] = 0;
-            }
-        }
-
-        (void)pmm_free_frame(space->pml4_phys);
-        space->pml4_phys = 0;
-        space->pml4_phys_ptr = NULL;
-        space->pml4_ptr = NULL;
-    }
+    // destroy the pml4 and shi later
 
     kfree(space);
 
@@ -2932,33 +2839,20 @@ int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, uint64_t map_flags
 }
 
 
-void *mmap_ex(const mmap_request *request){
-
-                if(request == NULL){return NULL;}
-
-                size_t len = request->len;
-                uint64_t perms = request->perms;
-                uint64_t map_flags = request->map_flags;
-                uint64_t file_descriptor = request->file_descriptor;
-                uint64_t file_offset = request->file_offset;
+void *mmap(void* addr, size_t len, uint64_t perms, 
+            uint64_t map_flags, uint64_t file_descriptor, 
+            uint64_t file_offset){
 
                 if(len == 0 || perms == 0){return NULL;}
                 if((file_offset & 0xFFFULL) != 0){return NULL;}
 
-                vm_space *space = request->space;
+                scheduler_cpu *cpu = scheduler_this_cpu();
+                if(cpu == NULL){return NULL;}
 
-                if(space == NULL){
+                thread *t = scheduler_current(cpu->cpu_id);
+                if(t == NULL || t->owning_proc == NULL){return NULL;}
 
-                    scheduler_cpu *cpu = scheduler_this_cpu();
-                    if(cpu == NULL){return NULL;}
-
-                    thread *t = scheduler_current(cpu->cpu_id);
-                    if(t == NULL || t->owning_proc == NULL){return NULL;}
-
-                    space = t->owning_proc->adress_space;
-
-                }
-
+                vm_space *space = t->owning_proc->adress_space;
                 if(space == NULL){return NULL;}
 
                 vm_object *object = kcalloc(1, sizeof(vm_object));
@@ -2973,21 +2867,7 @@ void *mmap_ex(const mmap_request *request){
                 object->ref_list_region = NULL;
                 object->ref_list_space = NULL;
 
-                if(request->backing != NULL){
-
-                    // Caller-supplied backing. It owns the reference it passed
-                    // in, so take one of our own for this region rather than
-                    // consuming theirs.
-                    if(!fs_mmap_ref(request->backing)){
-                        kfree(object);
-                        return NULL;
-                    }
-
-                    object->type = FILE;
-                    object->backing_ctx = request->backing;
-                    acquired_backing = true;
-
-                }else if(file_descriptor == 0){
+                if(file_descriptor == 0){
                     object->type = ANON;
                     object->backing_ctx = NULL;
                 }else{
@@ -3030,13 +2910,12 @@ void *mmap_ex(const mmap_request *request){
                 }
 
                 reserve_region_request req = {0};
-                req.hint_va = (uintptr_t)request->addr;
+                req.hint_va = (uintptr_t)addr;
                 req.backing_offset = file_offset;
                 req.map_flags = map_flags;
                 req.perms = perms;
                 req.size = len;
                 req.object = object;
-                req.type = request->region_type;
 
                 reserve_region_out reserve_md = reserve_region(space, &req);
                 if(!reserve_md.success || reserve_md.region_ptr == NULL){
@@ -3048,25 +2927,6 @@ void *mmap_ex(const mmap_request *request){
                 }
 
                 return (void*)reserve_md.region_ptr->va_start;
-}
-
-
-void *mmap(void* addr, size_t len, uint64_t perms, 
-            uint64_t map_flags, uint64_t file_descriptor, 
-            uint64_t file_offset){
-
-                mmap_request request = {0};
-                request.space = NULL; // current thread's space
-                request.addr = addr;
-                request.len = len;
-                request.perms = perms;
-                request.map_flags = map_flags;
-                request.file_descriptor = file_descriptor;
-                request.file_offset = file_offset;
-                request.backing = NULL;
-                request.region_type = 0;
-
-                return mmap_ex(&request);
 }
 
 // i would like to say a word from the bottom of my heart to this file,

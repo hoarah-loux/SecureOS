@@ -642,6 +642,9 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("[ELF-LOAD] test elf_load_process: FAIL error_code=%d\n", (int)load_md.error_code);
     }
 
+    // init sched
+    scheduler_init();
+
     // Second process, loaded the same way, whose only job is to prove the
     // segments really are demand paged. /RING3.EXE cannot show that: it is one
     // read+exec page with no .bss, so it looks identical however it was
@@ -649,6 +652,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     // segment whose .bss both shares a page with .data and runs several pages
     // past it - see elf_ring3_mmap_test.S. Both are queued and the timer
     // preempts between them, so both lines land on the serial log.
+    /*
     printk("[ELF-LOAD] loading /RING3M.EXE (demand paging exerciser)..\n");
     elf_load_out mmap_load_md = elf_load_process(&mount, "/RING3M.EXE");
     if (mmap_load_md.success) {
@@ -704,6 +708,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             }
         }
     } 
+        */
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");

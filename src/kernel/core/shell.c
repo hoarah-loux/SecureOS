@@ -1,4 +1,6 @@
 #include <shell.h>
+#include <loader.h>
+#include <scheduler.h>
 
 static const char shell_commands[][16] = {
     "help",       // help
@@ -10,6 +12,7 @@ static const char shell_commands[][16] = {
     "touch",      // touch
     "info",       // show file perms
     "pf",         // induce page fault for handler testing
+    "./<binary>", // run an ELF off the image; matched by prefix, not by name
 };
 
 // add sigma command as sudo
@@ -160,6 +163,46 @@ static int shell_trigger_page_fault(shell_ctx_t *ctx) {
     return 1;
 }
 
+// Loads and starts an ELF named as "./SOMETHING".
+//
+// The program is launched, not waited on. SYS_exit is still a stub, so a
+// process never terminates and there is nothing to wait for - it shares the
+// CPU with the shell from here on, and the timer preempts between them. Its
+// stdout goes to the serial port rather than to this console, because that is
+// what sys_write() does with fd 1.
+static int shell_exec_binary(shell_ctx_t *ctx) {
+
+    // "./RING3.EXE" -> "/RING3.EXE". Every path this shell handles is
+    // absolute, so dropping the leading '.' is the whole translation.
+    const char *path = ctx->argv[0] + 1;
+
+    if (path[1] == '\0') {
+        console_puts(ctx->con, "usage: ./<binary>\n");
+        return 1;
+    }
+
+    elf_load_out load_md = elf_load_process(ctx->mount, path);
+    if (!load_md.success) {
+        console_printf(ctx->con, "%s: load failed (error_code=%u)\n",
+                       path, (unsigned)load_md.error_code);
+        return 1;
+    }
+
+    sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
+    if (!ready_md.success) {
+        console_printf(ctx->con, "%s: could not schedule (error_code=%u)\n",
+                       path, (unsigned)ready_md.error_code);
+        return 1;
+    }
+
+    console_printf(ctx->con, "%s: running as pid %u (output on serial)\n",
+                   path, (unsigned)load_md.p->id);
+    
+    thread* first = scheduler_pick_next(0); // trigger a context switch to the new process if it is ready
+    restore_context(first->context); // noreturn on success
+    return 1;
+}
+
 int shell_eval(shell_ctx_t *ctx) {
     const char *cmd;
 
@@ -168,6 +211,12 @@ int shell_eval(shell_ctx_t *ctx) {
     }
 
     cmd = ctx->argv[0];
+
+    // Prefix-matched ahead of the name table: everything after the "./" is a
+    // path, so there is no fixed string to compare against.
+    if (cmd[0] == '.' && cmd[1] == '/') {
+        return shell_exec_binary(ctx);
+    }
 
     if (!strcmp(cmd, shell_commands[0])) {
         shell_print_help(ctx);
