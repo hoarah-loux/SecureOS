@@ -415,10 +415,23 @@ $(RING3_STACK_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_stack_test.S $(PROJECT_ROOT)/
 	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_stack_test.S -o $(BUILD_DIR)/elf_ring3_stack_test.o
 	$(LD) -T $(PROJECT_ROOT)/elf_ring3_stack_test.ld $(BUILD_DIR)/elf_ring3_stack_test.o -o $@
 
+# Third ring3 test binary, for demand paging. The other two link to a single
+# one-page read+exec PT_LOAD with no .bss, so they run identically whether the
+# loader populates segments eagerly or lazily. This one links to a three-page
+# text segment plus a separate writable segment whose .bss both shares a page
+# with .data and runs several pages past it, which is what actually
+# distinguishes a correct demand-paged load from a broken one.
+# Lands on the FAT32 image as /RING3M.EXE - see the mcopy below.
+RING3_MMAP_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_mmap_test.elf
+
+$(RING3_MMAP_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_mmap_test.S $(PROJECT_ROOT)/elf_ring3_mmap_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_mmap_test.S -o $(BUILD_DIR)/elf_ring3_mmap_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_mmap_test.ld $(BUILD_DIR)/elf_ring3_mmap_test.o -o $@
+
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
-$(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF)
+$(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -428,6 +441,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF)
 	@echo "FAT32 image for SecureOS." > $(FAT32_ROOT)/docs/info.txt
 	cp $(RING3_TEST_ELF) $(FAT32_ROOT)/RING3.exe
 	cp $(RING3_STACK_TEST_ELF) $(FAT32_ROOT)/RING3S.exe
+	cp $(RING3_MMAP_TEST_ELF) $(FAT32_ROOT)/RING3M.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -436,6 +450,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/docs/info.txt ::/docs/INFO.TXT
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3.exe ::RING3.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3S.exe ::RING3S.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3M.exe ::RING3M.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

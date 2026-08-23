@@ -42,6 +42,15 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
         return 0;
     }
 
+    // Zero first, unconditionally. Anonymous regions want a zero page, and a
+    // file region only ever covers region->size_bytes of file - the rest of
+    // the final page (an ELF segment's .bss tail, or just the slack of a
+    // non-page-multiple length) must read as zero, not as whatever bytes
+    // happen to follow in the file.
+    for (uint64_t i = 0; i < 4096; i++) {
+        frame_buf[i] = 0;
+    }
+
     if (region->object != NULL &&
         region->object->type == FILE &&
         region->object->backing_ctx != NULL) {
@@ -51,20 +60,25 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
         }
 
         uint64_t page_delta = (uint64_t)(alligned_va - region->va_start);
+
+        // Past the file-backed extent of the region: pure zero page, no read.
+        if (page_delta >= (uint64_t)region->size_bytes) {
+            return 1;
+        }
+
         uint64_t file_offset = (uint64_t)region->object_base_offset + page_delta;
         if (file_offset < page_delta) {
             return 0;
         }
 
-        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, 4096) < 0) {
+        uint64_t remaining = (uint64_t)region->size_bytes - page_delta;
+        uint64_t to_read = (remaining < 4096) ? remaining : 4096;
+
+        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, to_read) < 0) {
             return 0;
         }
 
         return 1;
-    }
-
-    for (uint64_t i = 0; i < 4096; i++) {
-        frame_buf[i] = 0;
     }
 
     return 1;
