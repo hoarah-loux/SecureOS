@@ -1,16 +1,8 @@
 #include <elfinfo.h>
 #include <fat32_fs.h>
+#include <fs_syscalls.h>
 #include <heap.h>
 #include <t.h>
-
-typedef struct {
-    uint8_t* data;
-    uint32_t size;
-    const char* filename;
-} mem_file_t;
-
-mem_file_t* load_file(fat32_mount_t* mount, char* filename);
-elf_eheader_t parse_mem_elf(mem_file_t elf);
 
 typedef struct elf_map_out {
     bool success;
@@ -20,16 +12,30 @@ typedef struct elf_map_out {
 enum elf_map_error {
     ELF_MAP_INVALID_ARGS,
     ELF_MAP_PHDR_OUT_OF_BOUNDS,
-    ELF_MAP_RESERVE_FAILED,
-    ELF_MAP_FRAME_ALLOC_FAILED,
-    ELF_MAP_PAGE_MAP_FAILED,
-    ELF_MAP_COPY_VERIFY_FAILED,
+    ELF_MAP_BAD_FILE_ALIGNMENT,
+    ELF_MAP_MMAP_FAILED,
 };
 
 // walks header->e_phnum program headers in file->data and, for every
-// PT_LOAD segment, reserves+maps+populates it in space. eager (not
-// demand-paged): every page is allocated, zeroed, and mapped up front.
-elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *header);
+// PT_LOAD segment, mmap()s it into space. demand paged: nothing is allocated
+// or mapped here, only reserved - the page fault handler allocates a frame
+// and fills it (from `backing` for the file part of a segment, with zeroes
+// for the .bss part) the first time each page is touched.
+//
+// Each segment becomes up to two regions: a PRIVATE file-backed one covering
+// [p_vaddr, p_vaddr + p_filesz), and an anonymous one for whatever .bss
+// remains past that region's final page. Slack in that final page reads as
+// zero, so a .bss tail sharing a page with file data is handled correctly.
+//
+// `phdr_table` is the program header table only (e_phnum * e_phentsize bytes
+// read from e_phoff), not the whole file - nothing past the headers has to be
+// in memory for a demand-paged load. `backing` must be a pinned backing for
+// the file those headers came from, and `file_size` its size on disk, used to
+// bounds check every segment. The caller keeps ownership of its reference on
+// `backing`; each region takes its own.
+elf_map_out elf_map_segments(vm_space *space, const uint8_t *phdr_table,
+                             const elf_eheader_t *header, fs_mmap_backing *backing,
+                             uint64_t file_size);
 
 typedef struct elf_load_out {
     bool success;

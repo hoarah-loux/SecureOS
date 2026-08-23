@@ -49,6 +49,13 @@ int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, ui
 
 
 fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd);
+
+// Same as fs_mmap_pin_fd() but resolves the file by path off `mount` (NULL =
+// the mount syscall_fs_init() was given) instead of through the current
+// process's fd table. For in-kernel callers - notably the ELF loader, which
+// maps into a process that owns no fds yet. Returned backing has refcount 1
+// and belongs to the caller.
+fs_mmap_pin_out fs_mmap_pin_path(fat32_mount_t *mount, const char *path);
 uint64_t fs_mmap_ref(fs_mmap_backing *backing);
 fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd);
 uint64_t fs_mmap_backing_matches_key(fs_mmap_backing *backing, const fs_mmap_file_key *key);
