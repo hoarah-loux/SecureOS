@@ -188,18 +188,19 @@ static int shell_exec_binary(shell_ctx_t *ctx) {
         return 1;
     }
 
-    sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
-    if (!ready_md.success) {
-        console_printf(ctx->con, "%s: could not schedule (error_code=%u)\n",
-                       path, (unsigned)ready_md.error_code);
-        return 1;
-    }
+    // sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
+    // if (!ready_md.success) {
+    //     console_printf(ctx->con, "%s: could not schedule (error_code=%u)\n",
+    //                    path, (unsigned)ready_md.error_code);
+    //     return 1;
+    // }
 
     console_printf(ctx->con, "%s: running as pid %u (output on serial)\n",
                    path, (unsigned)load_md.p->id);
-    
-    thread* first = scheduler_pick_next(0); // trigger a context switch to the new process if it is ready
-    restore_context(first->context); // noreturn on success
+
+    thread* first = scheduler_pick_next(0);
+    restore_context(first->context);
+
     return 1;
 }
 

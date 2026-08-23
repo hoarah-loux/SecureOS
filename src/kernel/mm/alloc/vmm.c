@@ -2257,6 +2257,39 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
             curr->prev = region;
         }
 
+
+
+        //insert thread kebnrel asset to threads list
+
+
+        thread *t = req->t;
+
+        curr = t->t_k_a_region_list;
+        prev = NULL;
+
+        
+
+        // Find sorted insertion point: prev < new <= curr
+        while(curr != NULL && curr->va_start < region->va_start){
+            prev = curr;
+            curr = curr->next_t;
+        }
+
+        // Stitch new node between prev and curr
+        region->prev_t = prev;
+        region->next_t = curr;
+
+        // If prev is NULL, insertion happened at the head
+        if(prev == NULL){
+            t->t_k_a_region_list = region;
+        }else{
+            prev->next_t = region;
+        }
+
+        if(curr != NULL){
+            curr->prev_t = region;
+        }
+
         
 
         result.success = true;
@@ -2353,6 +2386,37 @@ reserve_region_out reserve_region(vm_space* space, reserve_region_request* req){
 
         if(curr != NULL){
             curr->prev = region;
+        }
+
+
+        // insert to threads own region list
+
+        thread *t = req->t;
+
+        curr = t->t_region_list;
+        prev = NULL;
+
+        
+
+        // Find sorted insertion point: prev < new <= curr
+        while(curr != NULL && curr->va_start < region->va_start){
+            prev = curr;
+            curr = curr->next_t;
+        }
+
+        // Stitch new node between prev and curr
+        region->prev_t = prev;
+        region->next_t = curr;
+
+        // If prev is NULL, insertion happened at the head
+        if(prev == NULL){
+            t->t_region_list = region;
+        }else{
+            prev->next_t = region;
+        }
+
+        if(curr != NULL){
+            curr->prev_t = region;
         }
 
         
@@ -2783,7 +2847,7 @@ uint64_t destroy_vm_space(vm_space *space){
 
 search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 
-    search_region_list_out result = {0};
+        search_region_list_out result = {0};
 
     if(space == NULL) return result;
 
@@ -2829,9 +2893,11 @@ search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 
 }
 
-int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, uint64_t map_flags, uint64_t file_descriptor, uint64_t file_offset){
+int64_t sys_mmap(mmap_req *req){
 
-    void *mapped_addr = mmap((void*)addr, len, perms, map_flags, file_descriptor, file_offset);
+
+
+    void *mapped_addr = mmap(req);
     if(mapped_addr == NULL){
         return -1; // Indicate failure
     }
@@ -2839,17 +2905,19 @@ int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms, uint64_t map_flags
 }
 
 
-void *mmap(void* addr, size_t len, uint64_t perms, 
-            uint64_t map_flags, uint64_t file_descriptor, 
-            uint64_t file_offset){
+void *mmap(mmap_req *reqs){
+
+    void* addr = reqs->addr; 
+    size_t len = reqs->len;
+    uint64_t perms = reqs-> perms;
+    uint64_t map_flags = reqs->map_flags;
+    uint64_t file_descriptor = reqs->file_descriptor;
+    uint64_t file_offset = reqs->file_offset;
+    thread *t = reqs->t;
 
                 if(len == 0 || perms == 0){return NULL;}
                 if((file_offset & 0xFFFULL) != 0){return NULL;}
-
-                scheduler_cpu *cpu = scheduler_this_cpu();
-                if(cpu == NULL){return NULL;}
-
-                thread *t = scheduler_current(cpu->cpu_id);
+                
                 if(t == NULL || t->owning_proc == NULL){return NULL;}
 
                 vm_space *space = t->owning_proc->adress_space;
@@ -2916,6 +2984,7 @@ void *mmap(void* addr, size_t len, uint64_t perms,
                 req.perms = perms;
                 req.size = len;
                 req.object = object;
+                req.t = t;
 
                 reserve_region_out reserve_md = reserve_region(space, &req);
                 if(!reserve_md.success || reserve_md.region_ptr == NULL){

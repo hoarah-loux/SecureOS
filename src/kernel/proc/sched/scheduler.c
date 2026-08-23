@@ -222,6 +222,7 @@ thread *scheduler_pick_next(uint64_t cpu_id){
     thread *t = tmd.popped_t;
 
     t->state = RUNNING_T;
+    cpu->current_thread = t;
 
     return t;
 

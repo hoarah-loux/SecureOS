@@ -634,81 +634,30 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     kheap_init();
     
 
-    printk("[ELF-LOAD] loading /RING3.EXE as a process (create_proc+map+create_thread)..\n");
-    elf_load_out load_md = elf_load_process(&mount, "/RING3.EXE");
-    if (load_md.success) {
-        printk("[ELF-LOAD] test elf_load_process: PASS (pid=%d)\n", (int)load_md.p->id);
-    } else {
-        printk("[ELF-LOAD] test elf_load_process: FAIL error_code=%d\n", (int)load_md.error_code);
-    }
+    // printk("[ELF-LOAD] loading /RING3.EXE as a process (create_proc+map+create_thread)..\n");
+    // elf_load_out load_md = elf_load_process(&mount, "/RING3.EXE");
+    // if (load_md.success) {
+    //     printk("[ELF-LOAD] test elf_load_process: PASS (pid=%d)\n", (int)load_md.p->id);
+    // } else {
+    //     printk("[ELF-LOAD] test elf_load_process: FAIL error_code=%d\n", (int)load_md.error_code);
+    // }
 
     // init sched
     scheduler_init();
 
-    // Second process, loaded the same way, whose only job is to prove the
-    // segments really are demand paged. /RING3.EXE cannot show that: it is one
-    // read+exec page with no .bss, so it looks identical however it was
-    // loaded. /RING3M.EXE spans three text pages and carries a writable
-    // segment whose .bss both shares a page with .data and runs several pages
-    // past it - see elf_ring3_mmap_test.S. Both are queued and the timer
-    // preempts between them, so both lines land on the serial log.
-    /*
-    printk("[ELF-LOAD] loading /RING3M.EXE (demand paging exerciser)..\n");
-    elf_load_out mmap_load_md = elf_load_process(&mount, "/RING3M.EXE");
-    if (mmap_load_md.success) {
-        printk("[ELF-LOAD] test elf_load_process(/RING3M.EXE): PASS (pid=%d)\n",
-               (int)mmap_load_md.p->id);
-    } else {
-        printk("[ELF-LOAD] test elf_load_process(/RING3M.EXE): FAIL error_code=%d\n",
-               (int)mmap_load_md.error_code);
-    }
-  
+    // register idle thread later
+            // create_proc_out idle_proc_md = create_proc(true); // kernel process
+            // create_thread_out idle_t_md = {0};
+            // if (idle_proc_md.success) {
+            //     idle_t_md = create_thread(idle_proc_md.proc, (uintptr_t)idle_thread_entry,
+            //                                THREAD_F_MAIN_THREAD, 0);
+            // }
  
-    if (load_md.success) {
-        printk("[SCHED] scheduler_init..\n");
-        scheduler_init_out sched_md = scheduler_init();
-        if (!sched_md.success) {
-            printk("[SCHED] scheduler_init FAILED\n");
-        } else {
-            create_proc_out idle_proc_md = create_proc(true); // kernel process
-            create_thread_out idle_t_md = {0};
-            if (idle_proc_md.success) {
-                idle_t_md = create_thread(idle_proc_md.proc, (uintptr_t)idle_thread_entry,
-                                           THREAD_F_MAIN_THREAD, 0);
-            }
- 
-            if (!idle_proc_md.success || !idle_t_md.success ||
-                !scheduler_set_idle_thread(0, idle_t_md.thread)) {
-                printk("[SCHED] idle thread setup FAILED\n");
-            } else {
-                sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
+            // if (!idle_proc_md.success || !idle_t_md.success ||
+            //     !scheduler_set_idle_thread(0, idle_t_md.thread)) {
+            //     printk("[SCHED] idle thread setup FAILED\n");
+            // }
 
-                if (ready_md.success && mmap_load_md.success) {
-                    sched_add_ready_out mmap_ready_md =
-                        scheduler_add_ready(0, mmap_load_md.t);
-                    if (!mmap_ready_md.success) {
-                        printk("[SCHED] scheduler_add_ready(RING3M.EXE) FAILED error_code=%d\n",
-                               (int)mmap_ready_md.error_code);
-                    }
-                }
-
-                if (!ready_md.success) {
-                    printk("[SCHED] scheduler_add_ready(RING3.EXE) FAILED error_code=%d\n",
-                           (int)ready_md.error_code);
-                } else {
-                    thread *first = scheduler_pick_next(0);
-                    if (first == NULL || !scheduler_set_current(0, first)) {
-                        printk("[SCHED] initial scheduler_pick_next/set_current FAILED\n");
-                    } else {
-                        printk("[SCHED] kicking off scheduler, handing off to tid=%d ..\n",
-                               (int)first->id);
-                      restore_context(first->context); // noreturn on success
-                    }
-                }
-            }
-        }
-    } 
-        */
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");
