@@ -1,6 +1,7 @@
 #include <loader.h>
 #include <pmm.h>
 #include <string.h>
+#include <scheduler.h>
 
 // This function takes a filename and loaded it into memory, return a pointer
 mem_file_t* load_file(fat32_mount_t* mount, char* filename) {
@@ -60,9 +61,13 @@ elf_eheader_t parse_mem_elf(mem_file_t elf) {
     return header;
 }
 
-elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *header) {
+elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header) {
+
+
 
     elf_map_out result = {0};
+
+    vm_space *space = t->owning_proc->adress_space;
 
     if (space == NULL || file == NULL || header == NULL) {
         result.error_code = ELF_MAP_INVALID_ARGS;
@@ -113,12 +118,22 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
         // Until the init ordering is sorted out, those are the same address
         // space only when the loader runs on behalf of the process it is
         // populating.
-        void *mapped = mmap((void*)seg_start, seg_end - seg_start, perms,
-                            PRIVATE | FIXED, 0, 0);
-        if (mapped == NULL) {
-            result.error_code = ELF_MAP_RESERVE_FAILED;
-            return result;
-        }
+        mmap_req req = {
+            .t = t,
+            .addr = (void*)seg_start,
+            .len = (seg_end - seg_start),
+            .perms = perms,
+            .map_flags = PRIVATE | FIXED,
+            .file_descriptor = 0,
+            .file_offset = 0
+        };
+
+        void *mapped = mmap(&req);
+
+        // if (mapped == NULL) {
+        //     result.error_code = ELF_MAP_RESERVE_FAILED;
+        //     return result;
+        // }
 
         // mmap() hands back the VA, not the region. Look the region back up so
         // the ELF_SEGMENT tag and the teardown path below still work.
@@ -126,55 +141,7 @@ elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *h
         vm_region *seg_region = seg_search.success ? seg_search.region : NULL;
         if (seg_region != NULL) { seg_region->type = ELF_SEGMENT; }
 
-        for (uintptr_t page_va = seg_start; page_va < seg_end; page_va += 4096) {
-
-            uintptr_t frame = pmm_alloc_frame();
-            if (frame == 0) {
-                if (seg_region != NULL) { (void)destroy_vm_region(space, seg_region); }
-                result.error_code = ELF_MAP_FRAME_ALLOC_FAILED;
-                return result;
-            }
-
-            void *page_kva = (void*)phys_to_virt(frame);
-            memset(page_kva, 0, 4096);
-
-            // copy whatever part of this page falls within
-            // [p_vaddr, p_vaddr + p_filesz) from the file; anything beyond
-            // that (the BSS tail, up to p_memsz) stays zeroed from above.
-            uintptr_t page_va_end = page_va + 4096;
-            uintptr_t seg_file_start = phdr->p_vaddr;
-            uintptr_t seg_file_end = phdr->p_vaddr + phdr->p_filesz;
-            uintptr_t copy_start = (page_va > seg_file_start) ? page_va : seg_file_start;
-            uintptr_t copy_end = (page_va_end < seg_file_end) ? page_va_end : seg_file_end;
-
-            if (copy_start < copy_end) {
-                uint64_t copy_len = copy_end - copy_start;
-                uint64_t page_offset = copy_start - page_va;
-                uint64_t file_offset = phdr->p_offset + (copy_start - phdr->p_vaddr);
-                memcpy((uint8_t*)page_kva + page_offset, file->data + file_offset, copy_len);
-
-                // self-check: a silently wrong copy here is a silently
-                // broken process later, so verify it before moving on.
-                if (memcmp((uint8_t*)page_kva + page_offset, file->data + file_offset, copy_len) != 0) {
-                    pmm_free_frame(frame);
-                    if (seg_region != NULL) { (void)destroy_vm_region(space, seg_region); }
-                    result.error_code = ELF_MAP_COPY_VERIFY_FAILED;
-                    return result;
-                }
-            }
-
-            // vmm_map_page/the_walking_pager2 expect a PHYSICAL root table
-            // pointer (they phys_to_virt() it internally, same convention
-            // handlers.c's lazy-alloc path uses) - pml4_phys_ptr, not the
-            // already-virtual pml4_ptr.
-            map_out map_md = vmm_map_page(page_va, frame, space->pml4_phys_ptr, 4, perms);
-            if (!map_md.success) {
-                pmm_free_frame(frame);
-                if (seg_region != NULL) { (void)destroy_vm_region(space, seg_region); }
-                result.error_code = ELF_MAP_PAGE_MAP_FAILED;
-                return result;
-            }
-        }
+     
     }
 
     result.success = true;
@@ -207,16 +174,23 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
         result.error_code = ELF_LOAD_PROC_CREATE_FAILED;
         return result;
     }
-
-    elf_map_out map_md = elf_map_segments(proc_md.proc->adress_space, file, &header);
+    
+    create_thread_out thread_md = create_thread(proc_md.proc, header.e_entry, 0, 64 * 1024);
+    if (!thread_md.success) {
+        result.error_code = ELF_LOAD_THREAD_CREATE_FAILED;
+        return result;
+    }
+    
+    elf_map_out map_md = elf_map_segments(thread_md.thread, file, &header);
     if (!map_md.success) {
         result.error_code = ELF_LOAD_MAP_FAILED;
         return result;
     }
 
-    create_thread_out thread_md = create_thread(proc_md.proc, header.e_entry, 0, 64 * 1024);
-    if (!thread_md.success) {
-        result.error_code = ELF_LOAD_THREAD_CREATE_FAILED;
+    sched_add_ready_out ready_md = scheduler_add_ready(0, thread_md.thread);
+    if (!ready_md.success) {
+        result.success = false;
+        result.error_code = ELF_LOAD_SCHEDULER_FAILED;
         return result;
     }
 

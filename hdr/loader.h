@@ -29,7 +29,7 @@ enum elf_map_error {
 // walks header->e_phnum program headers in file->data and, for every
 // PT_LOAD segment, reserves+maps+populates it in space. eager (not
 // demand-paged): every page is allocated, zeroed, and mapped up front.
-elf_map_out elf_map_segments(vm_space *space, mem_file_t *file, elf_eheader_t *header);
+elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header);
 
 typedef struct elf_load_out {
     bool success;
@@ -44,6 +44,7 @@ enum elf_load_error {
     ELF_LOAD_PROC_CREATE_FAILED,
     ELF_LOAD_MAP_FAILED,
     ELF_LOAD_THREAD_CREATE_FAILED,
+    ELF_LOAD_SCHEDULER_FAILED
 };
 
 // full pipeline: load filename off mount, parse+validate its ELF header,
