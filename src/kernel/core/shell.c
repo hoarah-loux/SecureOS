@@ -165,11 +165,13 @@ static int shell_trigger_page_fault(shell_ctx_t *ctx) {
 
 // Loads and starts an ELF named as "./SOMETHING".
 //
-// The program is launched, not waited on. SYS_exit is still a stub, so a
-// process never terminates and there is nothing to wait for - it shares the
-// CPU with the shell from here on, and the timer preempts between them. Its
-// stdout goes to the serial port rather than to this console, because that is
-// what sys_write() does with fd 1.
+// The program is launched, not waited on - there is no waitpid yet. It shares
+// the CPU with the shell from here on: elf_load_process() already put its
+// thread on the ready queue, the shell is on that queue too, and the timer
+// preempts between them. Nothing is switched to by hand here; returning from
+// this function returns to the shell's own read loop. Its stdout goes to the
+// serial port rather than to this console, because that is what sys_write()
+// does with fd 1.
 static int shell_exec_binary(shell_ctx_t *ctx) {
 
     // "./RING3.EXE" -> "/RING3.EXE". Every path this shell handles is
@@ -188,18 +190,8 @@ static int shell_exec_binary(shell_ctx_t *ctx) {
         return 1;
     }
 
-    // sched_add_ready_out ready_md = scheduler_add_ready(0, load_md.t);
-    // if (!ready_md.success) {
-    //     console_printf(ctx->con, "%s: could not schedule (error_code=%u)\n",
-    //                    path, (unsigned)ready_md.error_code);
-    //     return 1;
-    // }
-
     console_printf(ctx->con, "%s: running as pid %u (output on serial)\n",
                    path, (unsigned)load_md.p->id);
-
-    thread* first = scheduler_pick_next(0);
-    restore_context(first->context);
 
     return 1;
 }
