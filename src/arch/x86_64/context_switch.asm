@@ -44,6 +44,22 @@ extern tss64
 ; used by timer_isr, switches to the selected address space, restores every
 ; general-purpose register, and resumes the selected thread with IRETQ.
 restore_context:
+    ; Everything below is one critical section. Between the `mov rsp` that
+    ; switches to the destination thread's kernel stack and the final IRETQ,
+    ; RSP belongs to a thread that is not running yet and the IRETQ frame is
+    ; only half built - and this runs at CPL0, so an interrupt taken here does
+    ; not switch stacks, it lands right on top of that half-built frame.
+    ; timer_handler() would then save_trap_frame() a RIP pointing into the
+    ; middle of this function as the destination thread's resume point and
+    ; reschedule into it, which comes back as a #GP on garbage popped by the
+    ; IRETQ below.
+    ;
+    ; The ISR paths reach here with IF already clear (interrupt gates), so this
+    ; only matters for calls made from ordinary kernel code, like kmain's
+    ; handoff to the first thread. IRETQ restores RFLAGS from the context, so
+    ; IF comes back on its own at the switch.
+    cli
+
     test rdi, rdi
     jz .invalid_context
 

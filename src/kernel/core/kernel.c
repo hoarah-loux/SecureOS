@@ -25,6 +25,7 @@
 #include <fs_syscalls.h>
 #include <heap.h>
 #include <scheduler.h>
+#include <stdbool.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -39,6 +40,19 @@ extern uintptr_t _pmm_free_frame(uintptr_t address_to_free);
 #define PIT_INPUT_HZ 1193182u
 #define PIT_COMMAND_PORT 0x43u
 #define PIT_CHANNEL0_PORT 0x40u
+
+// Everything the shell thread still touches after kmain hands the CPU over.
+//
+// File-scope on purpose. kmain's last act is restore_context(), which jumps
+// onto the shell thread's own kernel stack and never comes back, so kmain's
+// frame is gone from that point on - and three separate things hold pointers
+// into it: syscall_fs_init() keeps the mount, console_t keeps the framebuffer
+// tag, and shell_ctx_t keeps both the mount and the console.
+static block_device_t fat32_disk;
+static fat32_mount_t mount;
+static struct multiboot_tag_framebuffer fb_runtime;
+static console_t con;
+static shell_ctx_t shell_ctx;
 
 static inline void pit_outb(uint16_t port, uint8_t value) {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -247,6 +261,7 @@ static thread *install_idle_thread(void) {
     return idle_t.thread;
 }
 
+#ifdef RING3_PREEMPTION_TEST
 // Loads two ring3 binaries as separate processes and hands the CPU to the
 // first one.
 //
@@ -309,6 +324,7 @@ static void run_ring3_preemption_test(fat32_mount_t *mount) {
 
     restore_context(first->context);
 }
+#endif // RING3_PREEMPTION_TEST
 
 static void run_syscall_tests(void) {
     printk("[SYSCALL] running syscall dispatch smoke tests\r\n");
@@ -402,6 +418,141 @@ static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
     }
 }
 
+// `int $SYSCALL_VECTOR` below tracks hdr/syscall.h instead of hardcoding 0x80.
+#define STRINGIFY_INNER(x) #x
+#define STRINGIFY(x) STRINGIFY_INNER(x)
+
+// Blocking keyboard read for the shell thread.
+//
+// Goes through the int 0x80 gate rather than calling sys_getkey_wait()
+// directly, because only half of that syscall lives in the function. The
+// block-and-resume half is in syscall_handler(): it needs a trap_frame to
+// save this thread's context before scheduler_block_current() takes it off
+// the CPU, and it rewinds RIP by the two bytes of `int 0x80` so the wake path
+// re-executes the syscall and re-checks the buffer from scratch. A plain C
+// call has neither a frame nor a way back.
+//
+// Blocking instead of spinning on keyboard_getchar_nonblock() is what lets
+// the CPU reach the idle thread's hlt at all: a spinning shell is always
+// runnable, so scheduler_pick_next() would never fall through to idle.
+//
+// The gate is DPL=3 so ring3 can reach it, but CPL0 may take it too. A
+// same-privilege `int` does not switch stacks, so the frame just nests on
+// this thread's own kernel stack.
+static char shell_wait_key(void) {
+    for (;;) {
+        int64_t ret;
+
+        __asm__ volatile("int $" STRINGIFY(SYSCALL_VECTOR)
+                         : "=a"(ret)
+                         : "a"((uint64_t)SYS_getkey_wait)
+                         : "memory");
+
+        if (ret >= 0) {
+            return (char)(unsigned char)ret;
+        }
+
+        // -1 is syscall_handler bailing out (nothing runnable to switch to).
+        // Retry rather than feed a bogus character into the line.
+    }
+}
+
+// The console shell, as a kernel thread.
+//
+// Hoisted out of kmain so that something schedulable owns the loop. kmain's
+// stack is abandoned at the handoff at the end of kmain and can never be
+// returned to, so the loop had to move somewhere that has a saved context of
+// its own.
+//
+// This goes on the ready queue, not into scheduler_set_idle_thread(). Both
+// arrangements satisfy "control comes back to the shell when nothing else is
+// runnable", but the idle thread is only picked when the ready queue is
+// *empty*, which would starve the shell for as long as a launched program is
+// alive - no keystroke would be seen until that program exited. On the ready
+// queue the shell gets its own quantum alongside whatever it started.
+//
+// Never returns: a thread entry point has no caller to return to.
+static void shell_thread_entry(void) {
+    char line_buffer[SHELL_MAX_LINE];
+    size_t index = 0;
+
+    printk("[SHELL] shell thread running\r\n");
+    line_buffer[0] = '\0';
+    console_puts(&con, con.prompt);
+
+    for (;;) {
+        char c = shell_wait_key();
+
+        if (c == '\r' || c == '\n') {
+            line_buffer[index] = '\0';
+            console_newline(&con);
+
+            char *argv[16] = {0};
+            shell_ctx.argc = shell_split_args(line_buffer, argv, 16);
+            shell_ctx.argv = argv;
+            (void)shell_eval(&shell_ctx);
+
+            index = 0;
+            line_buffer[0] = '\0';
+            console_puts(&con, con.prompt);
+        } else if (c == '\b') {
+            if (index > 0) {
+                console_backspace(&con);
+                line_buffer[index] = '\0';
+                index--;
+            }
+        } else if (index < sizeof(line_buffer) - 1) {
+            line_buffer[index++] = c;
+            console_putc(&con, c);
+        }
+
+        // A full line silently drops further characters. kmain's version
+        // ended its loop instead, which for a thread entry point would mean
+        // returning to nowhere.
+    }
+}
+
+// Creates the shell's kernel thread and enqueues it.
+//
+// create_proc(true) sets PROC_F_KERNEL, which is what lets create_thread()
+// accept user_stack_size = 0 - a kernel thread never runs at CPL3 and has no
+// user stack to reserve. Its context gets cs = 0x08, so restore_context()
+// takes the .build_kernel_iret_frame path.
+//
+// The entry address needs no KERNEL_IMAGE_BASE fixup, for the same reason
+// install_idle_thread()'s does not: taking a function's address inside a
+// function compiles to a RIP-relative lea, and RIP is already in the
+// higher-half alias by this point.
+static thread *install_shell_thread(void) {
+    create_proc_out shell_proc = create_proc(true);
+    if (!shell_proc.success) {
+        printk("[SHELL] shell proc create failed\r\n");
+        return NULL;
+    }
+
+    create_thread_out shell_t = create_thread(shell_proc.proc,
+                                              (uintptr_t)shell_thread_entry,
+                                              THREAD_F_MAIN_THREAD, 0);
+    if (!shell_t.success) {
+        printk("[SHELL] shell thread create failed error_code=%u\r\n",
+               (unsigned)shell_t.error_code);
+        return NULL;
+    }
+
+    sched_add_ready_out ready_md = scheduler_add_ready(0, shell_t.thread);
+    if (!ready_md.success) {
+        printk("[SHELL] shell thread enqueue failed error_code=%u\r\n",
+               (unsigned)ready_md.error_code);
+        return NULL;
+    }
+
+    printk("[SHELL] shell thread ready (tid=%u)\r\n",
+           (unsigned)shell_t.thread->id);
+    probe_thread("[PROBE] shell @ registration", shell_t.thread);
+
+    return shell_t.thread;
+}
+
 /*
  * Main kernel entry point.
  * Called from src/boot/grub/entry64_mb2.asm as:
@@ -410,7 +561,6 @@ static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
  */
 void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     struct multiboot_tag_framebuffer fb_snapshot = {0};
-    struct multiboot_tag_framebuffer fb_runtime = {0};
     uint64_t timer_ticks_boot = 0;
     int fb_snapshot_valid = 0;
     int fb_runtime_valid = 0;
@@ -575,9 +725,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     } else {
         printk("[SecureOS] framebuffer tag missing (type 8)\r\n");
     }
-
-    block_device_t fat32_disk = {0};
-    fat32_mount_t mount = {0};
 
     printk("[FAT32] initializing IDE-backed disk\r\n");
     if (block_device_init_ide_primary_master(&fat32_disk, "fat32-disk") != 0) {
@@ -795,15 +942,19 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     // Ring3 preemption + idle-thread test. Registers the idle thread, loads
     // RING3.EXE and RING3P.EXE as two processes, and jumps into the first;
-    // the timer does the rest. Does not return - comment out to get the shell
-    // back.
+    // the timer does the rest. It never returns - restore_context() abandons
+    // this stack - so it and the shell handoff below are mutually exclusive.
+    // Build with -DRING3_PREEMPTION_TEST to get it back.
+#ifdef RING3_PREEMPTION_TEST
     run_ring3_preemption_test(&mount);
+#endif
 
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
     printk("[CONSOLE] Attempting to init console...\r\n");
 
-    console_t con = {0};
+    int console_ready = 0;
+
     if (!fb_runtime_valid) {
         printk("[CONSOLE] framebuffer runtime mapping not valid\r\n");
     } else if (console_init(&con, &fb_runtime) != 0) {
@@ -811,43 +962,43 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     } else {
         printk("[CONSOLE] console initialized\r\n");
         console_set_prompt(&con, "SSH> ");
-
         console_puts(&con, "-={ Welcome to the SecureOS! }=-\n\n\n");
-        shell_ctx_t shell_ctx = {0};
         shell_init(&shell_ctx, &mount, &con);
-
-
-        console_puts(&con, con.prompt);
-        printk("[KBD] debug keypress loop active\r\n");
-
-        char line_buffer[256] = {0};
-        size_t buffer_size = sizeof(line_buffer);
-        size_t index = 0;
-        while (index < buffer_size-1) {
-            char c;
-            if (keyboard_getchar_nonblock(&c)) {
-                if (c == '\r' || c == '\n') {
-                    line_buffer[index] = '\0';
-                    console_newline(&con);
-                    char* argv[16] = {0};
-                    size_t argc = shell_split_args(line_buffer, argv, 16);
-                    shell_ctx.argc = argc;
-                    shell_ctx.argv = argv;
-                    int shell_result = shell_eval(&shell_ctx);
-                    index = 0;
-                    line_buffer[index] = '\0';
-                    console_puts(&con, con.prompt);
-                } else if (c == '\b') {
-                    if (index > 0) {
-                        console_backspace(&con);
-                        line_buffer[index] = '\0';
-                        index--;
-                    }
-                } else {
-                    line_buffer[index++] = c;
-                    console_putc(&con, c);
-                }
-            }
-        }
+        console_ready = 1;
     }
+
+    if (!console_ready) {
+        printk("[SHELL] no console; nothing to hand the CPU to\r\n");
+        for (;;) { __asm__ volatile("hlt"); }
+    }
+
+    // The idle thread stays a plain hlt loop, separate from the shell. With
+    // the shell on the ready queue, pick_next() only falls through to idle
+    // when the shell is blocked on the keyboard and no program is running -
+    // which is exactly when the CPU should be halted.
+    if (install_idle_thread() == NULL || install_shell_thread() == NULL) {
+        printk("[SHELL] thread setup failed; halting\r\n");
+        for (;;) { __asm__ volatile("hlt"); }
+    }
+
+    // Hands kmain's stack over for good. The shell is the only thing on the
+    // ready queue, so pick_next() returns it and restore_context() enters
+    // shell_thread_entry() on its own kernel stack. Everything from here is
+    // scheduled: the timer preempts between the shell and anything it loads,
+    // and the keyboard IRQ wakes the shell out of its blocking read.
+    // scheduler_pick_next() sets cpu->current_thread to the shell while this
+    // code is still running on kmain's stack. A timer tick landing in that
+    // window would save kmain's RIP and RSP into the shell's context and then
+    // "resume" the shell there, so keep the two steps atomic. restore_context
+    // clears IF itself as well; IRETQ brings it back from the shell's RFLAGS.
+    __asm__ volatile("cli" ::: "memory");
+
+    thread *first = scheduler_pick_next(0);
+    if (first == NULL) {
+        printk("[SHELL] pick_next found nothing to run\r\n");
+        __asm__ volatile("sti" ::: "memory");
+        for (;;) { __asm__ volatile("hlt"); }
+    }
+
+    restore_context(first->context);
 }
