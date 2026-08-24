@@ -27,4 +27,4 @@ skills-lock.json
 *~
 .cache/
 .tmp
-boot/Makefile
+src/boot/Makefile
