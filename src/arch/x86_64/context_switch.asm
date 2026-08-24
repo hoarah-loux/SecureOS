@@ -92,7 +92,9 @@ restore_context:
     jmp .build_gpr_frame
 
 .build_kernel_iret_frame:
-    ; A same-privilege CPL0 return consumes only RIP, CS, and RFLAGS.
+    ; A same-privilege CPL0 return consumes only RIP, CS, and RFLAGS. (fuckass chatgpt (it was wrong))
+    push qword [r11 + CTX_SS]
+    push qword [r11 + CTX_KERNEL_RSP]
     push qword [r11 + CTX_RFLAGS]
     push qword [r11 + CTX_CS]
     push qword [r11 + CTX_RIP]

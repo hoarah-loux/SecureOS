@@ -48,9 +48,9 @@ int64_t sys_write(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, ui
 int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, uint64_t a4, uint64_t a5);
 
 
-fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd);
+fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd, proc *p);
 uint64_t fs_mmap_ref(fs_mmap_backing *backing);
-fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd);
+fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd, proc *p);
 uint64_t fs_mmap_backing_matches_key(fs_mmap_backing *backing, const fs_mmap_file_key *key);
 int64_t fs_mmap_read(fs_mmap_backing *backing, uint64_t file_offset, uint8_t *dst, uint64_t count);
 uint64_t fs_mmap_unpin(fs_mmap_backing *backing);

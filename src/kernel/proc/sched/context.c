@@ -63,8 +63,8 @@ save_trap_frame_out save_trap_frame(trap_frame *frame, thread *t){
         context_save->cs = frame->cs;
         context_save->rflags = frame->rflags;
         context_save->user_rsp = 0;
-        context_save->ss = 0;
-        context_save->kernel_rsp = (uintptr_t)&frame->rflags + sizeof(uint64_t);
+        context_save->ss = frame->ss;
+        context_save->kernel_rsp = frame->rsp;
         context_save->cr3 = t->owning_proc->adress_space->pml4_phys;
         context_save->owner_thread = t;
 

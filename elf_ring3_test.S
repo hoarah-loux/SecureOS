@@ -1,23 +1,53 @@
 .intel_syntax noprefix
 .global _start
 
+# Ring3 loader smoke test, and the A side of the preemption test.
+#
+# Loaded alongside elf_ring3_preempt_test.S (RING3P.EXE) as a separate process.
+# Neither yields or blocks, so interleaved [RING3-A]/[RING3-B] output is proof
+# that the timer is preempting between them. See elf_ring3_preempt_test.S.
+#
+# ABI is this OS's own int 0x80: nr in rax, args in rdi/rsi/rdx.
+# See hdr/syscall.h. SYS_write == 1, SYS_exit == 7, fd 1 is the serial console.
+
+.set SYS_write, 1
+.set SYS_exit,  7
+.set STDOUT,    1
+
+.set ROUNDS,    8
+
 .text
 _start:
-    # SYS_write(fd=1, buf=msg, count=msg_len) via this OS's int 0x80 ABI
-    # (see hdr/syscall.h: args in rdi, rsi, rdx, r10, r8, r9; SYS_write = 1).
-    mov rax, 1
-    mov rdi, 1
+    mov r12, ROUNDS
+
+round:
+    # Busy-wait rather than a syscall, so the only way to lose the CPU here is
+    # IRQ0. Same constant as the B side, so neither gets a head start.
+    mov rcx, 0x4000000
+delay:
+    dec rcx
+    jnz delay
+
+    mov rax, SYS_write
+    mov rdi, STDOUT
     lea rsi, [rip + msg]
-    mov rdx, 18            # sizeof(msg) - GAS intel-syntax treats a bare
-                            # "mov reg, symbol" as a memory load even for
-                            # an absolute equate, so this is hardcoded.
+    mov rdx, OFFSET msg_len
     int 0x80
 
-    # SYS_exit is still an unimplemented stub, so there's nothing to
-    # correctly exit into yet - spin forever instead of falling off the
-    # end of the mapped segment.
+    dec r12
+    jnz round
+
+    # SYS_exit(0). Does not return: the kernel moves this thread to the dying
+    # queue and switches to whatever else is runnable.
+    mov rax, SYS_exit
+    xor rdi, rdi
+    int 0x80
+
+    # Only reached if SYS_exit failed (it returns -1 when the scheduler has
+    # nothing else to run). Spin rather than falling off the mapped segment.
 spin:
     jmp spin
 
 msg:
-    .ascii "hello from ring3\r\n"
+    .ascii "[RING3-A] round\r\n"
+    .set msg_len, . - msg

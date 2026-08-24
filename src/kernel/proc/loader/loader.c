@@ -61,15 +61,59 @@ elf_eheader_t parse_mem_elf(mem_file_t elf) {
     return header;
 }
 
+// Frees a mem_file_t and its payload. load_file() allocates the two
+// separately, so both have to go back.
+static void free_mem_file(mem_file_t *file) {
+
+    if (file == NULL) { return; }
+
+    if (file->data != NULL) { kfree(file->data); }
+
+    kfree(file);
+}
+
+// Unwinds a proc that create_proc() handed back but that never reached a
+// runnable state: closes anything the loader put in its fd table, then walks
+// the normal exit/reap/destroy chain.
+//
+// Only legal while the proc still owns no threads. destroy_proc() refuses with
+// THREAD_ACTIVE once thread_head is set, and a NEW_T thread cannot be torn
+// down at all yet - thread_exit() requires RUNNING_T - so a caller that has
+// already passed create_thread() has nothing to call and leaks. See TODO.md.
+static void release_threadless_proc(proc *p) {
+
+    if (p == NULL) { return; }
+
+    for (int fd = PROC_FD_BASE; fd < PROC_MAX_OPEN_FILES; fd++) {
+        if (p->fd_table[fd].in_use && p->fd_table[fd].kind == PROC_FD_FILE) {
+            (void)fat32_file_close(&p->fd_table[fd].file);
+            p->fd_table[fd].in_use = 0;
+            p->fd_table[fd].kind = PROC_FD_NONE;
+        }
+    }
+
+    if (p->thread_head != NULL) { return; }
+
+    if (!proc_exit(p).success) { return; }
+    if (!reap_proc(p).success) { return; }
+
+    (void)destroy_proc(p);
+}
+
 elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header) {
 
 
 
     elf_map_out result = {0};
 
+    if (t == NULL || t->owning_proc == NULL || file == NULL || header == NULL) {
+        result.error_code = ELF_MAP_INVALID_ARGS;
+        return result;
+    }
+
     vm_space *space = t->owning_proc->adress_space;
 
-    if (space == NULL || file == NULL || header == NULL) {
+    if (space == NULL) {
         result.error_code = ELF_MAP_INVALID_ARGS;
         return result;
     }
@@ -105,35 +149,50 @@ elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header)
         uintptr_t seg_start = phdr->p_vaddr & ~0xFFFULL;
         uintptr_t seg_end = ALIGN_UP(phdr->p_vaddr + phdr->p_memsz, 4096);
 
+        // seg_start rounded p_vaddr down by page_slack bytes, so the file
+        // offset that belongs at seg_start is p_offset backed up by the same
+        // amount. A loadable segment must satisfy p_offset == p_vaddr (mod
+        // 4096) - without that congruence the subtraction can underflow and
+        // wrap to a ~2^64 offset, so reject the phdr rather than rely on
+        // mmap()'s alignment check to catch the wrapped value.
+        uintptr_t page_slack = phdr->p_vaddr & 0xFFFULL;
+        if ((phdr->p_offset & 0xFFFULL) != page_slack) {
+            result.error_code = ELF_MAP_PHDR_OUT_OF_BOUNDS;
+            return result;
+        }
+
+        uint64_t seg_file_offset = phdr->p_offset - page_slack;
+
         // Reserve the segment through mmap() rather than hand-rolling a
         // vm_object and calling reserve_region directly - one owner for the
         // region bookkeeping, and mmap() already frees the object on failure.
         //
-        // fd 0 means an anonymous region: no file backing, which is what an
-        // eagerly populated segment wants. The pages themselves are still
-        // allocated and filled below, because mmap() only reserves.
+        // The segment is file-backed, not anonymous: mmap() only reserves, so
+        // the pages arrive empty and the #PF handler fills them on demand.
+        // populate_fault_frame() can only read the ELF's bytes back if the
+        // region carries a FILE object, which is what passing a real fd here
+        // buys. An anonymous region would zero-fill instead and the process
+        // would execute a blank page.
         //
-        // NOTE: mmap() resolves its target space from scheduler_current(), so
-        // it reserves in the *running* process, not necessarily in `space`.
-        // Until the init ordering is sorted out, those are the same address
-        // space only when the loader runs on behalf of the process it is
-        // populating.
+        // reserve_region() is what keeps p_vaddr honest: a non-kernel space
+        // clamps FIXED reservations to [0, USER_SPACE_LIMIT_), so a phdr
+        // claiming a higher-half VA is rejected there rather than here.
         mmap_req req = {
             .t = t,
             .addr = (void*)seg_start,
             .len = (seg_end - seg_start),
             .perms = perms,
             .map_flags = PRIVATE | FIXED,
-            .file_descriptor = 0,
-            .file_offset = 0
+            .file_descriptor = PROC_FD_BASE,
+            .file_offset = seg_file_offset
         };
 
         void *mapped = mmap(&req);
 
-        // if (mapped == NULL) {
-        //     result.error_code = ELF_MAP_RESERVE_FAILED;
-        //     return result;
-        // }
+        if (mapped == NULL) {
+            result.error_code = ELF_MAP_RESERVE_FAILED;
+            return result;
+        }
 
         // mmap() hands back the VA, not the region. Look the region back up so
         // the ELF_SEGMENT tag and the teardown path below still work.
@@ -175,7 +234,12 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
         return result;
     }
     
-    create_thread_out thread_md = create_thread(proc_md.proc, header.e_entry, 0, 64 * 1024);
+    int slot = PROC_FD_BASE;
+    fat32_file_open(mount, filename, &proc_md.proc->fd_table[slot].file);
+    proc_md.proc->fd_table[slot].in_use = 1;
+    proc_md.proc->fd_table[slot].kind   = PROC_FD_FILE;
+
+    create_thread_out thread_md = create_thread(proc_md.proc, header.e_entry, THREAD_F_MAIN_THREAD, 64 * 1024);
     if (!thread_md.success) {
         result.error_code = ELF_LOAD_THREAD_CREATE_FAILED;
         return result;
