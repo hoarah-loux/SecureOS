@@ -2939,7 +2939,7 @@ void *mmap(mmap_req *reqs){
                     object->type = ANON;
                     object->backing_ctx = NULL;
                 }else{
-                    fs_mmap_file_key file_key = fs_mmap_file_key_from_fd(file_descriptor);
+                    fs_mmap_file_key file_key = fs_mmap_file_key_from_fd(file_descriptor, t->owning_proc);
                     if(!file_key.valid){
                         kfree(object);
                         return NULL;
@@ -2967,7 +2967,7 @@ void *mmap(mmap_req *reqs){
                         object->backing_ctx = matching_backing;
                         acquired_backing = true;
                     }else{
-                        fs_mmap_pin_out pin_md = fs_mmap_pin_fd(file_descriptor);
+                        fs_mmap_pin_out pin_md = fs_mmap_pin_fd(file_descriptor, t->owning_proc);
                         if(!pin_md.success || pin_md.backing == NULL){
                             kfree(object);
                             return NULL;

@@ -480,6 +480,7 @@ void exit_handler(trap_frame *frame, trap_reason trap_reason){ // figure out wer
     if(!scheduler_exit_current(cpu->cpu_id)){return;}
     thread *next_t = scheduler_current(cpu->cpu_id);
     if(next_t == NULL){return;}
+
     restore_context(next_t->context);
 
 

@@ -238,14 +238,10 @@ int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, ui
 }
 
 
-fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd) {
+fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd, proc *p) {
     fs_mmap_pin_out out = {0};
 
-    proc *p = get_p();
-    if (p == NULL) {
-        out.error_code = 1;
-        return out;
-    }
+    
 
     proc_fd_slot_t *slot = fd_slot_get(fd, p);
     if (slot == NULL || slot->kind != PROC_FD_FILE) {
@@ -282,14 +278,10 @@ uint64_t fs_mmap_ref(fs_mmap_backing *backing) {
     return 1;
 }
 
-fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd) {
+fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd, proc *p) {
     fs_mmap_file_key key = {0};
 
-    proc *p = get_p();
-    if (p == NULL) {
-        return key;
-    }
-
+    
     proc_fd_slot_t *slot = fd_slot_get(fd, p);
     if (slot == NULL || slot->kind != PROC_FD_FILE) {
         return key;

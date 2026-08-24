@@ -24,6 +24,7 @@
 #include <syscall.h>
 #include <fs_syscalls.h>
 #include <heap.h>
+#include <scheduler.h>
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -159,6 +160,156 @@ static void idle_thread_entry(void) {
     }
 }
 
+// Registers the CPU's idle thread: what scheduler_pick_next() falls back to
+// when the ready queue drains. Without one, the last thread to exit takes
+// scheduler_exit_current() down with it (pick_next returns NULL, so there is
+// nothing to switch to and the exit fails).
+//
+// The entry address needs no KERNEL_IMAGE_BASE fixup. Taking a function's
+// address inside a function compiles to a RIP-relative lea, and by this point
+// RIP is already in the higher-half alias, so it resolves there on its own.
+// idt.c and syscall.c add the offset by hand only because their tables are
+// static initialisers, which have to be link-time constants and therefore
+// carry the low 1M address from linker.ld.
+static void probe_hex(const char *label, uint64_t value) {
+    printk(label);
+    serial_write_hex64(value);
+    printk("\r\n");
+}
+
+// Dumps everything restore_context() will read out of a thread, plus whether
+// the top of its kernel stack is mapped *from the space this runs in*. That
+// last part is the discriminator: kernel stacks are supposed to land in the
+// PML4 slots create_vm_space() copies from kroot, so a mapping made through
+// one proc's PML4 should be visible through every other. A zero here means it
+// went into that proc's private tables instead and no other address space can
+// see it - which is what would make restore_context()'s pushes (line 70, done
+// before the CR3 switch on line 128) land nowhere.
+static void probe_thread(const char *tag, thread *t) {
+    if (t == NULL) {
+        printk(tag);
+        printk(" <null thread>\r\n");
+        return;
+    }
+
+    printk(tag);
+    printk("\r\n");
+    probe_hex("    _rsp_k            =0x", (uint64_t)t->_rsp_k);
+    probe_hex("    kstack_va_start   =0x", (uint64_t)t->kernel_stack_va_start);
+    probe_hex("    kstack_va_end     =0x", (uint64_t)t->kernel_stack_va_end);
+
+    if (t->context == NULL) {
+        printk("    context           =<null>\r\n");
+        return;
+    }
+
+    probe_hex("    ctx.kernel_rsp    =0x", (uint64_t)t->context->kernel_rsp);
+    probe_hex("    ctx.user_rsp      =0x", (uint64_t)t->context->user_rsp);
+    probe_hex("    ctx.rip           =0x", (uint64_t)t->context->rip);
+    probe_hex("    ctx.cs            =0x", (uint64_t)t->context->cs);
+    probe_hex("    ctx.cr3           =0x", (uint64_t)t->context->cr3);
+
+    // Last mapped qword of the stack, i.e. the first thing a push touches.
+    if (t->_rsp_k != 0) {
+        probe_hex("    PA(_rsp_k - 8)    =0x", vmm_query_page2((uintptr_t)t->_rsp_k - 8));
+    }
+}
+
+static thread *install_idle_thread(void) {
+    create_proc_out idle_proc = create_proc(true);
+    if (!idle_proc.success) {
+        printk("[SCHED] idle proc create failed\r\n");
+        return NULL;
+    }
+
+    create_thread_out idle_t = create_thread(idle_proc.proc,
+                                             (uintptr_t)idle_thread_entry,
+                                             THREAD_F_MAIN_THREAD, 0);
+    if (!idle_t.success) {
+        printk("[SCHED] idle thread create failed error_code=%u\r\n",
+               (unsigned)idle_t.error_code);
+        return NULL;
+    }
+
+    // Deliberately not scheduler_add_ready(): the idle thread is the fallback
+    // pick_next() uses when the ready queue is *empty*, so putting it in the
+    // queue would let it compete with real work.
+    if (!scheduler_set_idle_thread(0, idle_t.thread)) {
+        printk("[SCHED] idle thread registration failed\r\n");
+        return NULL;
+    }
+
+    printk("[SCHED] idle thread registered (tid=%u)\r\n",
+           (unsigned)idle_t.thread->id);
+    probe_hex("[PROBE] idle_thread_entry VA =0x", (uint64_t)(uintptr_t)idle_thread_entry);
+    probe_thread("[PROBE] idle @ registration", idle_t.thread);
+
+    return idle_t.thread;
+}
+
+// Loads two ring3 binaries as separate processes and hands the CPU to the
+// first one.
+//
+// There is no manual context switching here on purpose: the PIT is already
+// running at 100Hz and timer_handler() already does the whole
+// save_trap_frame -> add_ready -> pick_next -> restore_context sequence at
+// quantum expiry. Two runnable threads is the entire setup. Neither binary
+// yields or blocks, so interleaved [RING3-A]/[RING3-B] output can only come
+// from the timer.
+//
+// Both then SYS_exit, the ready queue drains, and pick_next() falls through to
+// the idle thread - which is the second half of what this exercises.
+//
+// Never returns: restore_context() abandons kmain's stack, so the shell below
+// is unreachable while this is enabled.
+static void run_ring3_preemption_test(fat32_mount_t *mount) {
+    thread *idle = install_idle_thread();
+    if (idle == NULL) {
+        return;
+    }
+
+    elf_load_out a = elf_load_process(mount, "/RING3.EXE");
+    if (!a.success) {
+        printk("[PREEMPT] load /RING3.EXE failed error_code=%u\r\n",
+               (unsigned)a.error_code);
+        return;
+    }
+
+    elf_load_out b = elf_load_process(mount, "/RING3P.EXE");
+    if (!b.success) {
+        printk("[PREEMPT] load /RING3P.EXE failed error_code=%u\r\n",
+               (unsigned)b.error_code);
+        return;
+    }
+
+    // Re-dumped after both procs exist. Two things to compare against the
+    // registration dump above: whether idle's kernel_rsp survived (anything
+    // that clobbers it shows up here), and whether idle's stack VA sits in the
+    // same range as A's and B's - those two switch between each other all day
+    // through the exact same code path, so if all three look alike then
+    // restore_context() is not treating idle differently and the fault is
+    // somewhere else.
+    probe_thread("[PROBE] idle @ post-load", idle);
+    probe_thread("[PROBE] thread A", a.t);
+    probe_thread("[PROBE] thread B", b.t);
+
+    printk("[PREEMPT] pid %u + pid %u ready; quantum=%u ticks @100Hz\r\n",
+           (unsigned)a.p->id, (unsigned)b.p->id,
+           (unsigned)SCHEDULER_DEFAULT_QUANTUM_TICKS);
+    printk("[PREEMPT] expect [RING3-A]/[RING3-B] interleaved, then idle\r\n");
+
+    // elf_load_process() already queued both threads, so this just takes the
+    // first one off the ready queue and jumps into it. Everything after is the
+    // timer's job.
+    thread *first = scheduler_pick_next(0);
+    if (first == NULL) {
+        printk("[PREEMPT] pick_next found nothing\r\n");
+        return;
+    }
+
+    restore_context(first->context);
+}
+
 static void run_syscall_tests(void) {
     printk("[SYSCALL] running syscall dispatch smoke tests\r\n");
     uint8_t scratch[64] = {0};
@@ -189,9 +340,6 @@ static void run_syscall_tests(void) {
 
     int64_t bad_fd_ret = syscall_test_invoke(SYS_read, 99, (uint64_t)scratch, 1, 0, 0);
     syscall_print_test_result("read on unopened fd == -1", bad_fd_ret == -1);
-
-    int64_t stub_ret = syscall_test_invoke(SYS_exit, 0, 0, 0, 0, 0);
-    syscall_print_test_result("unimplemented syscall (exit) stubbed == -1", stub_ret == -1);
 
     int64_t bad_nr_ret = syscall_test_invoke(SYS_MAX, 0, 0, 0, 0, 0);
     syscall_print_test_result("out-of-range syscall number == -1", bad_nr_ret == -1);
@@ -645,18 +793,11 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     // init sched
     scheduler_init();
 
-    // register idle thread later
-            // create_proc_out idle_proc_md = create_proc(true); // kernel process
-            // create_thread_out idle_t_md = {0};
-            // if (idle_proc_md.success) {
-            //     idle_t_md = create_thread(idle_proc_md.proc, (uintptr_t)idle_thread_entry,
-            //                                THREAD_F_MAIN_THREAD, 0);
-            // }
- 
-            // if (!idle_proc_md.success || !idle_t_md.success ||
-            //     !scheduler_set_idle_thread(0, idle_t_md.thread)) {
-            //     printk("[SCHED] idle thread setup FAILED\n");
-            // }
+    // Ring3 preemption + idle-thread test. Registers the idle thread, loads
+    // RING3.EXE and RING3P.EXE as two processes, and jumps into the first;
+    // the timer does the rest. Does not return - comment out to get the shell
+    // back.
+    run_ring3_preemption_test(&mount);
 
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
