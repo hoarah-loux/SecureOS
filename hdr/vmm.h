@@ -246,20 +246,18 @@ typedef struct vm_space{
 extern vm_space active_space;
 
 
-typedef struct mmap_req{
-
-    void* addr; 
-    size_t len; 
-    uint64_t perms; 
-    uint64_t map_flags; 
-    uint64_t file_descriptor; 
-    uint64_t file_offset; 
-    thread *t;
-
-
-
-
-}mmap_req;
+// mmap() used to take a `mmap_req*`. It does not any more: the request had
+// exactly six caller-chosen fields, which is exactly how many arguments the
+// syscall ABI passes in registers (rdi/rsi/rdx/r10/r8/r9), so the struct only
+// ever forced a ring3 caller to build one in memory for the kernel to take
+// apart again. Passing the six directly removes that round trip and makes the
+// call writable from assembly without laying out a struct.
+//
+// It also removes the seventh field, `thread *t`, which named the mapping's
+// target. That one was never a caller's to choose - sys_mmap dereferenced
+// whatever ring3 put there, an arbitrary kernel pointer read. The target is
+// now a kernel-supplied parameter, so a user caller can name only addresses in
+// its own address space and fds in its own table.
 
 enum create_vm_space_error{
 
@@ -444,8 +442,19 @@ uintptr_t* vmm_get_active_page_table(void);
 void vmm_invalidate_tlb(uintptr_t virtual_adress);
 
 search_region_list_out search_region_list(vm_space *space, uintptr_t va);
-void *mmap(mmap_req *reqs);
 
-int64_t sys_mmap(mmap_req* req);
+// Reserve a region in t's address space. Returns the base VA, or NULL.
+//
+// `t` is the target and is never taken from userspace - see the note above the
+// deleted mmap_req. Pass file_descriptor == 0 for an anonymous mapping;
+// anything else names an fd in t's own process fd table.
+void *mmap(thread *t, void *addr, size_t len, uint64_t perms,
+           uint64_t map_flags, uint64_t file_descriptor, uint64_t file_offset);
+
+// SYS_mmap. Same six arguments in the same order, straight out of the syscall
+// registers; the target thread is resolved from the scheduler, not the caller.
+int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms,
+                 uint64_t map_flags, uint64_t file_descriptor,
+                 uint64_t file_offset);
 
 

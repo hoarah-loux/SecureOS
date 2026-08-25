@@ -478,6 +478,41 @@ static void shell_thread_entry(void) {
 
     printk("[SHELL] shell thread running\r\n");
     line_buffer[0] = '\0';
+
+    // Run one command as if it had been typed, then fall through to the
+    // interactive loop as usual.
+    //
+    // This exists so the ring3 test binaries can be driven headlessly. The
+    // only way to start a program is to type "./NAME" at this prompt, and the
+    // prompt is fed by the keyboard IRQ - so a QEMU run with -display none has
+    // no way to launch anything, and every bring-up milestone would otherwise
+    // need a human at a VM window. Build with e.g.
+    //   make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./HELLO.EXE\""'
+    // and the serial log tells the whole story on its own.
+    //
+    // shell_split_args() writes terminators into the line it is given, so the
+    // literal is copied into the buffer rather than passed through.
+#ifdef SHELL_AUTORUN
+    {
+        const char *autorun = SHELL_AUTORUN;
+        size_t n = 0;
+        while (autorun[n] != '\0' && n < sizeof(line_buffer) - 1) {
+            line_buffer[n] = autorun[n];
+            n++;
+        }
+        line_buffer[n] = '\0';
+
+        printk("[SHELL] autorun: %s\r\n", SHELL_AUTORUN);
+
+        char *auto_argv[16] = {0};
+        shell_ctx.argc = shell_split_args(line_buffer, auto_argv, 16);
+        shell_ctx.argv = auto_argv;
+        (void)shell_eval(&shell_ctx);
+
+        line_buffer[0] = '\0';
+    }
+#endif
+
     console_puts(&con, con.prompt);
 
     for (;;) {

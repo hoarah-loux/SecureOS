@@ -207,10 +207,18 @@ ASMFLAGS = -f elf64
 #     this flag; src/kernel/core/string.c provides those symbols out of line.
 # - `-Wall -Wextra`:
 #     Enable common and extra warnings.
+# - `$(CFLAGS_EXTRA)`:
+#     Empty by default; a hook for one-off defines from the command line
+#     without editing this file. The bring-up tests use it for SHELL_AUTORUN,
+#     which makes the shell run one command at startup so a headless QEMU run
+#     can launch a binary with no keyboard attached:
+#       make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./RING3M.EXE\""'
+CFLAGS_EXTRA ?=
+
 CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone \
                 -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden \
                 -fno-stack-protector -fno-builtin -Wall -Wextra \
-                -I$(INCLUDE_DIR)
+                -I$(INCLUDE_DIR) $(CFLAGS_EXTRA)
 
 # Linker flags.
 # - `-T <script>`:
