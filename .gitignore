@@ -34,3 +34,7 @@ skills-lock.json
 src/boot/Makefile
 serial.log
 qemu.log
+
+# Fetched on demand by "make doom-wad": the shareware WAD is freely
+# redistributable but is not ours to commit. See src/boot/Makefile.
+/assets/
