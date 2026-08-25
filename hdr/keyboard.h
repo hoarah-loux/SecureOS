@@ -11,6 +11,36 @@
 // Returns 1 if scancode produced a buffered char, 0 otherwise (modifier
 // key, key-release, or unmapped scancode).
 int keyboard_handle_scancode(uint8_t scancode);
+
+// ---------------- input ownership ----------------
+//
+// One keyboard, one ring buffer, and more than one thread that wants to read
+// it: the shell sits blocked in SYS_getkey_wait for its whole life, and any
+// program it launches wants the same keystrokes. Without an owner, whichever
+// thread the scheduler happened to wake first would take the character, which
+// is not a race that can be tuned away - it is undefined by construction.
+//
+// So exactly one process owns keyboard input at a time. Everyone else's read
+// blocks until they own it. Ownership is a PID rather than a thread, because
+// what a person means by "this program is in the foreground" is the program,
+// not one of its threads.
+//
+// The shell is the default owner and gets it back whenever the foreground
+// process exits, so there is never a state where keystrokes go nowhere.
+
+// Records which process input reverts to. Called once, when the shell exists.
+// Also takes ownership immediately if nobody holds it yet.
+void keyboard_set_default_owner(uint64_t pid);
+
+// Hands input to pid. The shell calls this when it launches a program.
+void keyboard_grant_input(uint64_t pid);
+
+// If pid currently owns input, hand it back to the default owner; otherwise do
+// nothing. Called from the thread exit path, so a program that dies - cleanly
+// or otherwise - cannot take the keyboard with it.
+void keyboard_release_input(uint64_t pid);
+
+uint64_t keyboard_input_owner(void);
 int keyboard_getchar_nonblock(char *out_char);
 int keyboard_getline(char *buffer, size_t buffer_size);
 

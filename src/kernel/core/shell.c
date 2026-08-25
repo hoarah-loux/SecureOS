@@ -1,4 +1,5 @@
 #include <shell.h>
+#include <keyboard.h>
 #include <serial.h>
 #include <loader.h>
 #include <scheduler.h>
@@ -195,6 +196,11 @@ static int shell_exec_binary(shell_ctx_t *ctx) {
                path, (unsigned)load_md.error_code);
         return 1;
     }
+
+    // The launched program is now the foreground process, so keystrokes go to
+    // it and this shell's own SYS_getkey_wait blocks until the program exits.
+    // scheduler_exit_current() hands input back; nothing here has to.
+    keyboard_grant_input(load_md.p->id);
 
     console_printf(ctx->con, "%s: running as pid %u\n",
                    path, (unsigned)load_md.p->id);
