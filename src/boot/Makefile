@@ -654,15 +654,26 @@ $(HELLO_ELF): $(USER_SRC_DIR)/hello/hello.c $(USER_CRT_OBJS) $(USER_LINKER) | $(
 	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/hello.o \
 	$(USER_LIBS) -o $@
 
+# The worked example from src/userland/README.md. It is built and staged like
+# any other userland program specifically so that the workflow that document
+# describes stays honest - if those instructions rot, this stops building.
+# Lands on the FAT32 image as /GREET.EXE.
+GREET_ELF = $(USER_BUILD_DIR)/greet.elf
+
+$(GREET_ELF): $(USER_SRC_DIR)/greet/greet.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
+	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/greet.o
+	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/greet.o \
+	$(USER_LIBS) -o $@
+
 .PHONY: userland
-userland: $(HELLO_ELF)
+userland: $(HELLO_ELF) $(GREET_ELF)
 
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
 		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF) \
-		$(RING3_TIME_TEST_ELF) $(HELLO_ELF)
+		$(RING3_TIME_TEST_ELF) $(HELLO_ELF) $(GREET_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -679,6 +690,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_SSE2_TEST_ELF) $(FAT32_ROOT)/RING3G.exe
 	cp $(RING3_TIME_TEST_ELF) $(FAT32_ROOT)/RING3T.exe
 	cp $(HELLO_ELF) $(FAT32_ROOT)/HELLO.exe
+	cp $(GREET_ELF) $(FAT32_ROOT)/GREET.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -694,6 +706,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3G.exe ::RING3G.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3T.exe ::RING3T.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/HELLO.exe ::HELLO.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/GREET.exe ::GREET.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

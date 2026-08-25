@@ -69,13 +69,24 @@ Observed: `[SYSCALL] test write stdout: FAIL`, `test open /README.TXT: FAIL` (bo
 
 **Not fixed yet** — undecided whether to give the test harness a fake/current process, or restructure when these tests run relative to scheduler init. Not something introduced by the ELF loader work, but surfaced by it since both this and `elf_load_process()`'s own success now depend on the same underlying scheduler/process plumbing being real.
 
-## Doom-generic port blockers (surveyed 2026-08-21, none started)
+## Doom-generic port blockers
+
+> **Moved.** This survey is superseded by [`DOOM_PORT.md`](DOOM_PORT.md), which
+> is the living roadmap for the port and is kept current. What follows is left
+> for history: it is a point-in-time survey, and several blockers it never
+> listed have been found and fixed since.
+>
+> As of 2026-08-25 the port has reached **milestone 1**: a C program linked
+> against newlib runs in ring3 (`/HELLO.EXE` - printf, varargs `%f`, malloc,
+> zeroed `.bss`, strdup, clean exit). Seven of nine kernel blockers are done.
+> What remains is `SYS_fb_present`, raw keyboard scancodes, and doom itself.
+
 
 - [x] **Timer IRQ0 is masked** — fixed 2026-08-21. `pic_init_for_keyboard()` now unmasks it at boot (`pic.c:101-102`); removed the redundant later unmask call that used to sit at `kernel.c:557` ("interactive stage"). Boot-tested in QEMU: full self-test suite still passes with the timer live the whole run, no hang/crash. `timer_ticks`/`timer_ticks_get()` now genuinely count — ready to back `DG_GetTicksMs`/`DG_SleepMs`.
 - [x] ~~`kmalloc` capped at 4096 bytes~~ — **not actually a blocker**: Doom runs as a usermode process and will use its own `malloc` (backed by `SYS_brk`/`SYS_mmap`, see stdlib item below), never `kmalloc`. Investigated wiring the buddy allocator into `kmalloc` anyway but backed it out — wrong layer, `kmalloc` stays slab-only/4KB-capped as kernel-internal allocator. `buddy.c` is already live in production, just not for this.
 - [x] ~~**`load_file()` will fail on any file over 4KB**~~ — fixed: the loader no longer reads executables into kernel memory at all. `load_file()`/`parse_mem_elf()` are gone, replaced by `elf_open_image()`, which reads and validates only the 64-byte ELF header, and `elf_map_segments()`, which reads one 56-byte program header at a time off disk (`elf_read_at()` = seek + exact-length read). Segment contents were already demand-paged through file-backed `mmap()` regions; nothing else ever needed the bytes. Loader memory use is now constant regardless of file size, and `kmalloc` stays what it is — a kernel-object allocator. Regression test: `/RING3B.EXE` (`elf_ring3_big_test.S`), a 25896-byte binary with a marker every 4096 bytes, a page-straddling qword, and a sentinel in the final byte; verified running in ring3.
-- [ ] **No framebuffer blit/putpixel API exposed** — `fb_putpixel` (`framebuffer.c:4-26`) is `static`; only rect-fill/text helpers are public. `DG_DrawFrame` needs a raw pixel-buffer blit. Framebuffer address/resolution/pitch/bpp are available (`kmain` parses the multiboot2 tag) but not exposed as a reusable API outside `kmain`.
-- [ ] **No arrow-key / extended-scancode handling** — `keymap_base`/`keymap_shift` (`keyboard.c:12-50`) have no entries for arrow keys (0x48/0x50/0x4B/0x4D), and there's no 0xE0 extended-prefix handling at all, so arrow key presses are silently dropped as two separate unmapped scancodes. Doom's directional/menu input is unusable as-is.
+- [ ] **No framebuffer blit/putpixel API exposed** (still open - see `DOOM_PORT.md` §1.7) — `fb_putpixel` (`framebuffer.c:4-26`) is `static`; only rect-fill/text helpers are public. `DG_DrawFrame` needs a raw pixel-buffer blit. Framebuffer address/resolution/pitch/bpp are available (`kmain` parses the multiboot2 tag) but not exposed as a reusable API outside `kmain`.
+- [ ] **No arrow-key / extended-scancode handling** (still open - see `DOOM_PORT.md` §1.8) — `keymap_base`/`keymap_shift` (`keyboard.c:12-50`) have no entries for arrow keys (0x48/0x50/0x4B/0x4D), and there's no 0xE0 extended-prefix handling at all, so arrow key presses are silently dropped as two separate unmapped scancodes. Doom's directional/menu input is unusable as-is.
 
 ## Bottom line
 
