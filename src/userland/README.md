@@ -143,13 +143,12 @@ screen, centres it and puts black bars around the rest. There is nothing to
 open or map first, and the buffer is not retained after the call returns. See
 `apps/fbtest/` for a worked example.
 
-Sleeping has no newlib glue yet — `sleep()` and `usleep()` will not link. The
-syscall exists; call it directly:
-
-```c
-#include "secureos_syscall.h"
-__sys1(SYS_sleep, 500);   /* milliseconds */
-```
+`sleep()`, `usleep()` and `nanosleep()` work, with one caveat worth knowing
+before you build timing on them: the kernel timer runs at 100 Hz and rounds a
+request up to a whole tick, so the granularity is 10 ms and nothing sleeps for
+less. `usleep(1)` and `usleep(9999)` both sleep ten milliseconds. Nothing can
+interrupt a sleep — there are no signals — so none of them return `EINTR`, and
+`nanosleep()`'s remaining-time argument always comes back zero.
 
 Not working, and failing honestly rather than silently: `fork`, `execve`,
 `wait`, signals, `unlink`, `link`. These return -1 with a plausible `errno`.

@@ -22,6 +22,7 @@
 #include <sys/times.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "secureos_syscall.h"
@@ -203,6 +204,79 @@ clock_t _times(struct tms *buf)
     (void)buf;
     errno = ENOSYS;
     return (clock_t)-1;
+}
+
+// ---------------- sleeping ----------------
+//
+// newlib declares sleep() and usleep() in sys/unistd.h and nanosleep() in
+// time.h, and defines none of them: they are all considered the target's job.
+// SYS_sleep is the target's answer.
+//
+// Two properties of the kernel side leak through all three, and no amount of
+// wrapping here can hide them:
+//
+//   - The timer runs at 100 Hz (TIMER_MS_PER_TICK is 10), and the kernel
+//     rounds a request up to a whole tick and wakes sleepers from the timer
+//     interrupt. So a sleep is never shorter than asked for, and may overshoot
+//     by up to one tick on top of whatever the rounding added. usleep(1) and
+//     usleep(9999) both sleep ten milliseconds.
+//   - There are no signals, so nothing can interrupt a sleep. These never
+//     return EINTR, and nanosleep()'s remaining-time argument is always zero
+//     on return.
+//
+// Everything funnels through one place so the rounding rule is stated once.
+// Rounding sub-millisecond requests up to 1 rather than down to 0 keeps the
+// guarantee that a non-zero request always yields the CPU at least once; a
+// caller that wants a pure yield asks for zero.
+static void secureos_sleep_ms(unsigned long ms)
+{
+    if (ms == 0) { return; }
+    __sys1(SYS_sleep, ms);
+}
+
+unsigned sleep(unsigned int seconds)
+{
+    secureos_sleep_ms((unsigned long)seconds * 1000UL);
+
+    // Seconds left unslept. Nothing can interrupt a sleep here, so always 0.
+    return 0;
+}
+
+int usleep(useconds_t useconds)
+{
+    unsigned long ms = (unsigned long)useconds / 1000UL;
+
+    if (useconds != 0 && ms == 0) {
+        ms = 1;   // finer than the clock; round up rather than not sleep
+    }
+
+    secureos_sleep_ms(ms);
+    return 0;
+}
+
+int nanosleep(const struct timespec *rqtp, struct timespec *rmtp)
+{
+    if (rqtp == 0) { errno = EFAULT; return -1; }
+
+    if (rqtp->tv_sec < 0 || rqtp->tv_nsec < 0 || rqtp->tv_nsec > 999999999L) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    unsigned long ms = (unsigned long)rqtp->tv_sec * 1000UL +
+                       (unsigned long)(rqtp->tv_nsec / 1000000L);
+
+    if (ms == 0 && (rqtp->tv_sec != 0 || rqtp->tv_nsec != 0)) {
+        ms = 1;
+    }
+
+    secureos_sleep_ms(ms);
+
+    if (rmtp != 0) {
+        rmtp->tv_sec  = 0;
+        rmtp->tv_nsec = 0;
+    }
+    return 0;
 }
 
 // No filesystem unlink/link syscalls, and no fork/exec/wait at all.
