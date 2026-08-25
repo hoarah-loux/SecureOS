@@ -243,17 +243,14 @@ elf_map_out elf_map_segments(thread *t, elf_image_t *image) {
         // reserve_region() is what keeps p_vaddr honest: a non-kernel space
         // clamps FIXED reservations to [0, USER_SPACE_LIMIT_), so a phdr
         // claiming a higher-half VA is rejected there rather than here.
-        mmap_req req = {
-            .t = t,
-            .addr = (void*)seg_start,
-            .len = (seg_end - seg_start),
-            .perms = perms,
-            .map_flags = PRIVATE | FIXED,
-            .file_descriptor = PROC_FD_BASE,
-            .file_offset = seg_file_offset
-        };
-
-        void *mapped = mmap(&req);
+        //
+        // The thread is passed explicitly rather than resolved from the
+        // scheduler: t was created moments ago and is not the current thread,
+        // and on the first process it is not on any run queue yet either.
+        // Anything that asked the scheduler here would map into whatever
+        // happened to be running instead.
+        void *mapped = mmap(t, (void*)seg_start, (seg_end - seg_start), perms,
+                            PRIVATE | FIXED, PROC_FD_BASE, seg_file_offset);
 
         if (mapped == NULL) {
             result.error_code = ELF_MAP_RESERVE_FAILED;

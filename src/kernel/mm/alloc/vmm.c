@@ -2893,11 +2893,33 @@ search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 
 }
 
-int64_t sys_mmap(mmap_req *req){
+// SYS_mmap.
+//
+// The six arguments arrive straight out of the syscall registers and are
+// exactly what mmap() takes, so there is nothing to copy in and no user struct
+// to validate - the argument that used to need validating, the target thread,
+// is not the caller's to give any more.
+//
+// Resolving the target here is safe in a way it would not be on the loader's
+// path: a syscall arrived from ring3, so something is running by definition.
+// The loader calls mmap() directly and passes the thread it just built, which
+// is not current and may not be scheduled at all yet.
+int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t perms,
+                 uint64_t map_flags, uint64_t file_descriptor,
+                 uint64_t file_offset){
 
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL){return -1;}
 
+    thread *t = cpu->current_thread;
+    if(t == NULL){return -1;}
 
-    void *mapped_addr = mmap(req);
+    // A user caller has no business asking for kernel-asset placement; that
+    // flag steers reserve_region() into the higher-half kernel-asset arena.
+    if(map_flags & KERNEL_ASSET){return -1;}
+
+    void *mapped_addr = mmap(t, (void*)addr, (size_t)len, perms, map_flags,
+                             file_descriptor, file_offset);
     if(mapped_addr == NULL){
         return -1; // Indicate failure
     }
@@ -2905,19 +2927,12 @@ int64_t sys_mmap(mmap_req *req){
 }
 
 
-void *mmap(mmap_req *reqs){
-
-    void* addr = reqs->addr; 
-    size_t len = reqs->len;
-    uint64_t perms = reqs-> perms;
-    uint64_t map_flags = reqs->map_flags;
-    uint64_t file_descriptor = reqs->file_descriptor;
-    uint64_t file_offset = reqs->file_offset;
-    thread *t = reqs->t;
+void *mmap(thread *t, void *addr, size_t len, uint64_t perms,
+           uint64_t map_flags, uint64_t file_descriptor, uint64_t file_offset){
 
                 if(len == 0 || perms == 0){return NULL;}
                 if((file_offset & 0xFFFULL) != 0){return NULL;}
-                
+
                 if(t == NULL || t->owning_proc == NULL){return NULL;}
 
                 vm_space *space = t->owning_proc->adress_space;
