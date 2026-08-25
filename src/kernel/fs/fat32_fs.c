@@ -2,6 +2,7 @@
 
 #include <fat32_cluster.h>
 #include <fat32_dir.h>
+#include <heap.h>
 
 typedef struct {
     fat32_dir_visit_fn visit;
@@ -10,6 +11,34 @@ typedef struct {
 
 static uint32_t fat32_min_u32(uint32_t a, uint32_t b) {
     return (a < b) ? a : b;
+}
+
+/*
+ * Bulk copy, eight bytes at a time where alignment allows.
+ *
+ * The kernel builds at -O0 and hdr/string.h's memcpy is a byte loop, so a
+ * megabyte of file data costs a million iterations of it. This is the read
+ * path for every executable page fault and for doom's 4 MB WAD, which is
+ * enough traffic for the difference to be visible.
+ */
+static void fat32_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t count) {
+    uint32_t i = 0;
+
+    if ((((uintptr_t)dst | (uintptr_t)src) & 7u) == 0) {
+        uint64_t *dst64 = (uint64_t *)dst;
+        const uint64_t *src64 = (const uint64_t *)src;
+        uint32_t words = count / 8u;
+
+        for (uint32_t w = 0; w < words; w++) {
+            dst64[w] = src64[w];
+        }
+
+        i = words * 8u;
+    }
+
+    for (; i < count; i++) {
+        dst[i] = src[i];
+    }
 }
 
 static uint8_t fat32_to_upper_ascii(uint8_t c) {
@@ -196,13 +225,75 @@ static int fat32_dir_list_callback(const fat_direntry_t *entry, void *context) {
     return list_context->visit(&view, list_context->context);
 }
 
+// The largest run of sectors handed to the block device in one call, and so
+// the size of the bounce buffer: 8 sectors, 4096 bytes.
+//
+// The ceiling is kmalloc's, not the disk's - kmalloc refuses anything over
+// 4096 (src/kernel/mm/alloc/heap.c), so asking for more silently falls back to
+// the one-sector path and gives up the multi-sector IDE command entirely.
+#define FAT32_READ_RUN_SECTORS 8u
+
+/*
+ * Find the cluster holding cluster_index of a chain, using and updating a
+ * caller-owned hint.
+ *
+ * Without the hint this is O(cluster_index) FAT entries per call, and a
+ * sequential read of a large file pays it on every call: reading a 4 MB file
+ * in 4 KB pieces walks the chain from the beginning a thousand times, which is
+ * quadratic in the file size. The hint makes the common case - the next read
+ * continues where the last one stopped - a walk of zero steps.
+ *
+ * The hint is only ever a position that was reached by walking this chain, so
+ * a stale one is wrong only if the chain itself changed underneath it. That
+ * means truncation, which resets it (fat32_file_truncate); appending leaves
+ * every index the hint could name still valid.
+ *
+ * hint may be NULL, which just costs the walk.
+ */
+static int fat32_chain_locate(const fat32_mount_t *mount, uint32_t first_cluster,
+                              uint32_t cluster_index, fat32_chain_hint_t *hint,
+                              uint32_t *out_cluster) {
+    uint32_t cluster = first_cluster;
+    uint32_t index = 0;
+
+    if (hint != NULL && hint->cluster >= 2u && hint->cluster_index <= cluster_index) {
+        cluster = hint->cluster;
+        index = hint->cluster_index;
+    }
+
+    while (index < cluster_index) {
+        uint32_t next_cluster;
+        if (fat32_cluster_read_fat_entry(mount, cluster, &next_cluster) != 0) {
+            return -1;
+        }
+
+        if (fat32_cluster_is_end_of_chain(next_cluster) || next_cluster < 2u) {
+            return -1;
+        }
+
+        cluster = next_cluster;
+        index++;
+    }
+
+    if (hint != NULL) {
+        hint->cluster = cluster;
+        hint->cluster_index = index;
+    }
+
+    *out_cluster = cluster;
+    return 0;
+}
+
 static int fat32_read_file_at(const fat32_mount_t *mount, const fat32_dir_entry_view_t *entry,
-                              uint32_t offset, uint8_t *buffer, uint32_t count) {
+                              uint32_t offset, uint8_t *buffer, uint32_t count,
+                              fat32_chain_hint_t *hint) {
     uint32_t bytes_per_cluster;
-    uint32_t cluster;
-    uint32_t cluster_skip;
-    uint32_t cluster_offset;
+    uint32_t bytes_per_sector;
     uint32_t bytes_read = 0;
+    uint8_t *bounce;
+    uint32_t bounce_sectors;
+    uint8_t small_bounce[512];
+    int result = -1;
 
     if (!mount || !entry || !buffer) {
         return -1;
@@ -217,78 +308,135 @@ static int fat32_read_file_at(const fat32_mount_t *mount, const fat32_dir_entry_
     }
 
     bytes_per_cluster = mount->cluster_size_bytes;
-    if (bytes_per_cluster == 0) {
+    bytes_per_sector = mount->boot_sector.bytes_per_sector;
+    if (bytes_per_cluster == 0 || bytes_per_sector == 0 || bytes_per_sector > sizeof(small_bounce)) {
         return -1;
     }
 
     count = fat32_min_u32(count, entry->file_size - offset);
-    cluster = entry->first_cluster;
-    cluster_skip = offset / bytes_per_cluster;
-    cluster_offset = offset % bytes_per_cluster;
 
-    while (cluster_skip > 0) {
-        uint32_t next_cluster;
-        if (fat32_cluster_read_fat_entry(mount, cluster, &next_cluster) != 0) {
-            return -1;
-        }
-
-        if (fat32_cluster_is_end_of_chain(next_cluster) || next_cluster < 2) {
-            return -1;
-        }
-
-        cluster = next_cluster;
-        cluster_skip--;
+    // Sectors are read into kernel memory and copied out, never straight into
+    // the caller's buffer. The caller may be sys_read passing a userland
+    // pointer whose pages are demand-paged and not yet present, and the IDE
+    // driver refuses a destination that is not mapped - it has no way to
+    // resolve a fault from inside its transfer loop.
+    bounce = kmalloc(FAT32_READ_RUN_SECTORS * bytes_per_sector);
+    bounce_sectors = FAT32_READ_RUN_SECTORS;
+    if (bounce == NULL) {
+        // Out of heap is not fatal here: one sector at a time is the old
+        // behaviour, slow but correct.
+        bounce = small_bounce;
+        bounce_sectors = 1;
     }
 
     while (bytes_read < count) {
-        uint32_t cluster_sector = fat32_cluster_to_sector(mount, cluster);
-        uint32_t sector_index = cluster_offset / mount->boot_sector.bytes_per_sector;
-        uint32_t offset_in_sector = cluster_offset % mount->boot_sector.bytes_per_sector;
-        uint8_t sector_buffer[512];
+        uint32_t file_offset = offset + bytes_read;
+        uint32_t cluster_index = file_offset / bytes_per_cluster;
+        uint32_t cluster_offset = file_offset % bytes_per_cluster;
+        uint32_t sector_index = cluster_offset / bytes_per_sector;
+        uint32_t offset_in_sector = cluster_offset % bytes_per_sector;
+        uint32_t remaining = count - bytes_read;
+        uint32_t cluster;
+        uint32_t cluster_sector;
+        uint32_t run_sectors;
+        uint32_t copy_offset;
+        uint32_t bytes_to_copy;
 
+        if (fat32_chain_locate(mount, entry->first_cluster, cluster_index, hint, &cluster) != 0) {
+            goto done;
+        }
+
+        cluster_sector = fat32_cluster_to_sector(mount, cluster);
         if (cluster_sector == 0) {
-            return -1;
+            goto done;
         }
 
-        while (sector_index < mount->sectors_per_cluster && bytes_read < count) {
-            uint32_t bytes_available_in_sector = mount->boot_sector.bytes_per_sector - offset_in_sector;
-            uint32_t bytes_remaining = count - bytes_read;
-            uint32_t bytes_to_copy = fat32_min_u32(bytes_available_in_sector, bytes_remaining);
+        // How many whole sectors are wanted from here, and how many of them
+        // are physically contiguous on the disk.
+        //
+        // Contiguity is worth chasing because a freshly formatted image lays
+        // files out in one run: the WAD doom reads is 8192 consecutive
+        // clusters, so this collapses 8192 single-sector commands into 128
+        // multi-sector ones. A fragmented file simply gets shorter runs.
+        run_sectors = mount->sectors_per_cluster - sector_index;
 
-            if (block_device_read((block_device_t *)mount->device, (uint64_t)cluster_sector + sector_index, 1, sector_buffer) != 0) {
-                return -1;
+        if (offset_in_sector != 0) {
+            // A partial first sector cannot be part of a whole-sector run.
+            run_sectors = 1;
+        } else {
+            uint32_t sectors_wanted = remaining / bytes_per_sector;
+            uint32_t run_cluster = cluster;
+            uint32_t run_index = cluster_index;
+
+            if (sectors_wanted == 0) {
+                // A tail shorter than a sector: read the one sector it lives
+                // in and copy the part that was asked for.
+                run_sectors = 1;
+                sectors_wanted = 1;
             }
 
-            for (uint32_t i = 0; i < bytes_to_copy; i++) {
-                buffer[bytes_read + i] = sector_buffer[offset_in_sector + i];
+            while (run_sectors < sectors_wanted) {
+                uint32_t next_cluster;
+                if (fat32_cluster_read_fat_entry(mount, run_cluster, &next_cluster) != 0) {
+                    goto done;
+                }
+
+                if (fat32_cluster_is_end_of_chain(next_cluster) || next_cluster < 2u) {
+                    break;
+                }
+
+                if (next_cluster != run_cluster + 1u) {
+                    break;   // chain continues, but not next door
+                }
+
+                run_cluster = next_cluster;
+                run_index++;
+                run_sectors += mount->sectors_per_cluster;
             }
 
-            bytes_read += bytes_to_copy;
-            cluster_offset += bytes_to_copy;
-            offset_in_sector = 0;
-            sector_index++;
+            // The hint deliberately stays where fat32_chain_locate() left it,
+            // at the cluster this iteration starts in, rather than being
+            // advanced to the end of the run. The run may be clipped below to
+            // what the caller asked for or what the bounce buffer holds, and a
+            // hint sitting past the next offset to be read is one that
+            // fat32_chain_locate() has to ignore - sending the very next call
+            // back to the start of the chain, which is the cost this whole
+            // mechanism exists to avoid.
+            (void)run_index;
+
+            if (run_sectors > sectors_wanted) {
+                run_sectors = sectors_wanted;
+            }
         }
 
-        if (bytes_read >= count) {
-            return (int)bytes_read;
+        if (run_sectors > bounce_sectors) {
+            run_sectors = bounce_sectors;
         }
 
-        {
-            uint32_t next_cluster;
-            if (fat32_cluster_read_fat_entry(mount, cluster, &next_cluster) != 0) {
-                return -1;
-            }
-
-            if (fat32_cluster_is_end_of_chain(next_cluster) || next_cluster < 2) {
-                return -1;
-            }
-
-            cluster = next_cluster;
-            cluster_offset = 0;
+        if (block_device_read((block_device_t *)mount->device,
+                              (uint64_t)cluster_sector + sector_index,
+                              run_sectors,
+                              bounce) != 0) {
+            goto done;
         }
+
+        copy_offset = offset_in_sector;
+        bytes_to_copy = (run_sectors * bytes_per_sector) - copy_offset;
+        if (bytes_to_copy > remaining) {
+            bytes_to_copy = remaining;
+        }
+
+        fat32_copy_bytes(buffer + bytes_read, bounce + copy_offset, bytes_to_copy);
+        bytes_read += bytes_to_copy;
     }
 
-    return (int)bytes_read;
+    result = (int)bytes_read;
+
+done:
+    if (bounce != small_bounce) {
+        (void)kfree(bounce);
+    }
+    return result;
 }
 
 static int fat32_ensure_cluster_for_index(fat32_mount_t *mount, uint32_t *first_cluster,
@@ -501,6 +649,8 @@ int fat32_file_open(fat32_mount_t *mount, const char *path, fat32_file_t *out_fi
     out_file->mount = mount;
     out_file->position = 0;
     out_file->parent_cluster = parent_cluster;
+    out_file->read_hint.cluster = 0;
+    out_file->read_hint.cluster_index = 0;
     if (fat32_copy_short_name(out_file->short_name, name) != 0) {
         return -1;
     }
@@ -534,7 +684,8 @@ int fat32_file_read(fat32_file_t *file, uint8_t *buffer, uint32_t count) {
         return -1;
     }
 
-    bytes_read = fat32_read_file_at(file->mount, &file->entry, file->position, buffer, count);
+    bytes_read = fat32_read_file_at(file->mount, &file->entry, file->position, buffer, count,
+                                    &file->read_hint);
     if (bytes_read < 0) {
         return -1;
     }
@@ -657,6 +808,12 @@ int fat32_file_truncate(fat32_file_t *file, uint32_t new_size) {
         return -1;
     }
 
+    // The only operation that can make a read hint point at a cluster this
+    // file no longer owns: truncation frees the tail of the chain, and a hint
+    // into that tail would send the next read to someone else's data.
+    file->read_hint.cluster = 0;
+    file->read_hint.cluster_index = 0;
+
     if (fat32_dir_update_file_metadata(file->mount,
                                        file->parent_cluster,
                                        file->short_name,
@@ -721,6 +878,8 @@ int fat32_file_close(fat32_file_t *file) {
     file->mount = 0;
     file->position = 0;
     file->parent_cluster = 0;
+    file->read_hint.cluster = 0;
+    file->read_hint.cluster_index = 0;
     for (uint32_t i = 0; i < sizeof(file->entry.name); i++) {
         file->entry.name[i] = '\0';
     }

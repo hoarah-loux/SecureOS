@@ -102,7 +102,38 @@ typedef struct {
     fat32_boot_sector_t boot_sector; /* Parsed boot sector */
     fat32_fsinfo_t fsinfo;           /* Parsed FSInfo sector */
     block_device_t *device;          /* Backing block device */
+
+    /*
+     * One-sector cache of the FAT itself.
+     *
+     * Following a cluster chain reads one FAT entry per cluster, and a FAT
+     * sector holds 128 of them, so an uncached walk re-reads the same sector
+     * 128 times in a row - and a read is a polled PIO transfer, not a memory
+     * access. Reading a 4 MB file with 512-byte clusters walks 8192 entries,
+     * which is 8192 disk reads uncached and 64 with this cache.
+     *
+     * One entry is enough because chain walks are sequential by nature: the
+     * FAT sector for cluster N is almost always the one for cluster N+1.
+     *
+     * fat_cache_sector is a FAT-relative sector index; fat_cache_valid is what
+     * says whether it means anything, since 0 is a legitimate index. The write
+     * path invalidates it after modifying a FAT entry rather than trying to
+     * patch the copy.
+     */
+    uint8_t  fat_cache[512];         /* Cached FAT sector contents */
+    uint32_t fat_cache_sector;       /* Which FAT sector, relative to fat_start_sector */
+    uint8_t  fat_cache_valid;        /* Zero until the first fill, and after any FAT write */
 } fat32_mount_t;
+
+/**
+ * fat32_fat_cache_invalidate - Drop the cached FAT sector.
+ *
+ * Call after any write that changes a FAT entry. Takes a const pointer for
+ * the same reason the cache is filled through one: the cache is not part of
+ * the filesystem's logical state, and every FAT reader in the tree holds the
+ * mount by const pointer.
+ */
+void fat32_fat_cache_invalidate(const fat32_mount_t *mount);
 
 typedef struct {
     char name[13];

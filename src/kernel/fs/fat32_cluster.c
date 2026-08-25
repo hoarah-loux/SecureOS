@@ -42,6 +42,53 @@ uint32_t fat32_cluster_to_sector(const fat32_mount_t *mount, uint32_t cluster) {
  * FAT32 stores each FAT entry as 32 bits, but only the low 28 bits matter.
  * A FAT entry gives the next cluster in the chain.
  */
+/*
+ * The cache lives in the mount but is not part of its logical state, so it is
+ * written through a const pointer: every FAT reader in the tree - the chain
+ * walk, the directory scan, the file read path - holds the mount as const, and
+ * making them all take it mutably to let a cache fill happen would spread a
+ * lie about what those functions do. The mount object itself is never
+ * const-qualified, so writing through the cast is defined.
+ */
+void fat32_fat_cache_invalidate(const fat32_mount_t *mount) {
+    if (!mount) {
+        return;
+    }
+
+    ((fat32_mount_t *)mount)->fat_cache_valid = 0;
+}
+
+/*
+ * Fill the cache with one FAT sector if it does not already hold it, and hand
+ * back a pointer into it. NULL means the read failed.
+ */
+static const uint8_t *fat32_fat_sector(const fat32_mount_t *mount, uint32_t sector_offset) {
+    fat32_mount_t *m = (fat32_mount_t *)mount;
+
+    if (m->fat_cache_valid && m->fat_cache_sector == sector_offset) {
+        return m->fat_cache;
+    }
+
+    /*
+     * Invalidate before the read, not after. A failed read leaves the buffer
+     * holding a torn mixture of the old sector and the new one; marking the
+     * cache valid only once the data is known good is what keeps that mixture
+     * from being served as if it were a FAT.
+     */
+    m->fat_cache_valid = 0;
+
+    if (block_device_read(m->device,
+                          (uint64_t)m->fat_start_sector + sector_offset,
+                          1,
+                          m->fat_cache) != 0) {
+        return NULL;
+    }
+
+    m->fat_cache_sector = sector_offset;
+    m->fat_cache_valid = 1;
+    return m->fat_cache;
+}
+
 int fat32_cluster_read_fat_entry(const fat32_mount_t *mount, uint32_t cluster, uint32_t *next_cluster) {
     if (!mount || !mount->device || !next_cluster || cluster < 2) {
         return -1;
@@ -60,24 +107,26 @@ int fat32_cluster_read_fat_entry(const fat32_mount_t *mount, uint32_t cluster, u
     uint32_t sector_offset = entry_offset / bytes_per_sector;
     uint32_t offset_in_sector = entry_offset % bytes_per_sector;
 
-    uint8_t fat_buffer[1024];
-    uint32_t sectors_to_read = 1;
+    if (bytes_per_sector != sizeof(mount->fat_cache)) {
+        return -1;
+    }
+
+    /*
+     * A FAT32 entry is four bytes and starts at cluster*4, so it can only
+     * straddle a sector boundary if the sector size is not a multiple of four.
+     * 512 is, and the cache is sized for 512, so the two-sector case the old
+     * code carried cannot arise and is rejected above rather than handled.
+     */
     if (offset_in_sector > bytes_per_sector - 4u) {
-        sectors_to_read = 2;
-    }
-
-    if (bytes_per_sector > 512u || sectors_to_read * bytes_per_sector > sizeof(fat_buffer)) {
         return -1;
     }
 
-    if (block_device_read(mount->device,
-                          (uint64_t)mount->fat_start_sector + sector_offset,
-                          sectors_to_read,
-                          fat_buffer) != 0) {
+    const uint8_t *fat_sector = fat32_fat_sector(mount, sector_offset);
+    if (fat_sector == NULL) {
         return -1;
     }
 
-    uint32_t raw = read_u32_le(fat_buffer + offset_in_sector);
+    uint32_t raw = read_u32_le(fat_sector + offset_in_sector);
     *next_cluster = raw & 0x0FFFFFFFu;
     return 0;
 }
@@ -130,10 +179,16 @@ int fat32_cluster_write_fat_entry(fat32_mount_t *mount, uint32_t cluster, uint32
                                (uint64_t)fat_base + sector_offset,
                                sectors_to_read,
                                fat_buffer) != 0) {
+            fat32_fat_cache_invalidate(mount);
             return -1;
         }
     }
 
+    // The sector just rewritten may be the one sitting in the read cache.
+    // Dropping it is cheaper than working out whether it is, and this path is
+    // rare - allocating a cluster, extending a file - while the read path it
+    // protects is the hot one.
+    fat32_fat_cache_invalidate(mount);
     return 0;
 }
 
