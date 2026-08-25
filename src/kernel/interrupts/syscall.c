@@ -244,6 +244,8 @@ static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_gettime]    = KIMG_ALIAS(sys_gettime),
     [SYS_sleep]      = KIMG_ALIAS(sys_sleep),
     [SYS_fb_present] = KIMG_ALIAS(sys_fb_present),
+    [SYS_getscancode] = KIMG_ALIAS(sys_getscancode),
+    [SYS_kbd_raw]    = KIMG_ALIAS(sys_kbd_raw),
 };
 
 void syscall_handler(trap_frame *frame, trap_reason trap_reason) {

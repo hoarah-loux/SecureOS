@@ -3,9 +3,10 @@
 Living roadmap for the doom port. Supersedes the "Doom-generic port blockers"
 section of `TODO.md`.
 
-**Status: milestone 4 reached.** A C program runs in ring3 against a real
-libc and puts pixels on the screen at 320x200, scaled and centred, faster than
-doom needs. What is left is the keyboard and doom itself.
+**Status: milestone 5 reached, all nine kernel blockers done.** A C program
+runs in ring3 against a real libc, puts pixels on the screen at 320x200 faster
+than doom needs, and reads the keyboard as raw press/release events including
+the arrows. What is left is doomgeneric itself.
 
 ---
 
@@ -13,11 +14,11 @@ doom needs. What is left is the keyboard and doom itself.
 
 ```
 Phase 0  toolchain & vendoring     newlib DONE   doomgeneric TODO   WAD TODO
-Phase 1  kernel blockers           8 of 9 DONE
+Phase 1  kernel blockers           9 of 9 DONE
 Phase 2  userland build path       DONE
 Phase 3  newlib retargeting        DONE (fstat/fd-3 hardening outstanding)
 Phase 4  doomgeneric backend       TODO
-Phase 5  milestones                0, 1, 2 and 4 covered; 3, 5, 6 TODO
+Phase 5  milestones                0, 1, 2, 4 and 5 covered; 3 and 6 TODO
 ```
 
 ### What runs today
@@ -36,6 +37,8 @@ Every one of these is on the FAT32 image and launched from the shell with
 | `HELLO.EXE` | **newlib**: printf, varargs `%f`, malloc, `.bss`, strdup, exit |
 | `GREET.EXE` | the worked example in `src/userland/README.md` still builds |
 | `FBTEST.EXE` | **`SYS_fb_present`**: scaling, centring, letterbox, rejection of bad buffers, throughput |
+| `ECHOIN.EXE` | **blocking `fd 0`**: `read()` and `fgets()` on the keyboard, shell does not steal keys |
+| `KEYTEST.EXE` | **raw scancodes**: press *and* release, arrows, `0xE0`, raw mode keeping the shell clean |
 
 `HELLO.EXE`'s actual output:
 
@@ -132,6 +135,28 @@ must be re-entrant. `SYS_sleep` carries `thread::wake_tick` to tell a
 continuation from a fresh request; without it a sleeper resets its own clock
 every wake and never returns.
 
+**Userland console I/O.** Not one of the nine blockers, but doom needs it and
+so does anything interactive. `sys_write` on fds 1 and 2 used to go only to
+`serial_write_char`, so a program's output existed only on the wire — the
+console object the shell draws with was a `static` in kmain's translation unit
+that the syscall layer could not see. `console_set_active()` /
+`console_get_active()` fix that the same way `fb_set_runtime()` did, and output
+now goes to **both** the console and serial. Duplicated rather than moved:
+serial is the only output a headless run can read, and every test here works by
+grepping `serial.log`.
+
+`sys_read` on fd 0 used to drain whatever the ring buffer held and return
+immediately — zero if it held nothing — so a program waiting for input burned a
+whole CPU and newlib's stdio never made progress. It now returns
+`SYS_WOULD_BLOCK` on an empty read and `syscall_handler` parks the thread on the
+keyboard queue. Blocking strictly *before* any byte is consumed is what makes it
+re-entrant under the RIP rewind, so unlike `SYS_sleep` it needs no continuation
+state.
+
+The kernel deliberately does **not** echo. A program drawing to the framebuffer
+must not get keystrokes painted over it, and echo belongs with a line
+discipline, which is TTY-shaped work this is not.
+
 **§1.7 `SYS_fb_present`.** Userland hands the kernel a buffer of 32-bit
 pixels and the kernel draws it. The copy is not avoidable yet: the framebuffer
 is mapped into the physmap without `PTE_US` and `sys_mmap` has no device-backed
@@ -172,23 +197,53 @@ is a deliberate trade against a page-by-page walk on the hot path.
 Measured at 100 fps for 320x200 at 2x on the QEMU target. At 3x the same work
 is roughly 2.25x larger, which still clears doom's 35 Hz.
 
+**§1.8 Keyboard raw scancodes.** A second ring of `uint16_t` fed by the same
+interrupt as the cooked one, so the shell keeps reading characters while a game
+reads events. Encoding: bits 0-7 the set-1 scancode with the release bit
+stripped, bit 8 `KBD_SC_EXTENDED` (introduced by an `0xE0` prefix), bit 15
+`KBD_SC_RELEASED`. `'A'` pressed is `0x001E`, released `0x801E`; up-arrow
+pressed is `0x0148`.
+
+`SYS_getscancode` (non-blocking poll) and `SYS_kbd_raw(on)` were appended
+before `SYS_MAX`, so nothing renumbered. Both are gated on input ownership.
+
+Two details that are not obvious and cost real debugging if got wrong:
+
+- **Fake shifts.** PrintScreen and the arrow keys emit `0xE0 0x2A` / `0xE0 0xAA`
+  for the benefit of DOS-era software. Treating those as a real shift press
+  capitalises the next character for no reason the user can see, so the shift
+  handler ignores anything carrying the extended flag.
+- **Pause/Break** arrives as `0xE1` plus a six-byte sequence with no release at
+  all. It is not decoded; the prefix is dropped and its payload bytes fall
+  through as ordinary keys. Nothing here binds it.
+
+**Arbitration** is what makes all of this usable, and it is not part of the
+scancode work — it is `§1.8a` below.
+
+**§1.8a Input ownership.** One keyboard, one buffer, and more than one thread
+that wants it: the shell sits in `SYS_getkey_wait` for its whole life and any
+program it launches wants the same keystrokes. Whichever thread the scheduler
+woke first took the character, which is not a race that can be tuned away.
+
+Exactly one process owns input. Everyone else's read blocks. The shell is the
+default owner, grants input to whatever it launches, and gets it back from
+`scheduler_exit_current()` — on the exit path rather than in the shell, because
+that is the choke point every exit passes through, so a program that dies badly
+cannot take the keyboard with it.
+
+The keyboard IRQ now calls `scheduler_wake_all()` rather than
+`scheduler_wake_one()`. wake_one pops the head, and the head may be a thread
+that does not own input: it wakes, sees it still does not, and blocks again
+while the keystroke that woke it sits unread and the process entitled to it
+stays asleep. One key press, nobody served.
+
+Both rings are flushed and raw mode is cleared whenever ownership moves, so a
+game's movement keys never arrive at a shell prompt as a line of text.
+
 **§1.9 User stack.** 64 KB → 1 MB (`USER_STACK_SIZE`). GROWDOWN and
 demand-paged, so this is a recursion-depth ceiling rather than an allocation.
 
 ### Remaining
-
-**§1.8 Keyboard raw scancodes** — `keyboard_handle_scancode()` drops every
-release (`if (scancode & 0x80) return 0;`) and has no `0xE0` handling, so
-arrows, RCtrl and RAlt vanish. `DG_GetKey` needs press *and* release.
-
-- Second ring buffer of `uint16_t`: bit 15 = released, low bits = scancode,
-  `0xE0`-prefixed folded into `0x100+`.
-- New syscalls appended before `SYS_MAX` so nothing renumbers:
-  `SYS_getscancode` (non-blocking) and `SYS_kbd_raw(int on)`.
-- **Arbitration**: the shell is a kernel thread polling the same buffer via
-  `SYS_getkey_wait` and would fight doom for keystrokes. `SYS_kbd_raw(1)`
-  suppresses ASCII translation so the shell sees nothing while doom runs.
-  `DG_Init` claims it; clear it on exit.
 
 ---
 
@@ -273,7 +328,7 @@ doomgeneric_Create(3, argv);
 | 2 | `RING3T.EXE` | `SYS_brk`, demand-paged anon | **done** (assembly; a `MALLOC.EXE` doing 16 MB through malloc would be a stronger check) |
 | 3 | `CAT.EXE` | FAT32 read of a multi-MB file through newlib stdio | todo |
 | 4 | `FBTEST.EXE` | `SYS_fb_present`, scaling, blit throughput | **done** (100 fps at 320x200 2x) |
-| 5 | `KEYTEST.EXE` | press *and* release, arrows, `0xE0`, shell not stealing input | todo |
+| 5 | `KEYTEST.EXE` | press *and* release, arrows, `0xE0`, shell not stealing input | **done** |
 | 6 | `DOOM.EXE` | everything | todo |
 
 **Definition of done**: `./DOOM.EXE` from the shell reaches the title screen,
@@ -315,6 +370,20 @@ Drop `-display none` to watch. `-d int,cpu_reset -no-reboot` is what makes
 triple faults findable — the last `check_exception` chain plus the register
 dump gives RIP, RSP, CR2 and CR3. Resolve a faulting RIP with
 `nm -n src/boot/build/secureos.elf` and subtract `0xFFFFFFFF80000000`.
+
+### Driving the keyboard
+
+`SHELL_AUTORUN` starts a program, but a program that waits for input needs
+input. QEMU's monitor will type for you:
+
+```sh
+printf 'sendkey a\nsendkey up\nsendkey ctrl\nsendkey esc\n' \
+  | socat - unix-connect:/tmp/mon.sock
+```
+
+Key names are QEMU's own (`up`, `down`, `left`, `right`, `ctrl`, `esc`, `ret`,
+`spc`, letters and digits as themselves). Leave 100 ms or so between keys.
+`KEYTEST.EXE` and `ECHOIN.EXE` are both written to be driven this way.
 
 ### Checking what is on the screen
 
