@@ -5,6 +5,8 @@
 #include <vmm.h>
 #include <handlers.h>
 #include <idt.h>
+#include <framebuffer.h>
+#include <p.h>
 
 #define KERNEL_IMAGE_BASE 0xFFFFFFFF80000000 //slot 511 in the pml4
 #define KIMG_ALIAS(fun) ((syscall_fn)((uintptr_t)(fun) + KERNEL_IMAGE_BASE))
@@ -152,6 +154,76 @@ static int64_t sys_sleep(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uin
 }
 
 
+// Largest source buffer this will look at, per side.
+//
+// The point is not the size - nothing sane asks for more - but that w and h
+// arrive from ring3 as raw 64-bit values, and (uint64_t)w * h * 4 overflows if
+// they are allowed to be arbitrary. Bounding them first makes every arithmetic
+// check below exact rather than approximately right.
+#define FB_PRESENT_MAX_DIM 16384ULL
+
+// Draws a userland pixel buffer on the screen, scaled and centred.
+//
+// The copy through the kernel is not laziness: the framebuffer is mapped into
+// the physmap without PTE_US, and sys_mmap has no device-backed path, so there
+// is currently no way to hand a process the real pixels. This is the entire
+// graphics API - doom's DG_DrawFrame ends here.
+//
+// a0 = pointer to w*h pixels, 0x00RRGGBB each, packed and row-major
+// a1 = width, a2 = height
+// Returns 0, or -1 if the framebuffer is unusable or the buffer does not lie
+// entirely inside the caller's own address space.
+static int64_t sys_fb_present(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+
+    const struct multiboot_tag_framebuffer *fb = fb_get_runtime();
+    if (fb == NULL) { return -1; }
+
+    if (a1 == 0 || a2 == 0 || a1 > FB_PRESENT_MAX_DIM || a2 > FB_PRESENT_MAX_DIM) {
+        return -1;
+    }
+
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if (cpu == NULL || cpu->current_thread == NULL) { return -1; }
+
+    thread *t = cpu->current_thread;
+    if (t->owning_proc == NULL || t->owning_proc->adress_space == NULL) { return -1; }
+
+    vm_space *space = t->owning_proc->adress_space;
+
+    // Bound the buffer inside the caller's own user half.
+    //
+    // Without this, ring3 passes a kernel address and this function reads it
+    // and paints it on the screen. Everything the check needs is unsigned
+    // 64-bit and already clamped above, so `first + bytes` cannot wrap.
+    uint64_t bytes = (uint64_t)a1 * (uint64_t)a2 * 4ULL;
+    uint64_t first = a0;
+    uint64_t last  = first + bytes - 1ULL;
+
+    if (first == 0 || last < first || last >= space->user_limit) {
+        return -1;
+    }
+
+    // Being below user_limit is not the same as being mapped. An address in no
+    // region of this space faults in kernel mode, and a #PF the handler cannot
+    // resolve is a kernel panic, not a dead process - so the region lookup has
+    // to happen here rather than being discovered the hard way.
+    //
+    // Checking both ends catches a buffer that starts inside a region and runs
+    // off it. A caller perverse enough to straddle two adjacent regions with a
+    // hole in the middle is not covered; that is a deliberate trade, since the
+    // alternative is a lookup per page on the hot path of every frame.
+    search_region_list_out first_md = search_region_list(space, (uintptr_t)first);
+    if (!first_md.success) { return -1; }
+
+    search_region_list_out last_md = search_region_list(space, (uintptr_t)last);
+    if (!last_md.success) { return -1; }
+
+    return fb_blit_scaled(fb, (const uint32_t *)(uintptr_t)first,
+                          (uint32_t)a1, (uint32_t)a2);
+}
+
+
 static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_read]       = KIMG_ALIAS(sys_read),
     [SYS_write]      = KIMG_ALIAS(sys_write),
@@ -171,7 +243,7 @@ static const syscall_fn syscall_table[SYS_MAX] = {
     [SYS_brk]        = KIMG_ALIAS(sys_brk),
     [SYS_gettime]    = KIMG_ALIAS(sys_gettime),
     [SYS_sleep]      = KIMG_ALIAS(sys_sleep),
-    [SYS_fb_present] = KIMG_ALIAS(sys_stub),
+    [SYS_fb_present] = KIMG_ALIAS(sys_fb_present),
 };
 
 void syscall_handler(trap_frame *frame, trap_reason trap_reason) {

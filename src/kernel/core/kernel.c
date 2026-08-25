@@ -47,11 +47,12 @@ extern uintptr_t _pmm_free_frame(uintptr_t address_to_free);
 // File-scope on purpose. kmain's last act is restore_context(), which jumps
 // onto the shell thread's own kernel stack and never comes back, so kmain's
 // frame is gone from that point on - and three separate things hold pointers
-// into it: syscall_fs_init() keeps the mount, console_t keeps the framebuffer
-// tag, and shell_ctx_t keeps both the mount and the console.
+// into it: syscall_fs_init() keeps the mount, and shell_ctx_t keeps both the
+// mount and the console. The framebuffer tag used to be here for the same
+// reason; it now lives in framebuffer.c behind fb_set_runtime()/fb_get_runtime()
+// so that the syscall layer can reach it too - see hdr/framebuffer.h.
 static block_device_t fat32_disk;
 static fat32_mount_t mount;
-static struct multiboot_tag_framebuffer fb_runtime;
 static console_t con;
 static shell_ctx_t shell_ctx;
 
@@ -763,11 +764,14 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         uintptr_t fb_pa = (uintptr_t)fb_snapshot.common.framebuffer_addr;
         uintptr_t fb_va = phys_to_virt(fb_pa);
         uintptr_t fb_pa_after_transition = 0;
-        fb_runtime = fb_snapshot;
+
+        // Local: fb_set_runtime() copies it, and nothing after this point reads
+        // the tag through anything but fb_get_runtime().
+        struct multiboot_tag_framebuffer fb_relocated = fb_snapshot;
 
         if (fb_va != 0) {
             fb_pa_after_transition = vmm_query_page2(fb_va);
-            fb_runtime.common.framebuffer_addr = (uint64_t)fb_va;
+            fb_relocated.common.framebuffer_addr = (uint64_t)fb_va;
         }
 
         printk("[SecureOS] framebuffer addr=0x");
@@ -778,9 +782,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         serial_write_hex64(fb_pa_after_transition);
         printk("\r\n");
 
-        if (fb_va != 0 && fb_pa_after_transition != 0) {
+        if (fb_va != 0 && fb_pa_after_transition != 0 &&
+            fb_set_runtime(&fb_relocated) == 0) {
             fb_runtime_valid = 1;
-            draw_boot_banner(&fb_runtime);
+            draw_boot_banner(fb_get_runtime());
         } else {
             printk("[SecureOS] framebuffer unmapped after transition; skip draw\r\n");
         }
@@ -1019,7 +1024,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     if (!fb_runtime_valid) {
         printk("[CONSOLE] framebuffer runtime mapping not valid\r\n");
-    } else if (console_init(&con, &fb_runtime) != 0) {
+    } else if (console_init(&con, fb_get_runtime()) != 0) {
         printk("[CONSOLE] console init failed\r\n");
     } else {
         printk("[CONSOLE] console initialized\r\n");
