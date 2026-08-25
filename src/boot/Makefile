@@ -29,7 +29,15 @@
 
 # Absolute path to the project root.
 # - This is derived from the Makefile location so it works on any machine.
-PROJECT_ROOT = $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
+# := and not =, and it matters more than it looks.
+#
+# MAKEFILE_LIST grows every time make reads another file, and the generated
+# header dependencies at the bottom of this file are read files. With a
+# recursive `=` this is re-evaluated at use time, by which point the last
+# entry is some build/kernel/fs/fat32_fs.d and the project root resolves to
+# build/, taking -I$(INCLUDE_DIR) with it. := pins it to this file while this
+# file is being read, which is the only moment the expression is true.
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 
 # The boot build directory (this Makefile lives here).
 BOOT_DIR = $(PROJECT_ROOT)/src/boot
@@ -362,15 +370,31 @@ $(BUILD_DIR)/arch/x86_64/%.o: $(SRC_DIR)/arch/x86_64/%.asm | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(ASM) $(ASMFLAGS) $< -o $@
 
+# Header dependency tracking.
+#
+# -MMD writes a .d file beside each .o listing every header the translation
+# unit included; -MP adds a phony target for each of those headers so deleting
+# one is a rebuild rather than a "No rule to make target" error. The generated
+# files are pulled back in at the bottom of this file.
+#
+# Without this, editing a header rebuilds nothing. That is not a slow build,
+# it is a wrong one: change a field in a struct that lives in a header - proc,
+# thread, fat32_file_t - and every .o compiled before the edit keeps the old
+# layout while the ones compiled after use the new one. The kernel then links
+# happily and reads fields at different offsets depending on which file is
+# asking, which surfaces as unrelated things being mysteriously zero. That
+# cost an afternoon once; it should not cost another.
+DEPFLAGS = -MMD -MP
+
 # Compile the kernel C source into an object file.
 # - `-c` means “compile only”, producing a .o without linking.
 $(BUILD_DIR)/kernel/%.o: $(KERNEL_DIR)/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # Link the final kernel ELF.
 # - We invoke the linker directly (ld) so we fully control the link.
@@ -640,10 +664,10 @@ $(USER_BUILD_DIR):
 	@mkdir -p $@
 
 $(USER_BUILD_DIR)/crt0.o: $(USER_SRC_DIR)/crt0.S | $(USER_BUILD_DIR)
-	$(USER_CC) $(USER_CFLAGS) -c $< -o $@
+	$(USER_CC) $(USER_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(USER_BUILD_DIR)/syscalls.o: $(USER_SRC_DIR)/libc_glue/syscalls.c | $(USER_BUILD_DIR)
-	$(USER_CC) $(USER_CFLAGS) -c $< -o $@
+	$(USER_CC) $(USER_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # ---------------- Userland programs: automatic discovery ----------------
 #
@@ -697,7 +721,7 @@ $(1)_OBJS := $$(patsubst $$(USER_APPS_DIR)/$(1)/%.c,$$(USER_BUILD_DIR)/apps/$(1)
 
 $$(USER_BUILD_DIR)/apps/$(1)/%.o: $$(USER_APPS_DIR)/$(1)/%.c | $$(USER_BUILD_DIR)
 	@mkdir -p $$(dir $$@)
-	$$(USER_CC) $$(USER_CFLAGS) -c $$< -o $$@
+	$$(USER_CC) $$(USER_CFLAGS) $$(DEPFLAGS) -c $$< -o $$@
 
 $$(USER_BUILD_DIR)/apps/$(1).elf: $$($(1)_OBJS) $$(USER_CRT_OBJS) $$(USER_LINKER)
 	@mkdir -p $$(dir $$@)
@@ -756,6 +780,12 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 		$(MCOPY) -i $@ $(FAT32_ROOT)/$$n.exe ::$$n.EXE; \
 	done
 	@echo "==> FAT32 image created: $@"
+
+# Pull in the generated header dependencies. The wildcard is evaluated when
+# the Makefile is read, so a first build - where no .d file exists yet -
+# includes nothing and is correct anyway, since it compiles everything.
+# The dash on -include keeps a missing file from being an error.
+-include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
 
 # Declare “phony” targets.
 # - A phony target is not a real file; it should always run when requested.
