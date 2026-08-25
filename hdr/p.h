@@ -64,9 +64,22 @@ typedef struct proc{
 
     proc_fd_slot_t fd_table[PROC_MAX_OPEN_FILES];
 
-    
-    
-    
+    // Program break, backing SYS_brk and therefore newlib's _sbrk() and
+    // everything above it - malloc, stdio buffers, strdup.
+    //
+    // The whole arena is reserved once at process creation as a single
+    // anonymous demand-paged region, and brk() only moves a cursor inside it.
+    // That is why there is no region churn here and no need for SYS_munmap:
+    // reserving costs nothing but a vm_region until a page is actually
+    // touched, and growing the break is a bounds check rather than a mapping
+    // operation. A program that never calls malloc pays for one struct.
+    //
+    // brk_current == brk_base means nothing has been handed out yet. All three
+    // are zero for a process with no arena, in which case SYS_brk fails.
+    uintptr_t brk_base;      // first byte of the reservation
+    uintptr_t brk_current;   // current break; brk_base <= brk_current <= brk_limit
+    uintptr_t brk_limit;     // one past the last byte of the reservation
+
 }proc;
 
 
