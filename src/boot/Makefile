@@ -80,9 +80,62 @@ GRUB_MKRESCUE = grub-mkrescue
 #     make GRUB_PLATFORM_DIR=/some/other/path
 GRUB_PLATFORM_DIR ?= /usr/lib/grub/x86_64-efi
 
+# Private, patched copy of the GRUB platform directory (see below).
+# - grub-mkrescue is pointed at this copy instead of the system directory, so
+#   nothing outside the build tree is ever modified.
+GRUB_MODS_DIR = $(BUILD_DIR)/grub-x86_64-efi
+
 # Flags passed to grub-mkrescue.
 # - `-d <dir>` tells grub-mkrescue where to find the platform modules.
-GRUB_MKRESCUE_FLAGS ?= -d $(GRUB_PLATFORM_DIR)
+GRUB_MKRESCUE_FLAGS ?= -d $(GRUB_MODS_DIR)
+
+# NOTE: the rule that produces $(GRUB_MODS_DIR) lives further down, next to
+# the ISO rule. It must not appear before the `all:` target, because make
+# treats the first target in the file as the default goal - putting it up here
+# makes a bare `make` build only that module and silently skip the ISO.
+
+# ---------------- GRUB relocator workaround (UEFI + GRUB >= 2.13) ----------
+#
+# Symptom this exists to prevent:
+#   Under UEFI, immediately after GRUB prints "Booting `SecureOS'", the
+#   firmware traps with:
+#     !!!! X64 Exception Type - 0E(#PF - Page-Fault) !!!!
+#     ExceptionData - 0000000000000003  I:0 R:0 U:0 W:1 P:1
+#   i.e. a *write* to a page that is present but read-only. The faulting
+#   address is inside GRUB's own relocator module, not inside this kernel.
+#
+# Why it happens:
+#   Multiboot2 requires the kernel to be entered in 32-bit protected mode, so
+#   GRUB gets there via grub_relocator32_boot(). That function stores the
+#   register values the kernel should start with directly into the `imm32`
+#   operands of a `mov eax/ebx/ecx/edx, $0` trampoline template that lives in
+#   the relocator module's own .text, and only then copies the patched
+#   trampoline to its final location. In other words, the relocator is
+#   self-modifying code.
+#
+#   GRUB commit d72208423dca ("apply read-only attributes according to ELF
+#   section flags to loaded modules") made GRUB mark a module's .text
+#   read-only via EFI_MEMORY_ATTRIBUTE_PROTOCOL, but only when the firmware
+#   actually offers that protocol. Once .text is read-only, the relocator's
+#   in-place patching faults - which is why this reproduces on a machine with
+#   new GRUB + new EDK2/OVMF and not on one with older firmware that never
+#   exposes the protocol. It is a GRUB bug, unrelated to this kernel: a
+#   67-byte Multiboot2 stub that only writes one character to the serial port
+#   reproduces it identically.
+#
+# What the fix does:
+#   Upstream's fix moves the runtime-patched stubs into a section flagged
+#   "awx" (alloc + write + execute) so GRUB maps them writable. This applies
+#   the same change to the already-built module: copy the platform directory
+#   into the build tree and add the SHF_WRITE bit to relocator.mod's .text
+#   (readelf shows the flags go from `AX` to `WAX`). The system GRUB install
+#   is left untouched.
+#
+#   This is safe on unaffected machines: without the memory attribute
+#   protocol GRUB never applies the restriction, so the extra flag is inert.
+#   Remove this rule once the distro ships a GRUB carrying the upstream fix.
+#
+#   (The recipe itself is defined further down, after the `all:` target.)
 
 # ---------------- Build flags ----------------
 
@@ -139,10 +192,24 @@ ASMFLAGS = -f elf64
 #     declarations) aren't touched by this C compiler flag on their
 #     definition side, so those get the same attribute explicitly at each
 #     extern declaration instead.
+# - `-fno-stack-protector`:
+#     GCC on most distributions defaults to -fstack-protector-strong, which
+#     emits a canary check calling `__stack_chk_fail` on function return.
+#     That symbol lives in libc, which a freestanding kernel does not link,
+#     so every guarded function becomes an undefined reference at link time.
+#     There is also no thread-pointer set up to hold the canary this early.
+# - `-fno-builtin`:
+#     Do not assume the standard library semantics of functions named like
+#     libc ones, and do not synthesize calls to them from recognized code
+#     patterns (e.g. rewriting a byte-copy loop into a memcpy call - which in
+#     src/kernel/core/string.c would make memcpy call itself). Explicit
+#     struct-assignment lowering to memcpy/memset still happens regardless of
+#     this flag; src/kernel/core/string.c provides those symbols out of line.
 # - `-Wall -Wextra`:
 #     Enable common and extra warnings.
 CFLAGS = -ffreestanding -O0 -g3 -nostdlib -m64 -mno-red-zone \
-                -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden -Wall -Wextra \
+                -mno-mmx -mno-sse -mno-sse2 -fpie -fvisibility=hidden \
+                -fno-stack-protector -fno-builtin -Wall -Wextra \
                 -I$(INCLUDE_DIR)
 
 # Linker flags.
@@ -171,6 +238,7 @@ KERNEL_SRCS = \
        $(KERNEL_DIR)/core/console.c \
        $(KERNEL_DIR)/core/serial.c \
        $(KERNEL_DIR)/core/shell.c \
+       $(KERNEL_DIR)/core/string.c \
        $(KERNEL_DIR)/interrupts/handlers.c \
        $(KERNEL_DIR)/interrupts/keyboard.c \
        $(KERNEL_DIR)/interrupts/pic.c \
@@ -301,9 +369,21 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 $(KERNEL_ELF): $(ASM_OBJS) $(KERNEL_OBJS) $(ARCH_C_OBJS) $(LINKER_SCRIPT)
 	$(LD) $(LDFLAGS) $(ASM_OBJS) $(KERNEL_OBJS) $(ARCH_C_OBJS) -o $(KERNEL_ELF)
 
+# Build the patched private copy of the GRUB platform directory.
+# - See the long "GRUB relocator workaround" comment near the top of this file
+#   for why relocator.mod's .text has to be made writable.
+# - The whole platform directory is copied so grub-mkrescue finds every module
+#   it needs in one place; only relocator.mod is modified.
+$(GRUB_MODS_DIR)/relocator.mod: $(GRUB_PLATFORM_DIR)/relocator.mod | $(BUILD_DIR)
+	rm -rf $(GRUB_MODS_DIR)
+	mkdir -p $(GRUB_MODS_DIR)
+	cp -a $(GRUB_PLATFORM_DIR)/. $(GRUB_MODS_DIR)/
+	objcopy --set-section-flags .text=alloc,load,code,contents \
+		$(GRUB_MODS_DIR)/relocator.mod
+
 # Create the bootable ISO image.
 # - grub-mkrescue collects GRUB modules and our staged tree and emits an ISO.
-$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG)
+$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(GRUB_MODS_DIR)/relocator.mod
 	# Create directories inside the staged ISO tree.
 	mkdir -p $(ISO_DIR)/boot/grub
 	# Copy the built kernel to the path referenced by grub.cfg.
@@ -439,10 +519,91 @@ $(RING3_PREEMPT_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_preempt_test.S $(PROJECT_RO
 	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_preempt_test.S -o $(BUILD_DIR)/elf_ring3_preempt_test.o
 	$(LD) -T $(PROJECT_ROOT)/elf_ring3_preempt_test.ld $(BUILD_DIR)/elf_ring3_preempt_test.o -o $@
 
+# Fifth ring3 test binary, the only one bigger than 4 KiB. Its .pages payload
+# is 20 KiB of real file content with a marker every 4096 bytes, one qword
+# straddling a page boundary, and a sentinel in the final byte - so a load that
+# stops at one page, walks the FAT chain wrong, or truncates the last partial
+# cluster fails at a named step instead of crashing vaguely. Also the
+# reproducer for TODO.md's "load_file() will fail on any file over 4KB"
+# (loader.c kmallocs file_size; kmalloc() caps at 4096 in heap.c).
+# Lands on the FAT32 image as /RING3B.EXE - see the mcopy below.
+RING3_BIG_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_big_test.elf
+
+$(RING3_BIG_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_big_test.S $(PROJECT_ROOT)/elf_ring3_big_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_big_test.S -o $(BUILD_DIR)/elf_ring3_big_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_big_test.ld $(BUILD_DIR)/elf_ring3_big_test.o -o $@
+
+# ---------------- Userland C binaries ----------------
+#
+# Distinct from the hand-written .S tests above: these are real C programs
+# linked against newlib, and they are what the doom port is built on.
+#
+# The compiler is the *host* gcc, the same one that builds the kernel - not a
+# cross compiler. The only thing a cross toolchain was ever needed for is
+# building newlib itself, and that output is vendored into the repo (see
+# USER_NEWLIB_DIR below), so a fresh clone needs nothing installed beyond what
+# the kernel already requires. That matters because the main build runs on
+# Debian, which has no x86_64-elf-gcc package.
+#
+# Flags that are not optional:
+#   -mno-red-zone   the kernel takes interrupts on these threads
+#   -fno-pie        the loader performs no relocation; ET_EXEC only
+#   -O2             unlike the kernel's -O0; doom needs it
+#   -z max-page-size=0x1000
+#                   ld defaults to 2 MiB segment alignment for x86-64, which
+#                   breaks the p_offset == p_vaddr (mod 4096) congruence that
+#                   loader.c enforces and demand paging depends on
+USER_CC = $(CC)
+
+# Vendored newlib: libc.a / libm.a / headers, built once by a throwaway
+# x86_64-elf toolchain and committed. See src/userland/newlib/README.md.
+USER_NEWLIB_DIR = $(SRC_DIR)/userland/newlib
+
+USER_SRC_DIR = $(SRC_DIR)/userland
+USER_BUILD_DIR = $(BUILD_DIR)/userland
+USER_LINKER = $(USER_SRC_DIR)/user.ld
+
+USER_CFLAGS = -ffreestanding -nostdlib -O2 -g -m64 -mno-red-zone \
+              -fno-pie -fno-stack-protector -fno-builtin \
+              -Wall -Wextra \
+              -isystem $(USER_NEWLIB_DIR)/include \
+              -I$(INCLUDE_DIR) -I$(USER_SRC_DIR)/libc_glue
+
+USER_LDFLAGS = -T $(USER_LINKER) -nostdlib -no-pie -z max-page-size=0x1000 \
+               -L$(USER_NEWLIB_DIR)/lib
+
+# libgcc last: newlib's soft-float and 64-bit helpers resolve out of it.
+USER_LIBS = -lc -lm -lgcc
+
+# Objects every userland C binary links against.
+USER_CRT_OBJS = $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalls.o
+
+$(USER_BUILD_DIR):
+	@mkdir -p $@
+
+$(USER_BUILD_DIR)/crt0.o: $(USER_SRC_DIR)/crt0.S | $(USER_BUILD_DIR)
+	$(USER_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD_DIR)/syscalls.o: $(USER_SRC_DIR)/libc_glue/syscalls.c | $(USER_BUILD_DIR)
+	$(USER_CC) $(USER_CFLAGS) -c $< -o $@
+
+# Milestone 1 of the doom port: the first C program this OS runs.
+# Lands on the FAT32 image as /HELLO.EXE - see the mcopy below.
+HELLO_ELF = $(USER_BUILD_DIR)/hello.elf
+
+$(HELLO_ELF): $(USER_SRC_DIR)/hello/hello.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
+	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/hello.o
+	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/hello.o \
+	$(USER_LIBS) -o $@
+
+.PHONY: userland
+userland: $(HELLO_ELF)
+
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
-$(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF)
+$(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
+		$(RING3_BIG_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -454,6 +615,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_STACK_TEST_ELF) $(FAT32_ROOT)/RING3S.exe
 	cp $(RING3_MMAP_TEST_ELF) $(FAT32_ROOT)/RING3M.exe
 	cp $(RING3_PREEMPT_TEST_ELF) $(FAT32_ROOT)/RING3P.exe
+	cp $(RING3_BIG_TEST_ELF) $(FAT32_ROOT)/RING3B.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -464,6 +626,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3S.exe ::RING3S.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3M.exe ::RING3M.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3P.exe ::RING3P.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3B.exe ::RING3B.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.
