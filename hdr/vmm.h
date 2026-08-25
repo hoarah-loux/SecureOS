@@ -21,6 +21,20 @@ extern bool physmap_ready; // true once transition() has populated the physmap
 #define PTE_US  (1ULL << 2)   // user-accessible
 #define PTE_NX  (1ULL << 63)  // non-executable
 
+// Where each process's brk arena is reserved, and how big.
+//
+// 0x40000000 (1 GiB) is chosen to be clear of everything else in a user
+// address space: well above the 0x2000000 link address the userland linker
+// script uses, and far below the stack, which reserve_region() places top-down
+// from USER_SPACE_LIMIT_.
+//
+// 64 MiB is generous on purpose. The region is anonymous and demand-paged, so
+// the reservation costs one vm_region and no physical memory until pages are
+// touched - there is nothing to be saved by sizing it tightly, and doom's
+// zone allocator alone asks for 16 MiB up front.
+#define USER_BRK_BASE 0x40000000ULL
+#define USER_BRK_SIZE (64ULL * 1024ULL * 1024ULL)
+
 #define KERNEL_STACK_FLAGS (PTE_RW | PTE_NX)           // 0x8000000000000002ULL
 #define USER_STACK_FLAGS   (PTE_RW | PTE_US | PTE_NX)
 

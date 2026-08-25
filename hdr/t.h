@@ -69,6 +69,20 @@ typedef struct thread{
     uint8_t *fpu_state;
     uint8_t fpu_state_raw[512 + 16];
 
+    // Timer tick at which a sleeping thread becomes runnable again, or 0 when
+    // the thread is not sleeping. Set by SYS_sleep, consumed by timer_handler.
+    //
+    // It lives on the thread rather than in the sleep queue because SYS_sleep
+    // is re-entrant by design: syscall_handler rewinds RIP past the `int 0x80`
+    // before blocking, so a woken thread re-executes the whole syscall. Left
+    // to recompute its deadline from scratch each time, a sleeping thread
+    // would never wake. A non-zero wake_tick is how the second execution knows
+    // it is a continuation rather than a new request.
+    //
+    // Appended after fpu_state for the same reason fpu_state was appended at
+    // the end: context_switch.asm reads this struct by hardcoded offset.
+    uint64_t wake_tick;
+
 }thread;
 
 // FXSAVE/FXRSTOR area size. The layout is fixed by the architecture; only the

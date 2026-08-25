@@ -432,6 +432,12 @@ void timer_handler(trap_frame *frame, trap_reason trap_reason){
     pic_send_eoi(PIC_TIMER_IRQ);
     scheduler_cpu *cpu = scheduler_this_cpu();
     if(cpu == NULL){return;}
+
+    // Anything whose SYS_sleep deadline has passed goes back on the ready
+    // queue. Done before scheduler_tick() so a thread that became runnable on
+    // this very tick is a candidate for the reschedule below rather than
+    // waiting a further quantum.
+    (void)scheduler_wake_expired_sleepers(cpu->cpu_id, timer_ticks);
     if(!scheduler_tick(cpu->cpu_id)){return;}
 
     uint64_t cpu_id = cpu->cpu_id;

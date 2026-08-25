@@ -25,6 +25,16 @@ void mouse_interrupt_handler(int irq, void *data);
 void timer_handler(trap_frame *frame, trap_reason trap_reason);
 uint64_t timer_ticks_get(void);
 
+// Milliseconds per timer tick. kmain calls pit_init(100), so the PIT fires at
+// 100 Hz and one tick is 10 ms. This is the conversion factor SYS_gettime and
+// SYS_sleep use; change it together with the pit_init() argument or time goes
+// wrong everywhere at once.
+#define TIMER_MS_PER_TICK 10ULL
+
+// Moves every thread on this CPU's sleep queue whose deadline has passed back
+// onto the ready queue. Called from timer_handler once per tick.
+uint64_t scheduler_wake_expired_sleepers(uint64_t cpu_id, uint64_t now_ticks);
+
 
 void yield_handler(trap_frame *frame, trap_reason trap_reason);
 

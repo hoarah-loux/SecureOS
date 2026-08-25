@@ -1,4 +1,5 @@
 #include <shell.h>
+#include <serial.h>
 #include <loader.h>
 #include <scheduler.h>
 
@@ -187,11 +188,18 @@ static int shell_exec_binary(shell_ctx_t *ctx) {
     if (!load_md.success) {
         console_printf(ctx->con, "%s: load failed (error_code=%u)\n",
                        path, (unsigned)load_md.error_code);
+        // Also to serial: the console is the framebuffer, which a headless
+        // QEMU run (-display none) never shows, and a load failure there is
+        // indistinguishable from a program that started and printed nothing.
+        printk("[SHELL] %s: load failed error_code=%u\r\n",
+               path, (unsigned)load_md.error_code);
         return 1;
     }
 
     console_printf(ctx->con, "%s: running as pid %u (output on serial)\n",
                    path, (unsigned)load_md.p->id);
+    printk("[SHELL] %s: running as pid %u\r\n",
+           path, (unsigned)load_md.p->id);
 
     return 1;
 }

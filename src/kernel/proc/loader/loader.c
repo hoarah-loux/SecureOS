@@ -200,6 +200,17 @@ elf_map_out elf_map_segments(thread *t, elf_image_t *image) {
 
         if (phdr->p_type != PT_LOAD) { continue; }
 
+        // An empty PT_LOAD is legal and maps nothing. ld emits one routinely:
+        // a linker script that names a second RW segment produces it with
+        // p_vaddr, p_filesz and p_memsz all zero whenever the binary turns out
+        // to have no .data and no .bss to put in it.
+        //
+        // Skipping is not a nicety - mmap() rejects a zero length, so without
+        // this the whole load fails with ELF_MAP_RESERVE_FAILED on a perfectly
+        // good executable, and the reported error points at the mapping code
+        // rather than at the empty segment.
+        if (phdr->p_memsz == 0) { continue; }
+
         if (phdr->p_offset > image->file_size ||
             phdr->p_filesz > (uint64_t)image->file_size - phdr->p_offset) {
             result.error_code = ELF_MAP_PHDR_OUT_OF_BOUNDS;
@@ -353,6 +364,31 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
     if (!map_md.success) {
         result.error_code = ELF_LOAD_MAP_FAILED;
         return result;
+    }
+
+    // Reserve the process's heap arena, which SYS_brk hands out from.
+    //
+    // Done here rather than lazily on the first brk() call because mmap()
+    // needs a thread to attach the region to, and this is where one exists.
+    // The reservation is anonymous and demand-paged, so 64 MiB costs a single
+    // vm_region and not one byte of physical memory until the program touches
+    // something. That is what lets brk() be a bounds check instead of a
+    // mapping operation, and why SYS_munmap is not needed to support malloc.
+    //
+    // USER_BRK_BASE sits far above the link address the userland linker script
+    // uses (0x2000000) and far below the stack, which reserve_region() places
+    // top-down from USER_SPACE_LIMIT_.
+    //
+    // A failure here is not fatal: a program that never calls malloc runs
+    // fine without a heap, and SYS_brk reports the failure to anything that
+    // does. Leaving the three fields zero is what marks the arena absent.
+    void *brk_area = mmap(thread_md.thread, (void*)USER_BRK_BASE, USER_BRK_SIZE,
+                          PTE_US | PTE_RW | PTE_NX, PRIVATE | FIXED, 0, 0);
+
+    if (brk_area != NULL) {
+        proc_md.proc->brk_base    = (uintptr_t)brk_area;
+        proc_md.proc->brk_current = (uintptr_t)brk_area;
+        proc_md.proc->brk_limit   = (uintptr_t)brk_area + USER_BRK_SIZE;
     }
 
     sched_add_ready_out ready_md = scheduler_add_ready(0, thread_md.thread);

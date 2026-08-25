@@ -460,6 +460,53 @@ uint64_t scheduler_wake_one(uint64_t cpu_id, thread_queue *wait_queue){
 }
 
 
+// Wakes every thread on this CPU's sleep queue whose SYS_sleep deadline has
+// passed, and leaves the rest alone. Driven by timer_handler, once per tick.
+//
+// Unlike scheduler_wake_one(), this cannot just pop the head: the sleep queue
+// is in insertion order, not deadline order, so a thread with a long sleep can
+// sit in front of one that is already due. The queue is short enough that
+// walking it every tick is not worth replacing with a sorted structure - and a
+// sorted insert would have to be maintained by every sleeper, whereas this
+// costs only the threads that are actually asleep.
+//
+// The walk captures q_thread_next before removing, because thread_queue_remove
+// clears both links on the way out.
+uint64_t scheduler_wake_expired_sleepers(uint64_t cpu_id, uint64_t now_ticks){
+
+    if(cpu_id >= MAX_CPUS){return 0;}
+
+    scheduler_cpu *cpu = &cpus[cpu_id];
+    if(cpu->sleep_queue == NULL){return 0;}
+
+    uint64_t woken = 0;
+    thread *t = cpu->sleep_queue->head;
+
+    while(t != NULL){
+
+        thread *next = t->q_thread_next;
+
+        if(t->wake_tick != 0 && now_ticks >= t->wake_tick){
+
+            thread_queue_remove_out removed_md = thread_queue_remove(cpu->sleep_queue, t);
+            if(removed_md.success){
+                // wake_tick is deliberately left set: the woken thread
+                // re-executes SYS_sleep, which reads it to tell that this is
+                // the end of a sleep rather than a new request, and clears it
+                // itself.
+                sched_add_ready_out add_md = scheduler_add_ready(cpu_id, t);
+                if(add_md.success){ woken++; }
+            }
+        }
+
+        t = next;
+    }
+
+    return woken;
+
+}
+
+
 uint64_t scheduler_wake_all(uint64_t cpu_id, thread_queue *wait_queue){
 
     if(cpu_id >= MAX_CPUS){return 0;}

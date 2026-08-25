@@ -567,6 +567,17 @@ $(RING3_SSE2_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_sse_test.S $(PROJECT_ROOT)/elf
 	$(AS) --64 --defsym SEED_TAG=1 $(PROJECT_ROOT)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse2_test.o
 	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse2_test.o -o $@
 
+# Seventh ring3 test binary: SYS_brk, SYS_gettime and SYS_sleep, all three of
+# which were stubs returning -1 until now. They sit directly under newlib -
+# _sbrk(), _gettimeofday(), and doomgeneric's DG_SleepMs - so checking them
+# from assembly first keeps a kernel bug distinguishable from a libc
+# retargeting bug. Lands on the FAT32 image as /RING3T.EXE.
+RING3_TIME_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_time_test.elf
+
+$(RING3_TIME_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_time_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_time_test.S -o $(BUILD_DIR)/elf_ring3_time_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_time_test.o -o $@
+
 # ---------------- Userland C binaries ----------------
 #
 # Distinct from the hand-written .S tests above: these are real C programs
@@ -637,7 +648,8 @@ userland: $(HELLO_ELF)
 
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
-		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF)
+		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF) \
+		$(RING3_TIME_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -652,6 +664,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_BIG_TEST_ELF) $(FAT32_ROOT)/RING3B.exe
 	cp $(RING3_SSE_TEST_ELF) $(FAT32_ROOT)/RING3F.exe
 	cp $(RING3_SSE2_TEST_ELF) $(FAT32_ROOT)/RING3G.exe
+	cp $(RING3_TIME_TEST_ELF) $(FAT32_ROOT)/RING3T.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -665,6 +678,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3B.exe ::RING3B.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3F.exe ::RING3F.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3G.exe ::RING3G.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3T.exe ::RING3T.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.
