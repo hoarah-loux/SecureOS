@@ -19,6 +19,13 @@ typedef struct {
     uint16_t	e_shstrndx;		/* Section header string table index */
 } elf_eheader_t;
 
+/* e_ident[EI_CLASS] value for a 64-bit object, and the e_type of a
+ * non-relocatable executable. The loader accepts only these two: it maps
+ * segments at their p_vaddr as written, with no relocation step. */
+#define ELFCLASS64 2
+#define EI_CLASS   4
+#define ET_EXEC    2
+
 #define PT_NULL    0
 #define PT_LOAD    1
 #define PT_DYNAMIC 2

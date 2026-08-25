@@ -3,73 +3,117 @@
 #include <string.h>
 #include <scheduler.h>
 
-// This function takes a filename and loaded it into memory, return a pointer
-mem_file_t* load_file(fat32_mount_t* mount, char* filename) {
+// Reads exactly len bytes from a byte offset in an open file.
+//
+// fat32_file_read() reads from the handle's current position, so every caller
+// seeks first: the loader jumps around the ELF (the header, then one program
+// header at a time) rather than walking it front to back.
+//
+// A short read is a failure, not a partial success - every caller here is
+// reading one fixed-size structure and has nothing to do with half of one.
+static bool elf_read_at(fat32_file_t *file, uint64_t offset, void *dst, uint32_t len) {
 
-    fat32_file_t file = { 0 };
-    int open_result = fat32_file_open(mount, filename, &file);
+    if (file == NULL || dst == NULL || len == 0) { return false; }
 
-    if (open_result)
-        return (mem_file_t*)NULL;
+    // fat32_file_seek() takes a uint32_t; FAT32 cannot address past 4 GiB
+    // anyway, and file_size is a uint32_t for the same reason.
+    if (offset > UINT32_MAX) { return false; }
 
-    mem_file_t* mem_file = (mem_file_t*)kmalloc(sizeof(mem_file_t));
+    if (fat32_file_seek(file, (uint32_t)offset) != 0) { return false; }
 
-    if (!mem_file) {
-        fat32_file_close(&file);
-        return (mem_file_t*)NULL;
-    }
+    int read_result = fat32_file_read(file, (uint8_t*)dst, len);
 
-    mem_file->data = (uint8_t*)kmalloc(file.entry.file_size);
-    if (!mem_file->data) {
-        kfree(mem_file);
-        fat32_file_close(&file);
-        return (mem_file_t*)NULL;
-    }
-
-    mem_file->size = file.entry.file_size;
-    mem_file->filename = filename;
-
-    int read_result = fat32_file_read(&file, mem_file->data, file.entry.file_size);
-    if (read_result != file.entry.file_size) {
-        kfree(mem_file->data);
-        kfree(mem_file);
-        fat32_file_close(&file);
-        return (mem_file_t*)NULL;
-    }
-
-    fat32_file_close(&file);
-    return mem_file;
+    return read_result == (int)len;
 }
 
-elf_eheader_t parse_mem_elf(mem_file_t elf) {
-    // check elf size first
-    if (elf.size < sizeof(elf_eheader_t)) {
-        // Not a valid ELF file
-        elf_eheader_t invalid_header = {0};
-        return invalid_header;
-    }
+void elf_close_image(elf_image_t *image) {
 
-    // Read first 4 bytes to check for ELF magic number
-    if (elf.data[0] != 0x7F || elf.data[1] != 'E' || elf.data[2] != 'L' || elf.data[3] != 'F') {
-        // Not a valid ELF file
-        elf_eheader_t invalid_header = {0};
-        return invalid_header;
-    }
+    if (image == NULL) { return; }
+    if (image->file.mount == NULL) { return; }
 
-    // Cast the data to an ELF header
-    elf_eheader_t header = *(elf_eheader_t*)elf.data;
-    return header;
+    (void)fat32_file_close(&image->file);
+    image->file.mount = NULL;
 }
 
-// Frees a mem_file_t and its payload. load_file() allocates the two
-// separately, so both have to go back.
-static void free_mem_file(mem_file_t *file) {
+// Opens filename and reads just its ELF header, validating everything the
+// mapping step later relies on.
+//
+// Nothing else about the file is read here, and nothing is copied into kernel
+// memory beyond this one 64-byte header. That is the point: a process's text
+// and data belong in the process's address space, reached through the
+// file-backed mmap() regions elf_map_segments() sets up, not on the kernel
+// heap. The previous version of this loader did the opposite - it
+// kmalloc()'d file_size and read the whole executable in - which put a hard
+// 4096-byte ceiling on executables, because kmalloc() serves kernel objects
+// out of the slab allocator and refuses anything larger (heap.c). See
+// RING3B.EXE (elf_ring3_big_test.S), which exists to exercise this path.
+//
+// Validation is deliberately strict, because elf_map_segments() maps segments
+// at their p_vaddr with no relocation step:
+//   - 64-bit class and ET_EXEC, since nothing here can relocate a PIE or
+//     resolve a dynamic segment;
+//   - a non-zero entry point, which is also what elf_load_process() reports as
+//     "not an ELF";
+//   - a program header table that is present, entry-size-compatible, and
+//     entirely inside the file, so the per-phdr reads during mapping cannot
+//     run off the end.
+elf_open_out elf_open_image(fat32_mount_t *mount, const char *filename, elf_image_t *out_image) {
 
-    if (file == NULL) { return; }
+    elf_open_out result = {0};
 
-    if (file->data != NULL) { kfree(file->data); }
+    if (mount == NULL || filename == NULL || out_image == NULL) {
+        result.error_code = ELF_LOAD_FILE_READ_FAILED;
+        return result;
+    }
 
-    kfree(file);
+    elf_image_t image = {0};
+
+    if (fat32_file_open(mount, filename, &image.file) != 0) {
+        result.error_code = ELF_LOAD_FILE_READ_FAILED;
+        return result;
+    }
+
+    image.file_size = image.file.entry.file_size;
+
+    if (image.file_size < sizeof(elf_eheader_t)) {
+        elf_close_image(&image);
+        result.error_code = ELF_LOAD_INVALID_ELF;
+        return result;
+    }
+
+    if (!elf_read_at(&image.file, 0, &image.header, sizeof(elf_eheader_t))) {
+        elf_close_image(&image);
+        result.error_code = ELF_LOAD_FILE_READ_FAILED;
+        return result;
+    }
+
+    const unsigned char *ident = image.header.e_ident;
+
+    if (ident[0] != 0x7F || ident[1] != 'E' || ident[2] != 'L' || ident[3] != 'F' ||
+        ident[EI_CLASS] != ELFCLASS64 ||
+        image.header.e_type != ET_EXEC ||
+        image.header.e_entry == 0 ||
+        image.header.e_phnum == 0 ||
+        image.header.e_phentsize < sizeof(elf_pheader_t)) {
+
+        elf_close_image(&image);
+        result.error_code = ELF_LOAD_INVALID_ELF;
+        return result;
+    }
+
+    uint64_t phdr_table_bytes = (uint64_t)image.header.e_phnum * image.header.e_phentsize;
+
+    if (image.header.e_phoff > image.file_size ||
+        phdr_table_bytes > (uint64_t)image.file_size - image.header.e_phoff) {
+
+        elf_close_image(&image);
+        result.error_code = ELF_LOAD_INVALID_ELF;
+        return result;
+    }
+
+    *out_image = image;
+    result.success = true;
+    return result;
 }
 
 // Unwinds a proc that create_proc() handed back but that never reached a
@@ -100,13 +144,11 @@ static void release_threadless_proc(proc *p) {
     (void)destroy_proc(p);
 }
 
-elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header) {
-
-
+elf_map_out elf_map_segments(thread *t, elf_image_t *image) {
 
     elf_map_out result = {0};
 
-    if (t == NULL || t->owning_proc == NULL || file == NULL || header == NULL) {
+    if (t == NULL || t->owning_proc == NULL || image == NULL) {
         result.error_code = ELF_MAP_INVALID_ARGS;
         return result;
     }
@@ -118,24 +160,48 @@ elf_map_out elf_map_segments(thread *t, mem_file_t *file, elf_eheader_t *header)
         return result;
     }
 
+    elf_eheader_t *header = &image->header;
+
+    // elf_open_image() already checked e_phentsize and that the whole table
+    // lies inside the file. Re-checking e_phentsize here is what makes the
+    // per-entry seek below safe on its own terms, since this function is
+    // callable with any image.
     if (header->e_phentsize < sizeof(elf_pheader_t)) {
         result.error_code = ELF_MAP_PHDR_OUT_OF_BOUNDS;
         return result;
     }
 
     uint64_t phdr_table_bytes = (uint64_t)header->e_phnum * header->e_phentsize;
-    if (header->e_phoff > file->size || phdr_table_bytes > (uint64_t)file->size - header->e_phoff) {
+    if (header->e_phoff > image->file_size ||
+        phdr_table_bytes > (uint64_t)image->file_size - header->e_phoff) {
         result.error_code = ELF_MAP_PHDR_OUT_OF_BOUNDS;
         return result;
     }
 
     for (uint16_t i = 0; i < header->e_phnum; i++) {
 
-        elf_pheader_t *phdr = (elf_pheader_t*)(file->data + header->e_phoff + (uint64_t)i * header->e_phentsize);
+        // One program header at a time, straight off disk. Reading the table
+        // into a buffer would mean sizing that buffer from e_phnum, which is
+        // attacker-controlled; this way the loader's memory use is a single
+        // 56-byte stack structure no matter what the file claims.
+        //
+        // Only sizeof(elf_pheader_t) bytes are read even when e_phentsize is
+        // larger: the seek accounts for the real stride, and the trailing
+        // bytes of an oversized entry are not fields this kernel knows.
+        elf_pheader_t phdr_storage = {0};
+        elf_pheader_t *phdr = &phdr_storage;
+
+        uint64_t phdr_offset = header->e_phoff + (uint64_t)i * header->e_phentsize;
+
+        if (!elf_read_at(&image->file, phdr_offset, phdr, sizeof(elf_pheader_t))) {
+            result.error_code = ELF_MAP_PHDR_READ_FAILED;
+            return result;
+        }
 
         if (phdr->p_type != PT_LOAD) { continue; }
 
-        if (phdr->p_offset > file->size || phdr->p_filesz > (uint64_t)file->size - phdr->p_offset) {
+        if (phdr->p_offset > image->file_size ||
+            phdr->p_filesz > (uint64_t)image->file_size - phdr->p_offset) {
             result.error_code = ELF_MAP_PHDR_OUT_OF_BOUNDS;
             return result;
         }
@@ -216,36 +282,55 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
         return result;
     }
 
-    mem_file_t *file = load_file(mount, (char*)filename);
-    if (file == NULL) {
-        result.error_code = ELF_LOAD_FILE_READ_FAILED;
-        return result;
-    }
-
-    elf_eheader_t header = parse_mem_elf(*file);
-    if (header.e_entry == 0) {
-        result.error_code = ELF_LOAD_INVALID_ELF;
+    // Header only - the executable's bytes are never copied into the kernel.
+    elf_image_t image = {0};
+    elf_open_out open_md = elf_open_image(mount, filename, &image);
+    if (!open_md.success) {
+        result.error_code = open_md.error_code;
         return result;
     }
 
     create_proc_out proc_md = create_proc(false);
     if (!proc_md.success) {
+        elf_close_image(&image);
         result.error_code = ELF_LOAD_PROC_CREATE_FAILED;
         return result;
     }
-    
+
+    // A second, independent handle on the same file, this one owned by the
+    // process and living in its fd table. It is what the file-backed regions
+    // are pinned to, so it has to outlive this function - the #PF handler
+    // reads through it for the whole life of the process, long after the
+    // loader's own handle is gone. The two handles are separate because they
+    // have separate lifetimes, not because the file is opened twice for its
+    // own sake.
     int slot = PROC_FD_BASE;
-    fat32_file_open(mount, filename, &proc_md.proc->fd_table[slot].file);
+    if (fat32_file_open(mount, filename, &proc_md.proc->fd_table[slot].file) != 0) {
+        release_threadless_proc(proc_md.proc);
+        elf_close_image(&image);
+        result.error_code = ELF_LOAD_FILE_READ_FAILED;
+        return result;
+    }
     proc_md.proc->fd_table[slot].in_use = 1;
     proc_md.proc->fd_table[slot].kind   = PROC_FD_FILE;
 
-    create_thread_out thread_md = create_thread(proc_md.proc, header.e_entry, THREAD_F_MAIN_THREAD, 64 * 1024);
+    create_thread_out thread_md = create_thread(proc_md.proc, image.header.e_entry, THREAD_F_MAIN_THREAD, 64 * 1024);
     if (!thread_md.success) {
+        release_threadless_proc(proc_md.proc);
+        elf_close_image(&image);
         result.error_code = ELF_LOAD_THREAD_CREATE_FAILED;
         return result;
     }
-    
-    elf_map_out map_md = elf_map_segments(thread_md.thread, file, &header);
+
+    elf_map_out map_md = elf_map_segments(thread_md.thread, &image);
+
+    // The loader's handle has done its job either way: program headers are
+    // only read during mapping. The process's own fd stays open.
+    elf_close_image(&image);
+
+    // From here on the proc owns a thread, and release_threadless_proc()
+    // refuses those - a NEW_T thread cannot be torn down yet (see its comment
+    // and TODO.md), so a failure past this point still leaks the proc.
     if (!map_md.success) {
         result.error_code = ELF_LOAD_MAP_FAILED;
         return result;
