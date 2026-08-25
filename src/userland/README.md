@@ -6,15 +6,15 @@ the vendored newlib in [`newlib/`](newlib/), and run from the shell with
 
 ## 1. Write it
 
-Make a directory under `src/userland/` and write plain C. `printf`, `malloc`,
-`strdup`, `fopen`, `sqrt` all work.
+Make a directory under `src/userland/apps/` and write plain C. `printf`,
+`malloc`, `strdup`, `fopen`, `sqrt` all work.
 
 ```sh
-mkdir -p src/userland/greet
+mkdir -p src/userland/apps/greet
 ```
 
 ```c
-/* src/userland/greet/greet.c */
+/* src/userland/apps/greet/greet.c */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -25,7 +25,7 @@ int main(int argc, char **argv, char **envp)
     char *buf = malloc(1024);
     if (!buf) { printf("[GREET] malloc failed\n"); return 1; }
 
-    snprintf(buf, 1024, "hello from ring3, pid-ish thing");
+    snprintf(buf, 1024, "hello from ring3");
     printf("[GREET] %s\n", buf);
 
     free(buf);
@@ -36,35 +36,29 @@ int main(int argc, char **argv, char **envp)
 Output goes to the **serial port**, not the framebuffer console: `sys_write`
 sends fd 1 to `serial_write_char`. Watch `serial.log`.
 
-## 2. Add three lines to the Makefile
+## 2. There is no step 2
 
-In `src/boot/Makefile`, next to the `HELLO_ELF` rule:
+The Makefile discovers programs by scanning `src/userland/apps/`. Every
+subdirectory is one program; every `.c` file directly inside it is compiled and
+linked into that program, so a program may be split across several files.
+Nothing needs to be registered anywhere.
 
-```make
-GREET_ELF = $(USER_BUILD_DIR)/greet.elf
+The name on the disk image is the directory name uppercased and truncated to
+eight characters, since FAT 8.3 short names are all the shell's path lookup
+understands. Dashes become underscores.
 
-$(GREET_ELF): $(USER_SRC_DIR)/greet/greet.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
-	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/greet.o
-	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/greet.o \
-	$(USER_LIBS) -o $@
-```
+| Source | Runs as |
+|---|---|
+| `apps/greet/greet.c` | `./GREET.EXE` |
+| `apps/calc/{calc.c,ops.c}` | `./CALC.EXE` |
+| `apps/framebuffer-test/*.c` | `./FRAMEBU.EXE` |
 
-Add it to the `userland` target, and stage it onto the disk image — the
-`$(FAT32_IMAGE)` rule, where the other binaries are copied:
+That last row is why long names are a bad idea: pick something that is still
+recognisable after eight characters. Two programs whose names collide once
+truncated are a hard build error rather than one silently overwriting the other.
 
-```make
-userland: $(HELLO_ELF) $(GREET_ELF)
-```
-
-```make
-$(FAT32_IMAGE): ... $(GREET_ELF)
-	...
-	cp $(GREET_ELF) $(FAT32_ROOT)/GREET.exe
-	...
-	$(MCOPY) -i $@ $(FAT32_ROOT)/GREET.exe ::GREET.EXE
-```
-
-Names are FAT 8.3, so `GREET.EXE`, not `greet-program.elf`.
+Subdirectories below an app directory are not scanned — put headers and data
+there, not sources you expect to be compiled.
 
 ## 3. Build and run it
 
@@ -89,9 +83,14 @@ qemu-system-x86_64 -machine pc \
 tail -20 serial.log
 ```
 
-Drop `SHELL_AUTORUN` and `-display none` to boot to the shell and type
-`./GREET.EXE` yourself. `SHELL_AUTORUN` accepts several commands separated by
-`;`, which is how two programs are started at once:
+For an interactive run, `make run-uefi-serial` builds userland, the image and
+the ISO and boots to the shell with the serial console on your terminal; type
+`./GREET.EXE` there. `make userland` builds the programs alone and prints the
+names they will have on the image, which is the quickest way to check that a new
+directory was picked up.
+
+`SHELL_AUTORUN` accepts several commands separated by `;`, which is how two
+programs are started at once:
 
 ```sh
 make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./RING3F.EXE;./RING3G.EXE\""'
@@ -153,6 +152,7 @@ Also worth knowing:
 
 | Path | What it is |
 |---|---|
+| `apps/` | one directory per program, discovered automatically by the Makefile |
 | `crt0.S` | entry point: aligns the stack, zeroes `.bss`, runs constructors, calls `main`, then `exit` |
 | `user.ld` | linker script: two `PT_LOAD`s, base `0x2000000`, `ENTRY(_start)` |
 | `libc_glue/syscalls.c` | newlib's `_read`/`_write`/`_sbrk`/… on this kernel's `int 0x80` ABI |
