@@ -120,7 +120,7 @@ uint64_t keyboard_input_owner(void) {
 
 // Whether the process on this CPU right now is the one allowed to consume a
 // keystroke.
-static int caller_owns_input(void) {
+int keyboard_caller_owns_input(void) {
     scheduler_cpu *cpu = scheduler_this_cpu();
     if (cpu == NULL || cpu->current_thread == NULL) { return 0; }
 
@@ -171,7 +171,7 @@ int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t 
     // full the buffer is. Reported as "nothing available" rather than as an
     // error, because that is what it means to the caller and it is the answer
     // a polling loop already knows how to handle.
-    if (!caller_owns_input()) {
+    if (!keyboard_caller_owns_input()) {
         return -1;
     }
 
@@ -189,7 +189,7 @@ int64_t sys_getkey_wait(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint
     // whole life here, and while a program is in the foreground the shell must
     // sit still rather than spin. It is re-checked on every wake, so ownership
     // returning is enough to let it through - see keyboard_release_input().
-    if (!caller_owns_input()) {
+    if (!keyboard_caller_owns_input()) {
         return SYS_WOULD_BLOCK;
     }
 

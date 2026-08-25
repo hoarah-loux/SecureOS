@@ -267,7 +267,12 @@ void syscall_handler(trap_frame *frame, trap_reason trap_reason) {
     //
     // Which queue depends on what is being waited for - the keyboard IRQ wakes
     // one kind, the timer the other - but everything after that is identical.
-    if (ret == SYS_WOULD_BLOCK && (nr == SYS_getkey_wait || nr == SYS_sleep)) {
+    //
+    // SYS_read joins this list for fd 0. Only the stdin branch of sys_read can
+    // produce SYS_WOULD_BLOCK - a file read returns a count or -1 - so there is
+    // no risk of a FAT32 read parking a thread on the keyboard queue.
+    if (ret == SYS_WOULD_BLOCK &&
+        (nr == SYS_getkey_wait || nr == SYS_sleep || nr == SYS_read)) {
         // Rewind past `int 0x80` (2-byte opcode) so the blocked thread
         // re-executes the syscall from scratch on wake, naturally
         // re-checking the keyboard buffer instead of resuming mid-syscall.
