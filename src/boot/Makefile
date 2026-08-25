@@ -608,11 +608,24 @@ USER_SRC_DIR = $(SRC_DIR)/userland
 USER_BUILD_DIR = $(BUILD_DIR)/userland
 USER_LINKER = $(USER_SRC_DIR)/user.ld
 
+# Include order is load-bearing, not cosmetic.
+#
+# gcc searches -I directories before -isystem ones. The kernel's hdr/ contains
+# a string.h, and userland must get newlib's - the kernel's declares a static
+# inline atoi() that collides with newlib's extern one, and lacks most of what
+# a C program expects. So hdr/ goes in with -idirafter, which places it last,
+# after both newlib and the compiler's own headers.
+#
+# Userland needs hdr/ at all for exactly one file: syscall_abi.h, the shared
+# definition of the int 0x80 ABI. Sharing it is the point - the alternative is
+# a second copy of the syscall numbers that silently drifts out of step with
+# the kernel's.
 USER_CFLAGS = -ffreestanding -nostdlib -O2 -g -m64 -mno-red-zone \
               -fno-pie -fno-stack-protector -fno-builtin \
               -Wall -Wextra \
               -isystem $(USER_NEWLIB_DIR)/include \
-              -I$(INCLUDE_DIR) -I$(USER_SRC_DIR)/libc_glue
+              -I$(USER_SRC_DIR)/libc_glue \
+              -idirafter $(INCLUDE_DIR)
 
 USER_LDFLAGS = -T $(USER_LINKER) -nostdlib -no-pie -z max-page-size=0x1000 \
                -L$(USER_NEWLIB_DIR)/lib
@@ -649,7 +662,7 @@ userland: $(HELLO_ELF)
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
 		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF) \
-		$(RING3_TIME_TEST_ELF)
+		$(RING3_TIME_TEST_ELF) $(HELLO_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -665,6 +678,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_SSE_TEST_ELF) $(FAT32_ROOT)/RING3F.exe
 	cp $(RING3_SSE2_TEST_ELF) $(FAT32_ROOT)/RING3G.exe
 	cp $(RING3_TIME_TEST_ELF) $(FAT32_ROOT)/RING3T.exe
+	cp $(HELLO_ELF) $(FAT32_ROOT)/HELLO.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -679,6 +693,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3F.exe ::RING3F.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3G.exe ::RING3G.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3T.exe ::RING3T.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/HELLO.exe ::HELLO.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

@@ -344,7 +344,18 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
     proc_md.proc->fd_table[slot].in_use = 1;
     proc_md.proc->fd_table[slot].kind   = PROC_FD_FILE;
 
-    create_thread_out thread_md = create_thread(proc_md.proc, image.header.e_entry, THREAD_F_MAIN_THREAD, 64 * 1024);
+    // 1 MiB of user stack, up from 64 KiB.
+    //
+    // 64 KiB was enough for hand-written assembly that never nests. It is not
+    // enough for compiled C: newlib's stdio carries large frames, and doom's
+    // renderer recurses through BSP traversal. Overflowing runs off the bottom
+    // of the reservation into unmapped space, which surfaces as a page fault
+    // at an address nowhere near the code that caused it.
+    //
+    // The cost of asking for more is a larger reservation, not more memory:
+    // the region is GROWDOWN and demand-paged, so pages that are never touched
+    // are never allocated.
+    create_thread_out thread_md = create_thread(proc_md.proc, image.header.e_entry, THREAD_F_MAIN_THREAD, USER_STACK_SIZE);
     if (!thread_md.success) {
         release_threadless_proc(proc_md.proc);
         elf_close_image(&image);

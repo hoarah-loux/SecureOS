@@ -32,6 +32,11 @@ extern bool physmap_ready; // true once transition() has populated the physmap
 // the reservation costs one vm_region and no physical memory until pages are
 // touched - there is nothing to be saved by sizing it tightly, and doom's
 // zone allocator alone asks for 16 MiB up front.
+// Main-thread user stack reservation. Demand-paged and GROWDOWN, so untouched
+// pages cost nothing - this is a ceiling on how deep a program may recurse,
+// not an allocation.
+#define USER_STACK_SIZE (1024ULL * 1024ULL)
+
 #define USER_BRK_BASE 0x40000000ULL
 #define USER_BRK_SIZE (64ULL * 1024ULL * 1024ULL)
 
