@@ -183,43 +183,22 @@ static int64_t sys_fb_present(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3
         return -1;
     }
 
-    scheduler_cpu *cpu = scheduler_this_cpu();
-    if (cpu == NULL || cpu->current_thread == NULL) { return -1; }
-
-    thread *t = cpu->current_thread;
-    if (t->owning_proc == NULL || t->owning_proc->adress_space == NULL) { return -1; }
-
-    vm_space *space = t->owning_proc->adress_space;
-
-    // Bound the buffer inside the caller's own user half.
+    // Bound the buffer inside the caller's own mapped user space: a kernel
+    // address here would be read and painted on the screen, and an address in
+    // no region of this space would fault in kernel mode, which is a panic
+    // rather than a dead process.
     //
-    // Without this, ring3 passes a kernel address and this function reads it
-    // and paints it on the screen. Everything the check needs is unsigned
-    // 64-bit and already clamped above, so `first + bytes` cannot wrap.
+    // The dimensions are clamped above, so w * h * 4 cannot overflow. The
+    // same check now guards read() and write(); it used to live only here,
+    // which is exactly backwards - this is the syscall that reads a buffer,
+    // and those are the ones that write one.
     uint64_t bytes = (uint64_t)a1 * (uint64_t)a2 * 4ULL;
-    uint64_t first = a0;
-    uint64_t last  = first + bytes - 1ULL;
 
-    if (first == 0 || last < first || last >= space->user_limit) {
+    if (!user_range_ok((uintptr_t)a0, bytes)) {
         return -1;
     }
 
-    // Being below user_limit is not the same as being mapped. An address in no
-    // region of this space faults in kernel mode, and a #PF the handler cannot
-    // resolve is a kernel panic, not a dead process - so the region lookup has
-    // to happen here rather than being discovered the hard way.
-    //
-    // Checking both ends catches a buffer that starts inside a region and runs
-    // off it. A caller perverse enough to straddle two adjacent regions with a
-    // hole in the middle is not covered; that is a deliberate trade, since the
-    // alternative is a lookup per page on the hot path of every frame.
-    search_region_list_out first_md = search_region_list(space, (uintptr_t)first);
-    if (!first_md.success) { return -1; }
-
-    search_region_list_out last_md = search_region_list(space, (uintptr_t)last);
-    if (!last_md.success) { return -1; }
-
-    return fb_blit_scaled(fb, (const uint32_t *)(uintptr_t)first,
+    return fb_blit_scaled(fb, (const uint32_t *)(uintptr_t)a0,
                           (uint32_t)a1, (uint32_t)a2);
 }
 

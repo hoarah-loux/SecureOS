@@ -5,6 +5,14 @@
 #include <handlers.h>
 #include <serial.h>
 #include <fs_syscalls.h>
+#include <idt.h>
+#include <scheduler.h>
+
+// EXIT_VECTOR is a number in a header and `int` wants it spelled into the
+// asm text, so it has to survive one round of macro expansion first. Same
+// trick, same reason, as in src/kernel/interrupts/syscall.c.
+#define STRINGIFY_INNER(x) #x
+#define STRINGIFY(x) STRINGIFY_INNER(x)
 
 
 void panic(const char *msg){
@@ -99,15 +107,17 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
 //
 // Until this existed vector 13 had no gate at all, so every #GP escalated
 // straight to #DF and then triple fault - a silent reboot with nothing on the
-// serial line. There is no recovery path yet (nothing here can safely resume a
-// thread that executed an illegal operation), so this is a diagnostic: print
-// enough to identify the fault, then stop.
+// serial line. Nothing can safely resume a thread that executed an illegal
+// operation, so there is no recovery in the sense of continuing - but a ring3
+// fault is survivable by killing the process, which is what this now does.
 //
 // error_code is a segment selector when a descriptor-table reference raised
 // the fault, and 0 otherwise. In long mode 0 is the common case and almost
 // always means a non-canonical memory reference - typically a bad stack
 // pointer, since a push to a non-canonical address faults here rather than
 // producing a page fault.
+static void kill_current_process(const char *reason);
+
 void general_protection_handler(uint64_t error_code, uint64_t fault_rip, uint64_t fault_cs){
 
     printk("[#GP] general protection fault\n");
@@ -139,17 +149,28 @@ void general_protection_handler(uint64_t error_code, uint64_t fault_rip, uint64_
                (int)(error_code & 1));
     }
 
-    //kill process once ring3 faults are recoverable
+    // A #GP raised at CPL 3 is a bug in the user program - a non-canonical
+    // address, usually from a wrecked stack pointer, or an instruction ring3
+    // is not allowed to execute. The kernel was not in the middle of anything
+    // when it happened, so the process dies and the machine does not.
+    //
+    // At CPL 0 it is the kernel itself that did something illegal, and there
+    // is nothing to hand the failure to. That stays a halt.
+    if((fault_cs & 3) == 3){
+        printk("[#GP]  raised in user mode, killing process\n");
+        kill_current_process("user #GP: nothing else runnable, cannot kill the faulting process");
+    }
+
     panic("general protection fault");
 }
 
-// A page fault the handler cannot service is fatal, but "not present" on its
-// own says nothing about what went wrong. Dump the address, the faulting
-// instruction, the raw error code and which step gave up before halting.
-static void pf_panic(const char *msg, const char *stage, uint64_t faulting_va,
-                     uint64_t error_code, uint64_t fault_rip){
+// "not present" on its own says nothing about what went wrong. Dump the
+// address, the faulting instruction, the raw error code and which step gave
+// up, for both the fatal and the survivable case.
+static void pf_report(const char *what, const char *msg, const char *stage,
+                      uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
 
-    printk("[#PF] unhandled page fault\n");
+    printk("[#PF] %s\n", what);
     printk("[#PF]  va=0x%llx rip=0x%llx error_code=0x%llx\n",
            (unsigned long long)faulting_va,
            (unsigned long long)fault_rip,
@@ -161,8 +182,61 @@ static void pf_panic(const char *msg, const char *stage, uint64_t faulting_va,
            (int)((error_code >> 3) & 1),
            (int)((error_code >> 4) & 1));
     printk("[#PF]  gave up at: %s\n", stage);
+    printk("[#PF]  %s\n", msg);
+}
 
+// A page fault the handler cannot service, taken in kernel mode, is fatal.
+// There is no way to unwind a kernel stack that may be holding a half-finished
+// allocation or a device mid-transfer, so this stays a halt.
+static void pf_panic(const char *msg, const char *stage, uint64_t faulting_va,
+                     uint64_t error_code, uint64_t fault_rip){
+
+    pf_report("unhandled page fault", msg, stage, faulting_va, error_code, fault_rip);
     panic(msg);
+}
+
+// The same fault taken in user mode kills the process instead of the machine.
+//
+// A ring3 program that dereferences garbage is a bug in that program, and the
+// kernel has everything it needs to survive it: the faulting thread is not
+// holding kernel state, because the fault happened while user code was
+// running, and the teardown behind EXIT_VECTOR already returns the keyboard,
+// frees the address space and picks something else to run. Before this, a
+// null dereference in a userland program halted the whole kernel and cost a
+// reboot - which during doom bring-up was the single most expensive thing in
+// the edit-test loop.
+//
+// The exit trap is taken from CPL0, so it is a same-privilege trap: no stack
+// switch, the frame nests on the dying thread's kernel stack, and that stack
+// is abandoned with the thread. This is the same mechanism sys_exit() uses.
+//
+// It comes back only when exit_handler() bails, which it does when
+// scheduler_pick_next() finds nothing else runnable. There is no honest way to
+// continue from there - the current thread has to die and nothing can replace
+// it - so that case falls through to the panic.
+#define FAULT_EXIT_STATUS 139   /* 128 + SIGSEGV, the shell convention */
+
+static void kill_current_process(const char *reason){
+
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL || cpu->current_thread == NULL){
+        panic("fault in user mode with no current thread to kill");
+    }
+
+    cpu->current_thread->exit_status = FAULT_EXIT_STATUS;
+
+    __asm__ volatile("int $" STRINGIFY(EXIT_VECTOR) ::: "memory");
+
+    panic(reason);
+}
+
+static void pf_kill_current(const char *msg, const char *stage, uint64_t faulting_va,
+                            uint64_t error_code, uint64_t fault_rip){
+
+    pf_report("fault in user mode, killing process", msg, stage,
+              faulting_va, error_code, fault_rip);
+
+    kill_current_process("user page fault: nothing else runnable, cannot kill the faulting process");
 }
 
 void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t fault_rip){
@@ -295,22 +369,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
          uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
+        if(this_cpu == NULL){ pf_kill_current(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
-        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
+        if(curr_t == NULL){ pf_kill_current(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_kill_current(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
+        if(this_space == NULL){ pf_kill_current(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
+        if(!search_md.success){ pf_kill_current(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
+        if(!physical_frame){ pf_kill_current(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_kill_current(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_kill_current(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
 
 
     }
@@ -331,7 +405,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         }
 
         //kill process 
-        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
+        pf_kill_current(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
 
 
     }
@@ -355,22 +429,22 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
          uintptr_t alligned_va = faulting_va & ~0xFFFULL;
         //get curr active space from scvheduelr
         scheduler_cpu *this_cpu = scheduler_this_cpu();
-        if(this_cpu == NULL){ pf_panic(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
+        if(this_cpu == NULL){ pf_kill_current(msg, "no scheduler_cpu", faulting_va, error_code, fault_rip); }
         thread *curr_t = scheduler_current(this_cpu->cpu_id);
-        if(curr_t == NULL){ pf_panic(msg, "no current thread", faulting_va, error_code, fault_rip); }
-        if(curr_t->owning_proc == NULL){ pf_panic(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
+        if(curr_t == NULL){ pf_kill_current(msg, "no current thread", faulting_va, error_code, fault_rip); }
+        if(curr_t->owning_proc == NULL){ pf_kill_current(msg, "thread has no owning proc", faulting_va, error_code, fault_rip); }
         vm_space *this_space = curr_t->owning_proc->adress_space;
-        if(this_space == NULL){ pf_panic(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
+        if(this_space == NULL){ pf_kill_current(msg, "proc has no address space", faulting_va, error_code, fault_rip); }
         uintptr_t *this_space_root_ptr = this_space->pml4_phys_ptr;
         search_region_list_out search_md = search_region_list(this_space, faulting_va);
-        if(!search_md.success){ pf_panic(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
+        if(!search_md.success){ pf_kill_current(msg, "va is in no vm_region of this space", faulting_va, error_code, fault_rip); }
         vm_region *this_region = search_md.region;
         uint64_t perms = this_region->permissions; // have to add later (is this region allowed to lazy populate)
         uintptr_t physical_frame = pmm_alloc_frame();
-        if(!physical_frame){ pf_panic(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
-        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_panic(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
+        if(!physical_frame){ pf_kill_current(msg, "pmm_alloc_frame failed", faulting_va, error_code, fault_rip); }
+        if(!populate_fault_frame(this_region, alligned_va, physical_frame)){ pmm_free_frame(physical_frame); pf_kill_current(msg, "populate_fault_frame failed", faulting_va, error_code, fault_rip); }
         map_out map_md = vmm_map_page(alligned_va, physical_frame, this_space_root_ptr, 4, perms); // finally im calling this function
-        if(!map_md.success){ pmm_free_frame(physical_frame); pf_panic(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
+        if(!map_md.success){ pmm_free_frame(physical_frame); pf_kill_current(msg, "vmm_map_page failed", faulting_va, error_code, fault_rip); }
 
 
     }
@@ -395,7 +469,7 @@ void page_fault_handler(uint64_t faulting_va, uint64_t error_code, uint64_t faul
         }
 
         //kill proccess
-        pf_panic(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
+        pf_kill_current(msg, "protection violation, not recoverable", faulting_va, error_code, fault_rip);
 
 
     }
