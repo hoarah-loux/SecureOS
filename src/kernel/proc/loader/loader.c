@@ -261,7 +261,29 @@ elf_map_out elf_map_segments(thread *t, elf_image_t *image) {
         // the ELF_SEGMENT tag and the teardown path below still work.
         search_region_list_out seg_search = search_region_list(space, (uintptr_t)mapped);
         vm_region *seg_region = seg_search.success ? seg_search.region : NULL;
-        if (seg_region != NULL) { seg_region->type = ELF_SEGMENT; }
+        if (seg_region == NULL) {
+            result.error_code = ELF_MAP_RESERVE_FAILED;
+            return result;
+        }
+
+        seg_region->type = ELF_SEGMENT;
+
+        // The region spans p_memsz, but only p_filesz bytes of it exist in the
+        // file. Everything past that is .bss and must read as zero.
+        //
+        // The count is measured from the start of the region, which mmap()
+        // placed at seg_start - p_vaddr rounded down to a page - so the
+        // page_slack bytes preceding p_vaddr are file content too and belong
+        // in the total. They are the tail of the previous segment, or the ELF
+        // header itself for the first one; either way they are real bytes on
+        // disk and the region legitimately maps them.
+        //
+        // This is why a PT_LOAD does not need splitting into a file-backed
+        // region plus an anonymous one: a single file-backed region with an
+        // honest valid length already zero-fills its tail, and the partial
+        // page where .data ends and .bss begins is handled by the same clamp
+        // rather than by a boundary between two regions.
+        seg_region->file_valid_len = (size_t)(page_slack + phdr->p_filesz);
 
      
     }
