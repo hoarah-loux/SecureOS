@@ -41,6 +41,11 @@ void keyboard_grant_input(uint64_t pid);
 void keyboard_release_input(uint64_t pid);
 
 uint64_t keyboard_input_owner(void);
+
+// Whether the process running on this CPU right now is the input owner.
+// sys_read() needs this for fd 0, which is a second door onto the same ring
+// buffer as SYS_getkey and has to be gated the same way.
+int keyboard_caller_owns_input(void);
 int keyboard_getchar_nonblock(char *out_char);
 int keyboard_getline(char *buffer, size_t buffer_size);
 

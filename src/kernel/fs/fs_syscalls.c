@@ -143,11 +143,42 @@ int64_t sys_read(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, uin
     }
 
     if (fd == PROC_FD_STDIN) {
+        if (count == 0) {
+            return 0;
+        }
+
+        // Not the foreground process, so there is nothing here for this
+        // caller however full the buffer is. Wait rather than spin - see
+        // keyboard_caller_owns_input().
+        if (!keyboard_caller_owns_input()) {
+            return SYS_WOULD_BLOCK;
+        }
+
         uint64_t read_count = 0;
         char c;
+
         while (read_count < count && keyboard_getchar_nonblock(&c)) {
             buf[read_count++] = (uint8_t)c;
         }
+
+        // Block only on an empty read, and this is why.
+        //
+        // syscall_handler rewinds RIP past the `int 0x80` before blocking, so
+        // a woken thread re-executes this function from the top. Anything
+        // already copied into buf would be copied a second time, and the
+        // count returned would describe only the second pass. Deciding to
+        // block strictly before any byte is consumed makes the call idempotent
+        // and the whole problem disappears - no continuation state needed,
+        // unlike SYS_sleep's wake_tick.
+        //
+        // Returning short is correct and expected: read() is allowed to
+        // return fewer bytes than asked for, and a caller that wants a whole
+        // line loops. Blocking until `count` bytes arrive would be the wrong
+        // behaviour as well as the harder one.
+        if (read_count == 0) {
+            return SYS_WOULD_BLOCK;
+        }
+
         return (int64_t)read_count;
     }
 
