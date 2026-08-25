@@ -10,6 +10,7 @@
 #include <framebuffer.h>
 #include <multiboot2_utils.h>
 #include <idt.h>
+#include <cpu_sse.h>
 #include <block_device.h>
 #include <ide_pio.h>
 #include <fat32_fs.h>
@@ -494,20 +495,36 @@ static void shell_thread_entry(void) {
     // literal is copied into the buffer rather than passed through.
 #ifdef SHELL_AUTORUN
     {
+        // Semicolons separate commands, so a single define can start more than
+        // one program. That is not a convenience: the SSE test only means
+        // anything with two vector-using processes on the ready queue at once,
+        // since a lone one would pass even if the context switch saved no
+        // vector state at all.
         const char *autorun = SHELL_AUTORUN;
-        size_t n = 0;
-        while (autorun[n] != '\0' && n < sizeof(line_buffer) - 1) {
-            line_buffer[n] = autorun[n];
-            n++;
-        }
-        line_buffer[n] = '\0';
+        size_t at = 0;
 
         printk("[SHELL] autorun: %s\r\n", SHELL_AUTORUN);
 
-        char *auto_argv[16] = {0};
-        shell_ctx.argc = shell_split_args(line_buffer, auto_argv, 16);
-        shell_ctx.argv = auto_argv;
-        (void)shell_eval(&shell_ctx);
+        while (autorun[at] != '\0') {
+            size_t n = 0;
+            while (autorun[at] != '\0' && autorun[at] != ';' &&
+                   n < sizeof(line_buffer) - 1) {
+                line_buffer[n++] = autorun[at++];
+            }
+            line_buffer[n] = '\0';
+
+            // Skip the separator, and any run of them.
+            while (autorun[at] == ';') { at++; }
+
+            if (n == 0) { continue; }
+
+            // shell_split_args() writes terminators into the line it is given,
+            // which is why each command is copied out rather than pointed at.
+            char *auto_argv[16] = {0};
+            shell_ctx.argc = shell_split_args(line_buffer, auto_argv, 16);
+            shell_ctx.argv = auto_argv;
+            (void)shell_eval(&shell_ctx);
+        }
 
         line_buffer[0] = '\0';
     }
@@ -716,6 +733,16 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     if (before_transition_pa != 0 && after_transition_high_pa != 0) {
         vmm_print_test_result("kmain PA stable across transition", before_transition_pa == after_transition_high_pa);
+    }
+
+    // Before the IDT, and well before anything is scheduled: restore_context
+    // uses FXRSTOR, which raises #UD while CR4.OSFXSR is clear, so this has to
+    // be true for the very first context switch and not just for the first
+    // user program. See src/arch/x86_64/cpu_sse.c.
+    if (cpu_enable_sse()) {
+        printk("[CPU] SSE enabled (CR0.EM=0, CR4.OSFXSR|OSXMMEXCPT=1)\r\n");
+    } else {
+        printk("[CPU] SSE unavailable; userland C code will not run\r\n");
     }
 
      idt_init();

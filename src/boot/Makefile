@@ -274,7 +274,8 @@ KERNEL_SRCS = \
 
 ARCH_C_SRCS = \
           $(SRC_DIR)/arch/x86_64/idt.c \
-          $(SRC_DIR)/arch/x86_64/arch_tables.c
+          $(SRC_DIR)/arch/x86_64/arch_tables.c \
+          $(SRC_DIR)/arch/x86_64/cpu_sse.c
 
 # Linker script.
 LINKER_SCRIPT = $(BOOT_DIR)/grub/linker.ld
@@ -541,6 +542,31 @@ $(RING3_BIG_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_big_test.S $(PROJECT_ROOT)/elf_
 	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_big_test.S -o $(BUILD_DIR)/elf_ring3_big_test.o
 	$(LD) -T $(PROJECT_ROOT)/elf_ring3_big_test.ld $(BUILD_DIR)/elf_ring3_big_test.o -o $@
 
+# Sixth ring3 test binary, and the only one that touches a vector register.
+# Checks that SSE executes at all (CR0.EM clear, CR4.OSFXSR set), that
+# floating-point arithmetic is correct, and - the part nothing else covers -
+# that xmm0-xmm7 survive being preempted by IRQ0, which is what the
+# fxsave/fxrstor pair in save_trap_frame()/restore_context exists for.
+# Lands on the FAT32 image as /RING3F.EXE - see the mcopy below.
+RING3_SSE_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_sse_test.elf
+
+# Two binaries from one source, differing only in SEED_TAG - which is the
+# whole point. Step 4 checks that xmm0-7 survive preemption, and with a single
+# SSE process on the system it would pass even if the context switch saved no
+# vector state whatsoever: nothing else on the ready queue touches a vector
+# register, because the kernel is built -mno-sse and the shell is kernel code.
+# Run both together (see SHELL_AUTORUN) and they clobber each other's xmm
+# registers unless fxsave/fxrstor genuinely work.
+$(RING3_SSE_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_sse_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 --defsym SEED_TAG=0 $(PROJECT_ROOT)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse_test.o -o $@
+
+RING3_SSE2_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_sse2_test.elf
+
+$(RING3_SSE2_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_sse_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 --defsym SEED_TAG=1 $(PROJECT_ROOT)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse2_test.o
+	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse2_test.o -o $@
+
 # ---------------- Userland C binaries ----------------
 #
 # Distinct from the hand-written .S tests above: these are real C programs
@@ -611,7 +637,7 @@ userland: $(HELLO_ELF)
 
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
-		$(RING3_BIG_TEST_ELF)
+		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -624,6 +650,8 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_MMAP_TEST_ELF) $(FAT32_ROOT)/RING3M.exe
 	cp $(RING3_PREEMPT_TEST_ELF) $(FAT32_ROOT)/RING3P.exe
 	cp $(RING3_BIG_TEST_ELF) $(FAT32_ROOT)/RING3B.exe
+	cp $(RING3_SSE_TEST_ELF) $(FAT32_ROOT)/RING3F.exe
+	cp $(RING3_SSE2_TEST_ELF) $(FAT32_ROOT)/RING3G.exe
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -635,6 +663,8 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3M.exe ::RING3M.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3P.exe ::RING3P.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3B.exe ::RING3B.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3F.exe ::RING3F.EXE
+	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3G.exe ::RING3G.EXE
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.

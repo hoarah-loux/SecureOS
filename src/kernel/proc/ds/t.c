@@ -3,6 +3,22 @@
 #include <string.h>
 
 
+// src/arch/x86_64/context_switch.asm reaches into `thread` by hardcoded byte
+// offset, because it runs with no compiler to compute them. Nothing warns when
+// a field is added above one of those, so assert the offsets here: a struct
+// change that moves them fails the build instead of producing a kernel that
+// switches to a garbage stack pointer at the first preemption.
+_Static_assert(offsetof(thread, _rsp_k) == 80,
+               "THREAD_RSP_K in context_switch.asm is out of date");
+_Static_assert(offsetof(thread, fpu_state) == 200,
+               "THREAD_FPU_STATE in context_switch.asm is out of date");
+
+// kmalloc() refuses anything over 4096 bytes, and the fpu_state area made the
+// thread object substantially bigger. Fail here rather than at the first
+// create_thread(), which would report a plain allocation failure.
+_Static_assert(sizeof(thread) <= 4096,
+               "thread no longer fits in a kmalloc slab");
+
 static uint64_t tid_count = 1;
 static uint64_t tcount = 1;
 
@@ -24,6 +40,20 @@ create_thread_out create_thread(proc *owning_process, uintptr_t rip, uint64_t th
 
     thread *t = kcalloc(1, sizeof(thread));
     if(t == NULL){return result;}
+
+    // Point fpu_state at the first 16-byte-aligned address inside the
+    // over-allocated raw area. FXSAVE and FXRSTOR both #GP on a misaligned
+    // destination, and the slab allocator promises no particular alignment
+    // for the thread object itself.
+    //
+    // kcalloc already zeroed the area, which is a legal FXSAVE image, but not
+    // a sane one: it would start every thread with x87 precision and rounding
+    // control at zero. Set the two control words to their architectural
+    // defaults so the first fxrstor produces the state a fresh program
+    // expects.
+    t->fpu_state = (uint8_t *)(((uintptr_t)t->fpu_state_raw + 15u) & ~(uintptr_t)15u);
+    *(uint16_t *)(t->fpu_state + FPU_STATE_FCW_OFFSET)   = FPU_STATE_FCW_INIT;
+    *(uint32_t *)(t->fpu_state + FPU_STATE_MXCSR_OFFSET) = FPU_STATE_MXCSR_INIT;
 
     vm_space *space = owning_process->adress_space;
     if(space == NULL){return result;}

@@ -14,6 +14,21 @@ save_trap_frame_out save_trap_frame(trap_frame *frame, thread *t){
     // here leaked two heap objects per context switch.
     context *context_save = t->context;
 
+    // x87/SSE state, saved eagerly alongside the general-purpose registers.
+    // restore_context does the matching fxrstor.
+    //
+    // The kernel is built -mno-sse and never touches these registers itself,
+    // so nothing has clobbered them between the trap and here - what fxsave
+    // writes out is still the interrupted thread's own state.
+    //
+    // Emitted as raw asm rather than via a builtin precisely because the
+    // compiler is in -mno-sse mode: the instruction is fine, the compiler
+    // simply must not be asked to reason about vector registers. fpu_state is
+    // 16-byte aligned by create_thread(); fxsave would #GP otherwise.
+    if(t->fpu_state != NULL){
+        __asm__ __volatile__("fxsave (%0)" :: "r"(t->fpu_state) : "memory");
+    }
+
     if((frame->cs & 3) == 3){
 
         context_save->k = false;

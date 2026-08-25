@@ -32,8 +32,17 @@ extern tss64
 %define CTX_SS           176
 %define CTX_OWNER_THREAD 184
 
-; Offset into `thread` from hdr/t.h. this rsp is fro the stack top
+; Offsets into `thread` from hdr/t.h. THREAD_RSP_K is the kernel stack top.
+; THREAD_FPU_STATE holds a pointer to the thread's 16-byte-aligned FXSAVE area,
+; not the area itself - the thread object comes from a slab allocator that
+; promises no particular alignment, so the pointer is aligned at creation and
+; the raw storage sits elsewhere in the struct.
+;
+; Both are asserted against the real struct layout by _Static_asserts in
+; src/kernel/proc/ds/t.c, so adding a field above either one fails the build
+; rather than silently switching to a garbage stack pointer.
 %define THREAD_RSP_K      80
+%define THREAD_FPU_STATE 200
 
 ; void restore_context(context *next);
 ;
@@ -142,8 +151,31 @@ restore_context:
 
     mov rdx, cr3
     cmp rdx, rax
-    je .restore_gprs
+    je .skip_cr3_switch
     mov cr3, rax
+
+.skip_cr3_switch:
+    ; Restore the destination thread's x87/SSE registers, the counterpart to
+    ; the fxsave in save_trap_frame(). This has to happen on the way in rather
+    ; than being skipped along with the CR3 reload - two threads sharing an
+    ; address space still have separate floating-point state, which is why it
+    ; sits below its own label instead of after the `je` above.
+    ;
+    ; Ordering against the CR3 switch does not matter: thread objects live in
+    ; the kernel heap, which every address space maps.
+    ;
+    ; FXRSTOR raises #UD unless CR4.OSFXSR is set, so cpu_enable_sse() must
+    ; have run before any context switch - it is called early in kmain.
+    ;
+    ; RAX is a scratch register here; the value the destination thread should
+    ; see is popped from the frame below.
+    mov rax, [r11 + CTX_OWNER_THREAD]
+    test rax, rax
+    jz .restore_gprs
+    mov rax, [rax + THREAD_FPU_STATE]
+    test rax, rax
+    jz .restore_gprs
+    fxrstor [rax]
 
 .restore_gprs:
     pop r15
