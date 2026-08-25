@@ -28,3 +28,16 @@ void console_set_prompt(console_t* console, const char* prompt);
 int console_get_cursor_position(console_t* console, int* row, int* col);
 void console_set_cursor_position(console_t* console, int row, int col);
 int console_is_fb_supported(const struct multiboot_tag_framebuffer* fb);
+
+// The console that userland's stdout and stderr write to.
+//
+// Same reason fb_get_runtime() exists (hdr/framebuffer.h): the console object
+// lives in kmain's translation unit as a `static`, and sys_write() - in
+// src/kernel/fs/fs_syscalls.c - cannot see it. kmain registers the console
+// once, after console_init() succeeds, and the syscall layer reads it back.
+//
+// NULL until something registers one, which is the normal state on a machine
+// with no usable framebuffer. Callers must handle that: writes then go to the
+// serial port alone.
+void console_set_active(console_t* console);
+console_t* console_get_active(void);

@@ -196,7 +196,7 @@ static int shell_exec_binary(shell_ctx_t *ctx) {
         return 1;
     }
 
-    console_printf(ctx->con, "%s: running as pid %u (output on serial)\n",
+    console_printf(ctx->con, "%s: running as pid %u\n",
                    path, (unsigned)load_md.p->id);
     printk("[SHELL] %s: running as pid %u\r\n",
            path, (unsigned)load_md.p->id);

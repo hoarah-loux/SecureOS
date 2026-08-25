@@ -43,6 +43,20 @@ int console_is_fb_supported(const struct multiboot_tag_framebuffer* fb) {
     return fb_is_supported(fb);
 }
 
+// The console userland writes to. See hdr/console.h for why it lives here
+// rather than in kernel.c. A pointer, not a copy: the shell holds the same
+// object and moves its cursor, and two consoles disagreeing about where the
+// cursor is would interleave into nonsense.
+static console_t* active_console;
+
+void console_set_active(console_t* console) {
+    active_console = console;
+}
+
+console_t* console_get_active(void) {
+    return active_console;
+}
+
 // Return 0 on success, -1 on error
 int console_init(console_t* console, const struct multiboot_tag_framebuffer* fb) {
     if (!console || !console_is_fb_supported(fb)) {

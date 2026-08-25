@@ -1028,6 +1028,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("[CONSOLE] console init failed\r\n");
     } else {
         printk("[CONSOLE] console initialized\r\n");
+        // From here on userland's fd 1 and fd 2 reach the screen, not just the
+        // serial port. `con` is file-scope, so the pointer stays valid after
+        // kmain's frame is gone.
+        console_set_active(&con);
         console_set_prompt(&con, "SSH> ");
         console_puts(&con, "-={ Welcome to the SecureOS! }=-\n\n\n");
         shell_init(&shell_ctx, &mount, &con);
