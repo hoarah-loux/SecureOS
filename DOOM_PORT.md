@@ -3,9 +3,9 @@
 Living roadmap for the doom port. Supersedes the "Doom-generic port blockers"
 section of `TODO.md`.
 
-**Status: milestone 1 reached.** The first C program runs in ring3, linked
-against a real libc. Everything from here is framebuffer, keyboard, and doom
-itself.
+**Status: milestone 4 reached.** A C program runs in ring3 against a real
+libc and puts pixels on the screen at 320x200, scaled and centred, faster than
+doom needs. What is left is the keyboard and doom itself.
 
 ---
 
@@ -13,11 +13,11 @@ itself.
 
 ```
 Phase 0  toolchain & vendoring     newlib DONE   doomgeneric TODO   WAD TODO
-Phase 1  kernel blockers           7 of 9 DONE
+Phase 1  kernel blockers           8 of 9 DONE
 Phase 2  userland build path       DONE
 Phase 3  newlib retargeting        DONE (fstat/fd-3 hardening outstanding)
 Phase 4  doomgeneric backend       TODO
-Phase 5  milestones                0, 1 and 2 covered; 3-6 TODO
+Phase 5  milestones                0, 1, 2 and 4 covered; 3, 5, 6 TODO
 ```
 
 ### What runs today
@@ -34,6 +34,8 @@ Every one of these is on the FAT32 image and launched from the shell with
 | `RING3F.EXE` + `RING3G.EXE` | SSE executes, and xmm0-7 survive preemption |
 | `RING3T.EXE` | `SYS_brk` grow/zero/bounds, `SYS_gettime`, `SYS_sleep` |
 | `HELLO.EXE` | **newlib**: printf, varargs `%f`, malloc, `.bss`, strdup, exit |
+| `GREET.EXE` | the worked example in `src/userland/README.md` still builds |
+| `FBTEST.EXE` | **`SYS_fb_present`**: scaling, centring, letterbox, rejection of bad buffers, throughput |
 
 `HELLO.EXE`'s actual output:
 
@@ -50,6 +52,18 @@ Every one of these is on the FAT32 image and launched from the shell with
 Step 3 prints `3.142` only because SSE is enabled and saved across context
 switches; step 5 reads zero only because of the `p_filesz` clamp; step 4 is
 malloc on a real `SYS_brk`. Each step is load-bearing.
+
+`FBTEST.EXE`'s, on an 800x600 screen:
+
+```
+[FBTEST] step 1: buffer 320x200 at 0x40000010
+[FBTEST] step 2: first frame presented
+[FBTEST] step 3: second frame presented
+[FBTEST] step 4: kernel address rejected
+[FBTEST] step 5: unmapped extent rejected
+[FBTEST] step 6: zero width rejected
+[FBTEST] step 7: 60 frames in 600 ms = 100 fps
+```
 
 ---
 
@@ -118,27 +132,50 @@ must be re-entrant. `SYS_sleep` carries `thread::wake_tick` to tell a
 continuation from a fresh request; without it a sleeper resets its own clock
 every wake and never returns.
 
+**§1.7 `SYS_fb_present`.** Userland hands the kernel a buffer of 32-bit
+pixels and the kernel draws it. The copy is not avoidable yet: the framebuffer
+is mapped into the physmap without `PTE_US` and `sys_mmap` has no device-backed
+path, so there is no way to give a process the real pixels.
+
+The framebuffer tag moved out of `kernel.c` — where it was a `static` the
+syscall layer could not see — into `src/kernel/core/framebuffer.c` behind
+`fb_set_runtime()` / `fb_get_runtime()`. `console_init()` takes a `const`
+pointer now, since it never wrote to the tag anyway.
+
+`fb_blit_scaled(fb, src, w, h)` picks the largest integer scale that fits,
+`s = min(fb_w/w, fb_h/h)`, centres the result and leaves black bars. Resolution
+is not pinned — `grub.cfg` uses `gfxmode=auto`, and QEMU's OVMF path comes up
+at 800x600, which is 2x rather than the 3x a 1024x768 screen would give.
+
+Three things in the blit are there for speed, and all three matter because the
+kernel builds at `-O0`, where nothing written is optimised away:
+
+- `fb_putpixel()` is not used. It re-validates coordinates and re-runs a
+  bits-per-pixel switch per pixel.
+- Copies move `uint32_t`, not bytes. `hdr/string.h`'s `memcpy` is a byte loop.
+- Each group of `s` output rows is identical, so only the first is built pixel
+  by pixel and the rest are copied from it. That is what keeps the per-pixel
+  cost proportional to `w*h*s` instead of `w*h*s*s`.
+
+A generic `fb_putpixel` path is kept for 16 and 24 bpp. The letterbox is
+cleared only when the destination geometry changes, not every frame.
+
+`sys_fb_present(buf, w, h)` bounds `w` and `h` first (so `w*h*4` cannot
+overflow), then checks the whole extent against the calling process's
+`vm_space::user_limit`, then confirms both the first and last byte land in one
+of its `vm_region`s. The last check is not paranoia: an address below
+`user_limit` but in no region faults in kernel mode, and a `#PF` the handler
+cannot resolve is `pf_panic`, which kills the machine rather than the process.
+A buffer straddling two regions with a hole between them is not caught — that
+is a deliberate trade against a page-by-page walk on the hot path.
+
+Measured at 100 fps for 320x200 at 2x on the QEMU target. At 3x the same work
+is roughly 2.25x larger, which still clears doom's 35 Hz.
+
 **§1.9 User stack.** 64 KB → 1 MB (`USER_STACK_SIZE`). GROWDOWN and
 demand-paged, so this is a recursion-depth ceiling rather than an allocation.
 
 ### Remaining
-
-**§1.7 `SYS_fb_present`** — still `sys_stub`. The framebuffer is
-supervisor-only in the physmap and `sys_mmap` has no device-backed path, so
-pixels are copied through the kernel.
-
-- Move `fb_runtime` ownership out of `kernel.c` (where it is `static` and
-  unreachable from the syscall layer) into `src/kernel/core/framebuffer.c`
-  behind `fb_set_runtime()`/`fb_get_runtime()`.
-- Add `fb_blit_scaled(fb, src, w, h)`: integer scale
-  `s = max(1, min(fb_w/w, fb_h/h))`, centred, letterboxed. Resolution is not
-  pinned — `grub.cfg` uses `gfxmode=auto`.
-- `sys_fb_present(buf, w, h)` bounds-checks `buf` and `w*h*4` against
-  `USER_SPACE_LIMIT_`, then blits.
-- **Performance matters.** `fb_putpixel` is per-pixel with a bpp switch and
-  the kernel builds at `-O0`; 320x200 at 3x is 576,000 pixels a frame. Write a
-  specialised 32bpp path that builds one scaled row and `memcpy`s it `s` times
-  down the framebuffer. Keep the generic path for 16/24bpp.
 
 **§1.8 Keyboard raw scancodes** — `keyboard_handle_scancode()` drops every
 release (`if (scancode & 0x80) return 0;`) and has no `0xE0` handling, so
@@ -235,7 +272,7 @@ doomgeneric_Create(3, argv);
 | 1 | `HELLO.EXE` | newlib, crt0, `_write`, SSE, ELF > 4 KB | **done** |
 | 2 | `RING3T.EXE` | `SYS_brk`, demand-paged anon | **done** (assembly; a `MALLOC.EXE` doing 16 MB through malloc would be a stronger check) |
 | 3 | `CAT.EXE` | FAT32 read of a multi-MB file through newlib stdio | todo |
-| 4 | `FBTEST.EXE` | `SYS_fb_present`, scaling, blit throughput | todo |
+| 4 | `FBTEST.EXE` | `SYS_fb_present`, scaling, blit throughput | **done** (100 fps at 320x200 2x) |
 | 5 | `KEYTEST.EXE` | press *and* release, arrows, `0xE0`, shell not stealing input | todo |
 | 6 | `DOOM.EXE` | everything | todo |
 
@@ -279,6 +316,22 @@ triple faults findable — the last `check_exception` chain plus the register
 dump gives RIP, RSP, CR2 and CR3. Resolve a faulting RIP with
 `nm -n src/boot/build/secureos.elf` and subtract `0xFFFFFFFF80000000`.
 
+### Checking what is on the screen
+
+Serial says nothing about pixels. QEMU's monitor will dump the framebuffer to a
+PPM, which is a format simple enough to check from a few lines of Python — so a
+graphics test can assert exact colours at exact coordinates rather than being
+eyeballed. Add `-monitor unix:/tmp/mon.sock,server,nowait` to the run above,
+wait for the program to print that it is holding a frame, then:
+
+```sh
+printf 'screendump /tmp/shot.ppm\nquit\n' | socat - unix-connect:/tmp/mon.sock
+```
+
+`FBTEST.EXE` is built for this: flat colours with hard edges at known
+coordinates, and a deliberate pause at the end, because the shell writes to the
+console — the same framebuffer — the moment the process exits.
+
 Program output goes to **serial**, not the console: `sys_write` sends fd 1 to
 `serial_write_char`. Load failures are printed to serial too, which matters —
 the framebuffer console is invisible headlessly, and a failed load otherwise
@@ -289,8 +342,9 @@ looks exactly like a program that started and printed nothing.
 ## Known risks
 
 - **`-O0` kernel plus polled single-sector PIO IDE** means WAD loading will be
-  slow. Playable framerate depends mostly on §1.7's blit path being written
-  carefully. Milestone 4 measures this before anything is committed to it.
+  slow. The blit itself is no longer the worry — milestone 4 measured 100 fps
+  at 2x — so if doom runs slowly, look at the WAD read path and at doom's own
+  rendering, not at `fb_blit_scaled`.
 - **Protection faults panic the whole kernel** (`pf_panic`). Doom *will* fault
   during bring-up and every fault costs a reboot. Out of scope, but if the
   reboot cycle becomes the bottleneck, promoting protection faults to a

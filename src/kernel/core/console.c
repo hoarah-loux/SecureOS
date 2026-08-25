@@ -39,12 +39,12 @@ static void console_put_visible_char(console_t *console, char c) {
     fb_draw_string(console->framebuffer, x, y, text, console->fg_color);
 }
 
-int console_is_fb_supported(struct multiboot_tag_framebuffer* fb) {
+int console_is_fb_supported(const struct multiboot_tag_framebuffer* fb) {
     return fb_is_supported(fb);
 }
 
 // Return 0 on success, -1 on error
-int console_init(console_t* console, struct multiboot_tag_framebuffer* fb) {
+int console_init(console_t* console, const struct multiboot_tag_framebuffer* fb) {
     if (!console || !console_is_fb_supported(fb)) {
         return -1; // Return -1 on error
     }

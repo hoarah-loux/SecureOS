@@ -124,9 +124,32 @@ with `nm -n src/boot/build/secureos.elf` and subtract `0xFFFFFFFF80000000`.
 
 Working: `printf`/`snprintf` and the rest of stdio, `malloc`/`free`/`realloc`,
 the string and memory functions, `strdup`, math from `libm`, `open`/`read`/
-`write`/`close`/`lseek` on FAT32 files, `gettimeofday`, `sleep` via
-`usleep`-style syscalls, floating point including varargs `%f`, static
-constructors, and `exit` running the atexit chain so stdio flushes.
+`write`/`close`/`lseek` on FAT32 files, `gettimeofday`, floating point
+including varargs `%f`, static constructors, and `exit` running the atexit
+chain so stdio flushes.
+
+Graphics, through one function in `libc_glue/secureos_fb.h`:
+
+```c
+#include "secureos_fb.h"
+
+uint32_t *px = malloc(320 * 200 * 4);   /* 0x00RRGGBB, packed, row-major */
+/* ... fill px ... */
+secureos_fb_present(px, 320, 200);
+```
+
+The kernel scales the buffer up by the largest integer factor that fits the
+screen, centres it and puts black bars around the rest. There is nothing to
+open or map first, and the buffer is not retained after the call returns. See
+`apps/fbtest/` for a worked example.
+
+Sleeping has no newlib glue yet — `sleep()` and `usleep()` will not link. The
+syscall exists; call it directly:
+
+```c
+#include "secureos_syscall.h"
+__sys1(SYS_sleep, 500);   /* milliseconds */
+```
 
 Not working, and failing honestly rather than silently: `fork`, `execve`,
 `wait`, signals, `unlink`, `link`. These return -1 with a plausible `errno`.
@@ -157,6 +180,7 @@ Also worth knowing:
 | `user.ld` | linker script: two `PT_LOAD`s, base `0x2000000`, `ENTRY(_start)` |
 | `libc_glue/syscalls.c` | newlib's `_read`/`_write`/`_sbrk`/… on this kernel's `int 0x80` ABI |
 | `libc_glue/secureos_syscall.h` | the raw `int 0x80` inline asm |
+| `libc_glue/secureos_fb.h` | `secureos_fb_present()`, the whole graphics API |
 | `newlib/` | vendored `libc.a`, `libm.a`, headers — see its [README](newlib/README.md) |
 | `../../hdr/syscall_abi.h` | syscall numbers and calling convention, shared with the kernel |
 
