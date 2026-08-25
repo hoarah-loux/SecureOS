@@ -1,4 +1,5 @@
 #include <fs_syscalls.h>
+#include <console.h>
 #include <fat32_fs.h>
 #include <keyboard.h>
 #include <serial.h>
@@ -176,8 +177,29 @@ int64_t sys_write(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, ui
     }
 
     if (fd == PROC_FD_STDOUT || fd == PROC_FD_STDERR) {
+        // Both destinations, deliberately.
+        //
+        // The console is what a person sitting at the machine sees, and until
+        // now userland could not reach it at all - a program's output existed
+        // only on the wire. The serial port stays because it is the only
+        // output a headless run can read: every bring-up test, and the whole
+        // SHELL_AUTORUN mechanism, works by grepping serial.log. Moving output
+        // to the console instead of duplicating it would silently blind all of
+        // them.
+        //
+        // console_get_active() is NULL on a machine with no usable
+        // framebuffer, which is not an error - serial alone is a working
+        // configuration.
+        console_t *con = console_get_active();
+
         for (uint64_t i = 0; i < count; i++) {
-            serial_write_char((char)buf[i]);
+            char c = (char)buf[i];
+
+            serial_write_char(c);
+
+            if (con != NULL) {
+                (void)console_putc(con, c);
+            }
         }
         return (int64_t)count;
     }
