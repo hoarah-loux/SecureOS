@@ -1,0 +1,175 @@
+# Writing a C program for SecureOS
+
+Userland programs are ordinary C, compiled with the host `gcc`, linked against
+the vendored newlib in [`newlib/`](newlib/), and run from the shell with
+`./NAME`. This is the whole workflow.
+
+## 1. Write it
+
+Make a directory under `src/userland/` and write plain C. `printf`, `malloc`,
+`strdup`, `fopen`, `sqrt` all work.
+
+```sh
+mkdir -p src/userland/greet
+```
+
+```c
+/* src/userland/greet/greet.c */
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv, char **envp)
+{
+    (void)argc; (void)argv; (void)envp;
+
+    char *buf = malloc(1024);
+    if (!buf) { printf("[GREET] malloc failed\n"); return 1; }
+
+    snprintf(buf, 1024, "hello from ring3, pid-ish thing");
+    printf("[GREET] %s\n", buf);
+
+    free(buf);
+    return 0;
+}
+```
+
+Output goes to the **serial port**, not the framebuffer console: `sys_write`
+sends fd 1 to `serial_write_char`. Watch `serial.log`.
+
+## 2. Add three lines to the Makefile
+
+In `src/boot/Makefile`, next to the `HELLO_ELF` rule:
+
+```make
+GREET_ELF = $(USER_BUILD_DIR)/greet.elf
+
+$(GREET_ELF): $(USER_SRC_DIR)/greet/greet.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
+	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/greet.o
+	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/greet.o \
+	$(USER_LIBS) -o $@
+```
+
+Add it to the `userland` target, and stage it onto the disk image — the
+`$(FAT32_IMAGE)` rule, where the other binaries are copied:
+
+```make
+userland: $(HELLO_ELF) $(GREET_ELF)
+```
+
+```make
+$(FAT32_IMAGE): ... $(GREET_ELF)
+	...
+	cp $(GREET_ELF) $(FAT32_ROOT)/GREET.exe
+	...
+	$(MCOPY) -i $@ $(FAT32_ROOT)/GREET.exe ::GREET.EXE
+```
+
+Names are FAT 8.3, so `GREET.EXE`, not `greet-program.elf`.
+
+## 3. Build and run it
+
+```sh
+cd src/boot
+
+# Build the kernel, with the shell set to run your program at startup.
+touch ../kernel/core/kernel.c          # make does not track CFLAGS changes
+make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./GREET.EXE\""'
+
+# Build the disk image. The absolute path is required - see below.
+make "$PWD/build/secureos.fat32.img"
+
+# Boot headless; program output lands in serial.log.
+qemu-system-x86_64 -machine pc \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=build/OVMF_VARS_4M.fd \
+  -boot order=d -cdrom ../../secureos-uefi.iso \
+  -drive file=build/secureos.fat32.img,format=raw,if=ide,index=0,media=disk \
+  -serial file:serial.log -display none -m 2048 -no-reboot
+
+tail -20 serial.log
+```
+
+Drop `SHELL_AUTORUN` and `-display none` to boot to the shell and type
+`./GREET.EXE` yourself. `SHELL_AUTORUN` accepts several commands separated by
+`;`, which is how two programs are started at once:
+
+```sh
+make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./RING3F.EXE;./RING3G.EXE\""'
+```
+
+## Four things that will waste your time
+
+**make does not track `CFLAGS`.** Changing only `SHELL_AUTORUN` rebuilds
+nothing and you boot the previous kernel. `touch src/kernel/core/kernel.c`
+first. This looks exactly like your program not running.
+
+**The FAT32 image needs its absolute path.** `$(FAT32_IMAGE)` expands under an
+absolute `BUILD_DIR`, so `make build/secureos.fat32.img` matches no rule. It
+is also not a prerequisite of `all`, so a plain `make` leaves a stale image
+with your old binary on it.
+
+**`build/OVMF_VARS_4M.fd` must exist and be writable.** Copy it once:
+
+```sh
+cp /usr/share/OVMF/OVMF_VARS_4M.fd src/boot/build/OVMF_VARS_4M.fd
+chmod u+w src/boot/build/OVMF_VARS_4M.fd
+```
+
+**Print your way through.** There is no debugger on the guest. A program that
+prints a marker before each stage localises a hang or a fault to a stage; one
+that prints only at the end tells you nothing. Add `-d int,cpu_reset -D
+qemu.log` and a fault gives you RIP, RSP, CR2 and CR3 — resolve a kernel RIP
+with `nm -n src/boot/build/secureos.elf` and subtract `0xFFFFFFFF80000000`.
+
+## What you get
+
+Working: `printf`/`snprintf` and the rest of stdio, `malloc`/`free`/`realloc`,
+the string and memory functions, `strdup`, math from `libm`, `open`/`read`/
+`write`/`close`/`lseek` on FAT32 files, `gettimeofday`, `sleep` via
+`usleep`-style syscalls, floating point including varargs `%f`, static
+constructors, and `exit` running the atexit chain so stdio flushes.
+
+Not working, and failing honestly rather than silently: `fork`, `execve`,
+`wait`, signals, `unlink`, `link`. These return -1 with a plausible `errno`.
+
+Also worth knowing:
+
+- **No argv from the kernel.** `create_thread` puts nothing on the user stack
+  — no argc, argv, envp or auxv. `crt0.S` synthesises `argc=1`,
+  `argv[0]="prog"` and an empty environment. A program needing real arguments
+  has to fabricate them itself, which is what the doom backend does.
+- **fds are 3..15**, sixteen slots. **Slot 3 is the executable itself** and
+  must never be closed — the process's own text is demand-paged through it for
+  its entire life.
+- **The heap is 64 MiB per process**, an anonymous demand-paged reservation at
+  `0x40000000`. Untouched pages cost nothing.
+- **The stack is 1 MiB**, GROWDOWN and demand-paged. Deep recursion runs off
+  the bottom into unmapped space and surfaces as a page fault nowhere near the
+  code that caused it.
+- **`errno` is approximate.** The kernel returns a flat -1 with no error code,
+  so the values the glue layer sets are plausible, not accurate.
+
+## How the pieces fit
+
+| Path | What it is |
+|---|---|
+| `crt0.S` | entry point: aligns the stack, zeroes `.bss`, runs constructors, calls `main`, then `exit` |
+| `user.ld` | linker script: two `PT_LOAD`s, base `0x2000000`, `ENTRY(_start)` |
+| `libc_glue/syscalls.c` | newlib's `_read`/`_write`/`_sbrk`/… on this kernel's `int 0x80` ABI |
+| `libc_glue/secureos_syscall.h` | the raw `int 0x80` inline asm |
+| `newlib/` | vendored `libc.a`, `libm.a`, headers — see its [README](newlib/README.md) |
+| `../../hdr/syscall_abi.h` | syscall numbers and calling convention, shared with the kernel |
+
+Two constraints the linker script exists to satisfy, if you ever write your
+own: each segment's file offset must be congruent to its virtual address mod
+4096 (the loader rejects anything else, because demand paging computes a
+page's file offset from its address), and the base must sit above the kernel's
+low identity alias at roughly `0x1c00000`. `-z max-page-size=0x1000` is
+required — ld defaults to 2 MiB segment alignment on x86-64 and would break
+the congruence.
+
+Always name `ENTRY(_start)` explicitly. Without it ld picks the start of
+`.text`, which is `_start` only by accident of source order and stops being
+`_start` the moment you define a helper above it. The binary then runs from
+the wrong symbol with a zeroed register file and dies somewhere that looks
+unrelated to the cause.
