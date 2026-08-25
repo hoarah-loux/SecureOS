@@ -330,6 +330,23 @@ FAT32_IMAGE_BYTES = 67108864
 # Image label used by mkfs.fat.
 FAT32_VOLUME_LABEL = SECUREOS
 
+# ---------------- DOOM1.WAD ----------------
+#
+# doom needs its data file, and the data file is not ours to ship: the
+# shareware WAD is freely redistributable but it is 4 MB of someone else's
+# copyrighted content, so assets/ is gitignored and the WAD is fetched on
+# demand instead of committed.
+#
+# The checksum is not decoration. There are several files called doom1.wad in
+# circulation - shareware 1.0 through 1.9, and a few repacked ones - and doom
+# rejects or misbehaves on the wrong version in ways that look like a bug in
+# the port. This is v1.9, 4196020 bytes, which is what the port was brought up
+# against.
+ASSETS_DIR = $(PROJECT_ROOT)/assets
+DOOM_WAD = $(ASSETS_DIR)/DOOM1.WAD
+DOOM_WAD_URL = https://github.com/Akbar30Bill/DOOM_wads/raw/master/doom1.wad
+DOOM_WAD_SHA256 = 1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+
 # Tool used to format the raw image.
 MKFS_FAT = mkfs.fat
 
@@ -375,7 +392,7 @@ $(BUILD_DIR)/arch/x86_64/%.o: $(SRC_DIR)/arch/x86_64/%.asm | $(BUILD_DIR)
 # -MMD writes a .d file beside each .o listing every header the translation
 # unit included; -MP adds a phony target for each of those headers so deleting
 # one is a rebuild rather than a "No rule to make target" error. The generated
-# files are pulled back in at the bottom of this file.
+# files are pulled back in at the bottom of this section.
 #
 # Without this, editing a header rebuilds nothing. That is not a slow build,
 # it is a wrong one: change a field in a struct that lives in a header - proc,
@@ -691,6 +708,19 @@ $(USER_BUILD_DIR)/syscalls.o: $(USER_SRC_DIR)/libc_glue/syscalls.c | $(USER_BUIL
 # overwriting each other.
 USER_APPS_DIR = $(USER_SRC_DIR)/apps
 
+# Per-app extra compiler flags, appended to USER_CFLAGS by the rules below.
+# An app named foo picks up $(foo_CFLAGS); apps that define nothing get the
+# defaults, which is every app but doom.
+#
+# doom is vendored third-party code (src/userland/apps/doom/, upstream
+# doomgeneric at dcb7a8d) and is deliberately kept diffable against upstream,
+# so it is not going to be made -Wall -Wextra clean: -w silences roughly two
+# thousand warnings that nobody here is going to act on. The resolution
+# defines are how doomgeneric is told the size of the framebuffer it renders
+# into, and 320x200 is doom's native mode - the kernel scales it up on
+# presentation, so rendering larger would cost work and gain nothing.
+doom_CFLAGS = -w -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 -DNORMALUNIX
+
 # $(wildcard .../*/) yields directories with a trailing slash; strip it, then
 # take the last component as the app name. := so the directory scan happens once.
 USER_APP_DIRS  := $(patsubst %/,%,$(wildcard $(USER_APPS_DIR)/*/))
@@ -721,7 +751,7 @@ $(1)_OBJS := $$(patsubst $$(USER_APPS_DIR)/$(1)/%.c,$$(USER_BUILD_DIR)/apps/$(1)
 
 $$(USER_BUILD_DIR)/apps/$(1)/%.o: $$(USER_APPS_DIR)/$(1)/%.c | $$(USER_BUILD_DIR)
 	@mkdir -p $$(dir $$@)
-	$$(USER_CC) $$(USER_CFLAGS) $$(DEPFLAGS) -c $$< -o $$@
+	$$(USER_CC) $$(USER_CFLAGS) $$($(1)_CFLAGS) $$(DEPFLAGS) -c $$< -o $$@
 
 $$(USER_BUILD_DIR)/apps/$(1).elf: $$($(1)_OBJS) $$(USER_CRT_OBJS) $$(USER_LINKER)
 	@mkdir -p $$(dir $$@)
@@ -737,10 +767,36 @@ userland: $(USER_APP_ELFS)
 
 # ---------------- FAT32 image build ----------------
 
+# Fetch the shareware WAD, verify it, and only then put it where the image
+# build looks for it. Downloading to a .part file and renaming afterwards is
+# what keeps a truncated or redirected download - an HTML error page saved
+# under the WAD's name is the usual failure - from being cached as a finished
+# artifact that make then considers up to date forever.
+$(DOOM_WAD):
+	@mkdir -p $(ASSETS_DIR)
+	@echo "==> Fetching shareware DOOM1.WAD (4 MB, not redistributed in this repo)..."
+	@curl -fsSL -o $@.part $(DOOM_WAD_URL) || { \
+		rm -f $@.part; \
+		echo "ERROR: could not download DOOM1.WAD from $(DOOM_WAD_URL)."; \
+		echo "       Put a shareware DOOM1.WAD (v1.9, 4196020 bytes,"; \
+		echo "       sha256 $(DOOM_WAD_SHA256))"; \
+		echo "       at $(DOOM_WAD) by hand and run make again."; \
+		exit 1; }
+	@echo "$(DOOM_WAD_SHA256)  $@.part" | sha256sum -c - >/dev/null || { \
+		rm -f $@.part; \
+		echo "ERROR: DOOM1.WAD downloaded but the checksum does not match."; \
+		echo "       Expected sha256 $(DOOM_WAD_SHA256) (v1.9 shareware)."; \
+		exit 1; }
+	@mv $@.part $@
+	@echo "==> DOOM1.WAD ready: $@"
+
+.PHONY: doom-wad
+doom-wad: $(DOOM_WAD)
+
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
 		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF) \
-		$(RING3_TIME_TEST_ELF) $(USER_APP_ELFS)
+		$(RING3_TIME_TEST_ELF) $(USER_APP_ELFS) $(DOOM_WAD)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -779,6 +835,7 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 		echo "$(MCOPY) -i $@ $(FAT32_ROOT)/$$n.exe ::$$n.EXE"; \
 		$(MCOPY) -i $@ $(FAT32_ROOT)/$$n.exe ::$$n.EXE; \
 	done
+	$(MCOPY) -i $@ $(DOOM_WAD) ::DOOM1.WAD
 	@echo "==> FAT32 image created: $@"
 
 # Pull in the generated header dependencies. The wildcard is evaluated when

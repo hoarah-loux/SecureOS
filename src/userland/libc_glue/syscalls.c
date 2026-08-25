@@ -281,6 +281,18 @@ int nanosleep(const struct timespec *rqtp, struct timespec *rmtp)
 
 // No filesystem unlink/link syscalls, and no fork/exec/wait at all.
 
+// The FAT32 layer can create files but not directories, and nothing in the
+// kernel exposes either as a syscall, so this fails honestly. doom calls it
+// through M_MakeDirectory() when it wants somewhere to put savegames and a
+// config file; it copes with the failure by writing to the current directory,
+// which is the FAT32 root and is where everything lives here anyway.
+int _mkdir(const char *path, mode_t mode)
+{
+    (void)path; (void)mode;
+    errno = ENOSYS;
+    return -1;
+}
+
 int _unlink(const char *name)  { (void)name; errno = ENOSYS; return -1; }
 int _link(const char *a, const char *b) { (void)a; (void)b; errno = EMLINK; return -1; }
 int _fork(void)                { errno = ENOSYS; return -1; }
@@ -319,6 +331,17 @@ int     getpid(void)                                __attribute__((alias("_getpi
 int     kill(int pid, int sig)                      __attribute__((alias("_kill")));
 int     unlink(const char *name)                    __attribute__((alias("_unlink")));
 int     link(const char *a, const char *b)          __attribute__((alias("_link")));
+int     mkdir(const char *path, mode_t mode)        __attribute__((alias("_mkdir")));
+
+// newlib's system() and its reentrant exec wrappers reference these three
+// unprefixed, and pull each other in: linking anything that calls system()
+// drags in fork() and wait() as well, even though all three fail here. They
+// are aliases of the failing implementations above rather than new stubs so
+// there is one behaviour, not two.
+int     fork(void)                                  __attribute__((alias("_fork")));
+int     wait(int *status)                           __attribute__((alias("_wait")));
+int     execve(const char *name, char * const *argv, char * const *env)
+                                                    __attribute__((alias("_execve")));
 void   *sbrk(ptrdiff_t incr)                        __attribute__((alias("_sbrk")));
 int     gettimeofday(struct timeval *tv, void *tz)  __attribute__((alias("_gettimeofday")));
 clock_t times(struct tms *buf)                      __attribute__((alias("_times")));
