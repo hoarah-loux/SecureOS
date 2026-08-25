@@ -54,6 +54,13 @@ int fat32_mount(fat32_mount_t *mount, block_device_t *device, uint32_t partition
 
     mount->partition_start_sector = partition_start_sector;
     mount->device = device;
+
+    // Before anything can read a FAT entry through it. The mount may be a
+    // stack or .bss object the caller never zeroed, in which case a stale
+    // fat_cache_valid would hand out whatever the buffer happens to contain as
+    // a FAT sector.
+    mount->fat_cache_valid = 0;
+    mount->fat_cache_sector = 0;
     mount->boot_sector = *(const fat32_boot_sector_t *)(const void *)boot_buffer;
 
     if (mount->boot_sector.boot_sector_sig != 0xAA55) {

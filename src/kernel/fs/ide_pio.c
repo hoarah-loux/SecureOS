@@ -209,22 +209,46 @@ static int ide_pio_read(void *context, uint64_t sector, uint32_t count, uint8_t 
         }
     }
 
-    for (uint32_t i = 0; i < count; i++) {
-        uint64_t lba = sector + i;
+    // One READ SECTORS command per run of up to 256 sectors, rather than one
+    // command per sector.
+    //
+    // The command itself is six port writes and a status poll that has to see
+    // BSY drop, and that overhead was being paid 128 times to read 64 KB. The
+    // drive raises DRQ once per sector inside a multi-sector transfer, so the
+    // per-sector work that remains is the DRQ wait and the transfer, which is
+    // the part that is actually moving data.
+    //
+    // 256 is the architectural maximum: the sector count register is eight
+    // bits and zero means 256.
+    uint32_t transferred = 0;
+
+    while (transferred < count) {
+        uint32_t chunk = count - transferred;
+        if (chunk > 256u) {
+            chunk = 256u;
+        }
+
+        uint64_t lba = sector + transferred;
 
         outb((uint16_t)(backend->io_base + 6), (uint8_t)(backend->device_select | (uint8_t)((lba >> 24) & 0x0Fu)));
-        outb((uint16_t)(backend->io_base + 2), 1);
+        outb((uint16_t)(backend->io_base + 2), (uint8_t)(chunk & 0xFFu));
         outb((uint16_t)(backend->io_base + 3), (uint8_t)(lba & 0xFFu));
         outb((uint16_t)(backend->io_base + 4), (uint8_t)((lba >> 8) & 0xFFu));
         outb((uint16_t)(backend->io_base + 5), (uint8_t)((lba >> 16) & 0xFFu));
         outb((uint16_t)(backend->io_base + 7), IDE_CMD_READ_SECTORS);
 
-        if (ide_wait_for_drq(backend) != 0) {
-            return -1;
+        for (uint32_t i = 0; i < chunk; i++) {
+            if (ide_wait_for_drq(backend) != 0) {
+                return -1;
+            }
+
+            insw(backend->io_base,
+                 buffer + ((uint64_t)(transferred + i) * IDE_SECTOR_SIZE),
+                 IDE_SECTOR_SIZE / 2u);
+            ide_io_wait(backend->control_base);
         }
 
-        insw(backend->io_base, buffer + ((uint64_t)i * IDE_SECTOR_SIZE), IDE_SECTOR_SIZE / 2u);
-        ide_io_wait(backend->control_base);
+        transferred += chunk;
     }
 
     return 0;
