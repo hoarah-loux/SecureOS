@@ -207,6 +207,25 @@ typedef struct vm_region{
     vm_object* object; //anon, file, hardware etc..
     uint32_t map_flags;//shared, private, fixed, grow down
     size_t object_base_offset;
+
+    // How many bytes starting at object_base_offset actually come from the
+    // backing file. Meaningful only for FILE regions.
+    //
+    // A mapping is page-granular but a file's contribution to it is not. An
+    // ELF PT_LOAD with p_memsz > p_filesz is the normal case: the bytes past
+    // p_filesz are .bss and must read as zero, but they sit inside the same
+    // region and usually inside the same page as real file content. Without
+    // this, the fault handler reads a full page from the file and .bss comes
+    // back as whatever bytes follow the segment on disk.
+    //
+    // populate_fault_frame() reads min(4096, file_valid_len - page_delta) and
+    // zero-fills the rest of the page; a page starting at or past this reads
+    // as entirely zero and touches the file not at all.
+    //
+    // mmap() defaults it to the mapping length, i.e. "all of it is file", so
+    // a caller that does not care gets the old behaviour. The ELF loader
+    // narrows it to p_filesz.
+    size_t file_valid_len;
     uint64_t type; //stack. heap, whatever
     struct vm_region *next;
     struct vm_region *prev;

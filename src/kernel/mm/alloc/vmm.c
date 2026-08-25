@@ -3010,6 +3010,17 @@ void *mmap(thread *t, void *addr, size_t len, uint64_t perms,
                     return NULL;
                 }
 
+                // Default to "the whole mapping is file content", which is
+                // what every caller but the ELF loader wants. The loader
+                // narrows this to p_filesz so the .bss tail of a segment
+                // zero-fills instead of reading the bytes that follow it on
+                // disk - see vm_region::file_valid_len.
+                //
+                // reserve_region() rounds the size up to a page, so this uses
+                // the caller's unrounded len: the bytes between len and the
+                // end of the last page are not file content either.
+                reserve_md.region_ptr->file_valid_len = len;
+
                 return (void*)reserve_md.region_ptr->va_start;
 }
 

@@ -56,8 +56,33 @@ static uint64_t populate_fault_frame(vm_region *region, uintptr_t alligned_va, u
             return 0;
         }
 
-        if (fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf, 4096) < 0) {
+        // Only file_valid_len bytes of this region come from the file; the
+        // rest is .bss and must read as zero. Reading a full page regardless
+        // is what used to hand a process the bytes that happen to follow its
+        // segment on disk - typically the symbol table, whose first entry is
+        // all zeroes, which is exactly enough to make a one-qword test pass
+        // and a real program fail later.
+        //
+        // Three cases, in order: the page is entirely past the file content
+        // and is pure zero fill; the page straddles the boundary and is part
+        // read, part zeroed; the page is entirely file content.
+        uint64_t valid = 0;
+        if (page_delta < (uint64_t)region->file_valid_len) {
+            valid = (uint64_t)region->file_valid_len - page_delta;
+            if (valid > 4096) { valid = 4096; }
+        }
+
+        if (valid > 0 &&
+            fs_mmap_read(region->object->backing_ctx, file_offset, frame_buf,
+                         valid) < 0) {
             return 0;
+        }
+
+        // Zeroing the tail is not optional even on a fully-file-backed page:
+        // the frame comes from the physical allocator carrying whatever the
+        // last owner left in it, so a short read would otherwise leak it.
+        for (uint64_t i = valid; i < 4096; i++) {
+            frame_buf[i] = 0;
         }
 
         return 1;
