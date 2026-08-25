@@ -1,6 +1,6 @@
-/* src/userland/greet/greet.c
+/* src/userland/apps/greet/greet.c
  *
- * The worked example from ../README.md, kept in the tree so the workflow that
+ * The worked example from ../../README.md, kept in the tree so the workflow that
  * document describes is one that demonstrably builds and runs rather than one
  * that merely looks right. If the instructions there stop working, this stops
  * building.

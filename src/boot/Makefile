@@ -414,7 +414,7 @@ clean:
 
 # Run the built ISO in QEMU (default firmware).
 # - This is convenient, but for UEFI you typically want the run-uefi targets.
-run: $(ISO_FILE) $(FAT32_IMAGE)
+run: userland $(ISO_FILE) $(FAT32_IMAGE)
 	qemu-system-x86_64 -cdrom $(ISO_FILE) $(FAT32_DRIVE) -m 2048
 
 # ---------------- QEMU UEFI (OVMF) run targets ----------------
@@ -442,7 +442,7 @@ $(OVMF_VARS_COPY): | $(BUILD_DIR)
 #   - First pflash drive is the read-only firmware code.
 #   - Second pflash drive is the writable variables store.
 # - `-cdrom` attaches the ISO as a virtual CD/DVD drive.
-run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
+run-uefi: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	qemu-system-x86_64 \
 		-machine pc \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -455,7 +455,7 @@ run-uefi: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 # Run the UEFI boot with serial redirected to the host terminal.
 # - `-serial stdio` routes the guest COM1 serial port to QEMU standard I/O.
 # - This is the most reliable early debug channel under UEFI.
-run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
+run-uefi-serial: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	qemu-system-x86_64 \
 		-machine pc \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -468,7 +468,7 @@ run-uefi-serial: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-m 2048
 
 # Force debug-friendly compile flags for this target and its prerequisites.
-run-debug: $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
+run-debug: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 	cp $(OVMF_VARS) $(OVMF_VARS_COPY)
 	qemu-system-x86_64 \
 		-machine pc \
@@ -645,35 +645,78 @@ $(USER_BUILD_DIR)/crt0.o: $(USER_SRC_DIR)/crt0.S | $(USER_BUILD_DIR)
 $(USER_BUILD_DIR)/syscalls.o: $(USER_SRC_DIR)/libc_glue/syscalls.c | $(USER_BUILD_DIR)
 	$(USER_CC) $(USER_CFLAGS) -c $< -o $@
 
-# Milestone 1 of the doom port: the first C program this OS runs.
-# Lands on the FAT32 image as /HELLO.EXE - see the mcopy below.
-HELLO_ELF = $(USER_BUILD_DIR)/hello.elf
+# ---------------- Userland programs: automatic discovery ----------------
+#
+# Every subdirectory of src/userland/apps/ is one program. There is nothing to
+# add to this file when you write a new one: create the directory, put C sources
+# in it, and it is compiled, linked against newlib and copied onto the FAT32
+# image on the next build.
+#
+#   src/userland/apps/hello/hello.c        ->  /HELLO.EXE
+#   src/userland/apps/calc/{calc.c,ops.c}  ->  /CALC.EXE
+#
+# All .c files directly inside an app's directory are compiled and linked
+# together into a single binary, so a program may be split across several files.
+# Subdirectories below an app directory are not searched; they are reserved for
+# headers and data.
+#
+# The name on the disk image is the directory name uppercased and truncated to
+# eight characters, because FAT 8.3 short names are all the shell's path lookup
+# understands. Dashes become underscores for the same reason. Two apps whose
+# names collide once truncated are rejected below rather than silently
+# overwriting each other.
+USER_APPS_DIR = $(USER_SRC_DIR)/apps
 
-$(HELLO_ELF): $(USER_SRC_DIR)/hello/hello.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
-	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/hello.o
-	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/hello.o \
-	$(USER_LIBS) -o $@
+# $(wildcard .../*/) yields directories with a trailing slash; strip it, then
+# take the last component as the app name. := so the directory scan happens once.
+USER_APP_DIRS  := $(patsubst %/,%,$(wildcard $(USER_APPS_DIR)/*/))
+USER_APP_NAMES := $(notdir $(USER_APP_DIRS))
+USER_APP_ELFS  := $(foreach a,$(USER_APP_NAMES),$(USER_BUILD_DIR)/apps/$(a).elf)
 
-# The worked example from src/userland/README.md. It is built and staged like
-# any other userland program specifically so that the workflow that document
-# describes stays honest - if those instructions rot, this stops building.
-# Lands on the FAT32 image as /GREET.EXE.
-GREET_ELF = $(USER_BUILD_DIR)/greet.elf
+# The FAT 8.3 base name for an app directory name.
+user_app_fat8 = $(shell echo '$(1)' | tr 'a-z-' 'A-Z_' | cut -c1-8)
 
-$(GREET_ELF): $(USER_SRC_DIR)/greet/greet.c $(USER_CRT_OBJS) $(USER_LINKER) | $(USER_BUILD_DIR)
-	$(USER_CC) $(USER_CFLAGS) -c $< -o $(USER_BUILD_DIR)/greet.o
-	$(USER_CC) $(USER_LDFLAGS) $(USER_CRT_OBJS) $(USER_BUILD_DIR)/greet.o \
-	$(USER_LIBS) -o $@
+USER_APP_FAT8 := $(foreach a,$(USER_APP_NAMES),$(call user_app_fat8,$(a)))
+
+# make's $(sort) removes duplicates, so a shorter sorted list means two app
+# names truncated to the same 8.3 name. Fail loudly: the alternative is one
+# program silently replacing another on the image.
+ifneq ($(words $(USER_APP_FAT8)),$(words $(sort $(USER_APP_FAT8))))
+$(error Two userland apps collide after FAT 8.3 truncation: $(USER_APP_FAT8). \
+        Rename one of $(USER_APP_NAMES) so the first eight characters differ.)
+endif
+
+# Per-app compile and link rules, generated once per directory found above.
+#
+# $$ throughout: this text is expanded twice, once by $(call) when building the
+# rule text and again by make when reading it. $$ survives the first expansion
+# so that automatic variables like $$@ and $$< reach the second one intact.
+define USER_APP_RULES
+$(1)_SRCS := $$(wildcard $$(USER_APPS_DIR)/$(1)/*.c)
+$(1)_OBJS := $$(patsubst $$(USER_APPS_DIR)/$(1)/%.c,$$(USER_BUILD_DIR)/apps/$(1)/%.o,$$($(1)_SRCS))
+
+$$(USER_BUILD_DIR)/apps/$(1)/%.o: $$(USER_APPS_DIR)/$(1)/%.c | $$(USER_BUILD_DIR)
+	@mkdir -p $$(dir $$@)
+	$$(USER_CC) $$(USER_CFLAGS) -c $$< -o $$@
+
+$$(USER_BUILD_DIR)/apps/$(1).elf: $$($(1)_OBJS) $$(USER_CRT_OBJS) $$(USER_LINKER)
+	@mkdir -p $$(dir $$@)
+	@test -n "$$($(1)_OBJS)" || { echo "no .c files in $$(USER_APPS_DIR)/$(1)"; exit 1; }
+	$$(USER_CC) $$(USER_LDFLAGS) $$(USER_CRT_OBJS) $$($(1)_OBJS) $$(USER_LIBS) -o $$@
+endef
+
+$(foreach a,$(USER_APP_NAMES),$(eval $(call USER_APP_RULES,$(a))))
 
 .PHONY: userland
-userland: $(HELLO_ELF) $(GREET_ELF)
+userland: $(USER_APP_ELFS)
+	@echo "==> Userland programs: $(USER_APP_FAT8)"
 
 # ---------------- FAT32 image build ----------------
 
 # Rule to build the FAT32 image.
 $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF) $(RING3_PREEMPT_TEST_ELF) \
 		$(RING3_BIG_TEST_ELF) $(RING3_SSE_TEST_ELF) $(RING3_SSE2_TEST_ELF) \
-		$(RING3_TIME_TEST_ELF) $(HELLO_ELF) $(GREET_ELF)
+		$(RING3_TIME_TEST_ELF) $(USER_APP_ELFS)
 	@echo "==> Creating FAT32 image..."
 	@mkdir -p $(dir $@)
 	@mkdir -p $(FAT32_ROOT)/docs
@@ -689,8 +732,11 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	cp $(RING3_SSE_TEST_ELF) $(FAT32_ROOT)/RING3F.exe
 	cp $(RING3_SSE2_TEST_ELF) $(FAT32_ROOT)/RING3G.exe
 	cp $(RING3_TIME_TEST_ELF) $(FAT32_ROOT)/RING3T.exe
-	cp $(HELLO_ELF) $(FAT32_ROOT)/HELLO.exe
-	cp $(GREET_ELF) $(FAT32_ROOT)/GREET.exe
+	@for a in $(USER_APP_NAMES); do \
+		n=$$(echo "$$a" | tr 'a-z-' 'A-Z_' | cut -c1-8); \
+		echo "cp $(USER_BUILD_DIR)/apps/$$a.elf $(FAT32_ROOT)/$$n.exe"; \
+		cp $(USER_BUILD_DIR)/apps/$$a.elf $(FAT32_ROOT)/$$n.exe; \
+	done
 	truncate -s $(FAT32_IMAGE_BYTES) $@
 	$(MKFS_FAT) -F 32 -n $(FAT32_VOLUME_LABEL) $@
 	$(MMD) -i $@ ::/boot ::/docs
@@ -705,8 +751,10 @@ $(FAT32_IMAGE): $(RING3_TEST_ELF) $(RING3_STACK_TEST_ELF) $(RING3_MMAP_TEST_ELF)
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3F.exe ::RING3F.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3G.exe ::RING3G.EXE
 	$(MCOPY) -i $@ $(FAT32_ROOT)/RING3T.exe ::RING3T.EXE
-	$(MCOPY) -i $@ $(FAT32_ROOT)/HELLO.exe ::HELLO.EXE
-	$(MCOPY) -i $@ $(FAT32_ROOT)/GREET.exe ::GREET.EXE
+	@for n in $(USER_APP_FAT8); do \
+		echo "$(MCOPY) -i $@ $(FAT32_ROOT)/$$n.exe ::$$n.EXE"; \
+		$(MCOPY) -i $@ $(FAT32_ROOT)/$$n.exe ::$$n.EXE; \
+	done
 	@echo "==> FAT32 image created: $@"
 
 # Declare “phony” targets.
