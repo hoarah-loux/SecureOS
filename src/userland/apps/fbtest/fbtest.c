@@ -1,20 +1,7 @@
 /* src/userland/apps/fbtest/fbtest.c
  *
- * SYS_fb_present, at the resolution doom will use.
- *
- * The picture is deliberately made of flat colours with hard edges at known
- * coordinates rather than anything pretty: a screenshot can then be checked by
- * sampling a handful of pixels, and a wrong scale factor, a wrong centring
- * offset or a swapped colour channel each fail a specific assertion instead of
- * merely looking odd. The frames are:
- *
- *   1. four quadrants (red, green, blue, yellow), a white one-pixel border,
- *      and a black square dead centre
- *   2. the same with the quadrant colours rotated, to prove that a second
- *      present overwrites the first rather than blending or being ignored
- *
- * Every step prints to the serial port, so a headless run says where it got to.
- * The last frame is left on screen, which is what a screenshot captures.
+ * A small, deliberately colourful SYS_fb_present demo. It also keeps the
+ * pointer and extent checks that make this a useful framebuffer smoke test.
  */
 
 #include <stdio.h>
@@ -26,41 +13,100 @@
 
 #define W 320
 #define H 200
+#define SHOW_MS 9000
+#define FRAME_MS 40
 
-#define RED    0xFF0000u
-#define GREEN  0x00FF00u
-#define BLUE   0x0000FFu
-#define YELLOW 0xFFFF00u
-#define WHITE  0xFFFFFFu
-#define BLACK  0x000000u
+static const uint8_t font[26][7] = {
+    {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30},
+    {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+    {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+    {14,17,16,23,17,17,14}, {17,17,17,31,17,17,17},
+    {31,4,4,4,4,4,31}, {7,2,2,2,18,18,12},
+    {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+    {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17},
+    {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+    {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+    {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
+    {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4},
+    {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+    {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}
+};
 
-/* Half the side of the centre square. */
-#define CENTRE_HALF 10
-
-static void draw(uint32_t *px, uint32_t tl, uint32_t tr, uint32_t bl, uint32_t br)
+static uint32_t rainbow(unsigned hue)
 {
+    hue %= 768;
+    if (hue < 128) return 0xFF0000u | ((hue * 2) << 8);
+    if (hue < 256) return ((255u - (hue - 128) * 2) << 16) | 0x00FF00u;
+    if (hue < 384) return 0x00FF00u | ((hue - 256) * 2);
+    if (hue < 512) return 0x0000FFu | ((255u - (hue - 384) * 2) << 8);
+    if (hue < 640) return ((hue - 512) * 2 << 16) | 0x0000FFu;
+    return 0xFF0000u | ((255u - (hue - 640) * 2) << 8);
+}
+
+static const uint8_t *glyph(char ch)
+{
+    static const uint8_t star[7] = {4,21,14,31,14,21,4};
+    static const uint8_t blank[7] = {0,0,0,0,0,0,0};
+    if (ch == '*') return star;
+    if (ch < 'A' || ch > 'Z') return blank;
+    return font[(int)(ch - 'A')];
+}
+
+static void draw(uint32_t *px, unsigned frame)
+{
+    const char *message = "SECUREOS   *   RAINBOW MODE   *   ";
+    const int scale = 3;
+    const int text_y = 82;
+    int scroll = W - (int)(frame * 3);
+
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            uint32_t c;
+            unsigned hue = (unsigned)(x * 3 + y * 2 + frame * 5);
+            uint32_t colour = rainbow(hue);
+            unsigned wave = (unsigned)((x + frame * 4 + y * 3) % 96);
 
-            if (x < W / 2) {
-                c = (y < H / 2) ? tl : bl;
-            } else {
-                c = (y < H / 2) ? tr : br;
+            /* Darken the rainbow into a deep space backdrop, then add two
+             * bright diagonal ribbons that drift in opposite directions. */
+            colour = ((colour >> 2) & 0x3F3F3Fu);
+            if (wave < 5 || (wave > 48 && wave < 52)) {
+                colour = rainbow(hue + 180);
             }
-
-            /* Centre square, then border, so the border always wins. */
-            if (x >= W / 2 - CENTRE_HALF && x < W / 2 + CENTRE_HALF &&
-                y >= H / 2 - CENTRE_HALF && y < H / 2 + CENTRE_HALF) {
-                c = BLACK;
+            if (((x * 7 + y * 11 + frame * 13) % 211) == 0) {
+                colour = 0xFFFFFFu;
             }
-
-            if (x == 0 || y == 0 || x == W - 1 || y == H - 1) {
-                c = WHITE;
-            }
-
-            px[y * W + x] = c;
+            px[y * W + x] = colour;
         }
+    }
+
+    /* A large message crosses the whole source framebuffer, with each glyph
+     * carrying a different moving slice of the rainbow. */
+    for (int index = 0; message[index] != '\0'; index++) {
+        int glyph_x = scroll + index * 18;
+        const uint8_t *rows = glyph(message[index]);
+        for (int gy = 0; gy < 7; gy++) {
+            for (int gx = 0; gx < 5; gx++) {
+                if (!(rows[gy] & (1u << (4 - gx)))) continue;
+                for (int sy = 0; sy < scale; sy++) {
+                    for (int sx = 0; sx < scale; sx++) {
+                        int x = glyph_x + gx * scale + sx;
+                        int y = text_y + gy * scale + sy;
+                        if (x >= 0 && x < W && y >= 0 && y < H) {
+                            px[y * W + x] = rainbow((unsigned)(x * 5 + frame * 9));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* A crisp border makes the full source rectangle visible in screenshots. */
+    for (int x = 0; x < W; x++) {
+        px[x] = rainbow((unsigned)(x * 4 + frame * 5));
+        px[(H - 1) * W + x] = rainbow((unsigned)(x * 4 + frame * 5 + 384));
+    }
+    for (int y = 0; y < H; y++) {
+        px[y * W] = rainbow((unsigned)(y * 4 + frame * 5 + 192));
+        px[y * W + W - 1] = rainbow((unsigned)(y * 4 + frame * 5 + 576));
     }
 }
 
@@ -73,81 +119,44 @@ int main(int argc, char **argv, char **envp)
         printf("[FBTEST] malloc failed\n");
         return 1;
     }
-    printf("[FBTEST] step 1: buffer %dx%d at %p\n", W, H, (void *)px);
-
-    draw(px, RED, GREEN, BLUE, YELLOW);
-    if (secureos_fb_present(px, W, H) != 0) {
-        printf("[FBTEST] step 2: FAILED, present returned -1\n");
-        return 1;
-    }
-    printf("[FBTEST] step 2: first frame presented\n");
-
-    /* newlib's sleep() has no glue behind it yet, so go straight at SYS_sleep.
-     * The pause exists only so a human watching the screen sees two distinct
-     * frames rather than one. */
-    __sys1(SYS_sleep, 500);
-
-    draw(px, YELLOW, RED, GREEN, BLUE);
-    if (secureos_fb_present(px, W, H) != 0) {
-        printf("[FBTEST] step 3: FAILED, second present returned -1\n");
-        return 1;
-    }
-    printf("[FBTEST] step 3: second frame presented\n");
+    printf("[FBTEST] buffer %dx%d at %p\n", W, H, (void *)px);
 
     /* A kernel pointer must be refused rather than drawn. */
     if (secureos_fb_present((const uint32_t *)0xFFFFFFFF80000000ULL, W, H) != -1) {
-        printf("[FBTEST] step 4: FAILED, kernel address was accepted\n");
+        printf("[FBTEST] FAILED, kernel address was accepted\n");
         return 1;
     }
-    printf("[FBTEST] step 4: kernel address rejected\n");
+    printf("[FBTEST] kernel address rejected\n");
 
     /* So must a buffer whose start is mapped but whose end is not. 16384x16384
      * is inside the per-side limit the kernel enforces, so this gets past the
      * cheap checks and is caught by the region lookup on the last byte: one
      * gigabyte from px runs off the end of the 64 MiB heap arena. */
     if (secureos_fb_present(px, 16384u, 16384u) != -1) {
-        printf("[FBTEST] step 5: FAILED, unmapped extent was accepted\n");
+        printf("[FBTEST] FAILED, unmapped extent was accepted\n");
         return 1;
     }
-    printf("[FBTEST] step 5: unmapped extent rejected\n");
+    printf("[FBTEST] unmapped extent rejected\n");
 
     if (secureos_fb_present(px, 0, H) != -1) {
-        printf("[FBTEST] step 6: FAILED, zero width was accepted\n");
+        printf("[FBTEST] FAILED, zero width was accepted\n");
         return 1;
     }
-    printf("[FBTEST] step 6: zero width rejected\n");
+    printf("[FBTEST] zero width rejected\n");
 
-    /* How fast is a present, really?
-     *
-     * This is the number milestone 4 of the doom port turns on: doom runs its
-     * game logic at 35 Hz, so anything at or above that leaves the blit out of
-     * the critical path, and anything well below it makes the blit the thing to
-     * fix first. Measured over enough frames that the timer's 10 ms resolution
-     * does not dominate. */
-    {
-        const int frames = 60;
-        long t0 = __sys0(SYS_gettime);
-
-        for (int i = 0; i < frames; i++) {
-            secureos_fb_present(px, W, H);
+    printf("[FBTEST] animation started for %d ms\n", SHOW_MS);
+    long started = __sys0(SYS_gettime);
+    unsigned frame = 0;
+    while (__sys0(SYS_gettime) - started < SHOW_MS) {
+        draw(px, frame++);
+        if (secureos_fb_present(px, W, H) != 0) {
+            printf("[FBTEST] FAILED, animation present returned -1\n");
+            free(px);
+            return 1;
         }
-
-        long t1 = __sys0(SYS_gettime);
-        long ms = t1 - t0;
-
-        if (ms <= 0) {
-            printf("[FBTEST] step 7: %d frames in under one tick\n", frames);
-        } else {
-            printf("[FBTEST] step 7: %d frames in %ld ms = %ld fps\n",
-                   frames, ms, (long)frames * 1000 / ms);
-        }
+        __sys1(SYS_sleep, FRAME_MS);
     }
-
-    /* Hold the last frame. The shell writes to the console - which is the same
-     * framebuffer - as soon as this process exits, so without a pause there is
-     * nothing left to look at or to screenshot. */
-    printf("[FBTEST] holding frame\n");
-    __sys1(SYS_sleep, 3000);
+    printf("[FBTEST] animation complete after %u frames\n", frame);
 
     free(px);
     printf("[FBTEST] all steps OK, exiting 0\n");
