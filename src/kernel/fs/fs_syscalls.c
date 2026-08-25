@@ -61,6 +61,16 @@ static int fd_slot_alloc(proc *p) {
     return -1;
 }
 
+// Both kinds are ordinary open files as far as reading, writing and seeking
+// go; PROC_FD_EXEC_IMAGE differs only in that sys_close refuses it. Every
+// operation except close asks this rather than comparing against
+// PROC_FD_FILE, so a new file-like kind does not silently lose access to the
+// operations it should have.
+static int fd_slot_is_file(const proc_fd_slot_t *slot) {
+    return slot != NULL &&
+           (slot->kind == PROC_FD_FILE || slot->kind == PROC_FD_EXEC_IMAGE);
+}
+
 static proc_fd_slot_t *fd_slot_get(uint64_t fd, proc *p) {
     if (p == NULL) {
         return NULL;
@@ -119,7 +129,16 @@ int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a
         return -1;
     }
 
-    if (slot->kind != PROC_FD_FILE) {
+    // Refusing to close the executable is the whole point of the separate
+    // kind: the process's own not-yet-faulted pages are read through this
+    // handle, so closing it would remove the backing store out from under the
+    // code doing the closing. Reported as a plain failure, since the syscall
+    // ABI has no error codes to distinguish it with.
+    if (slot->kind == PROC_FD_EXEC_IMAGE) {
+        return -1;
+    }
+
+    if (!fd_slot_is_file(slot)) {
         return -1;
     }
 
@@ -187,7 +206,7 @@ int64_t sys_read(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, uin
         return -1;
     }
 
-    if (slot->kind != PROC_FD_FILE) {
+    if (!fd_slot_is_file(slot)) {
         return -1;
     }
 
@@ -240,7 +259,7 @@ int64_t sys_write(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, ui
         return -1;
     }
 
-    if (slot->kind != PROC_FD_FILE) {
+    if (!fd_slot_is_file(slot)) {
         return -1;
     }
 
@@ -260,7 +279,7 @@ int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, ui
         return -1;
     }
 
-    if (slot->kind != PROC_FD_FILE) {
+    if (!fd_slot_is_file(slot)) {
         return -1;
     }
 
@@ -297,7 +316,7 @@ fs_mmap_pin_out fs_mmap_pin_fd(uint64_t fd, proc *p) {
     
 
     proc_fd_slot_t *slot = fd_slot_get(fd, p);
-    if (slot == NULL || slot->kind != PROC_FD_FILE) {
+    if (!fd_slot_is_file(slot)) {
         out.error_code = 1;
         return out;
     }
@@ -336,7 +355,7 @@ fs_mmap_file_key fs_mmap_file_key_from_fd(uint64_t fd, proc *p) {
 
     
     proc_fd_slot_t *slot = fd_slot_get(fd, p);
-    if (slot == NULL || slot->kind != PROC_FD_FILE) {
+    if (!fd_slot_is_file(slot)) {
         return key;
     }
 

@@ -129,7 +129,9 @@ static void release_threadless_proc(proc *p) {
     if (p == NULL) { return; }
 
     for (int fd = PROC_FD_BASE; fd < PROC_MAX_OPEN_FILES; fd++) {
-        if (p->fd_table[fd].in_use && p->fd_table[fd].kind == PROC_FD_FILE) {
+        if (p->fd_table[fd].in_use &&
+            (p->fd_table[fd].kind == PROC_FD_FILE ||
+             p->fd_table[fd].kind == PROC_FD_EXEC_IMAGE)) {
             (void)fat32_file_close(&p->fd_table[fd].file);
             p->fd_table[fd].in_use = 0;
             p->fd_table[fd].kind = PROC_FD_NONE;
@@ -342,7 +344,7 @@ elf_load_out elf_load_process(fat32_mount_t *mount, const char *filename) {
         return result;
     }
     proc_md.proc->fd_table[slot].in_use = 1;
-    proc_md.proc->fd_table[slot].kind   = PROC_FD_FILE;
+    proc_md.proc->fd_table[slot].kind   = PROC_FD_EXEC_IMAGE;
 
     // 1 MiB of user stack, up from 64 KiB.
     //
