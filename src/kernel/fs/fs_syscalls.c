@@ -7,9 +7,18 @@
 #include <scheduler.h>
 #include <p.h>
 
-// NOTE: no user pointer validation here (buf_ptr/path_ptr are trusted as-is).
-// The VMM has no user-mode mapping/copy_from_user path yet (see TODO.md), so
-// this is only safe for kernel-mode callers until that lands.
+// Every pointer that arrives from ring3 is checked against the caller's own
+// address space before it is dereferenced - user_range_ok() and
+// user_string_ok(), src/kernel/mm/alloc/vmm.c. There is still no
+// copy_from_user: the kernel dereferences user pointers directly, which is
+// safe once they have been shown to lie inside a vm_region of the calling
+// process, because a fault on such an address is one the #PF handler can
+// resolve.
+//
+// The checks reject a kernel-mode caller, which has no current user process.
+// That is why the syscall smoke tests in kernel.c report failures for the
+// paths that take pointers; they invoke the syscall layer directly, before
+// any process exists.
 
 
 
@@ -92,6 +101,13 @@ int64_t sys_open(uint64_t path_ptr, uint64_t flags, uint64_t mode, uint64_t a3, 
     if (!g_mount || !path) {
         return -1;
     }
+
+    // FAT paths are 8.3 with a handful of components; SYS_PATH_MAX is a
+    // generous ceiling that exists to bound the scan, not to describe the
+    // filesystem.
+    if (!user_string_ok(path_ptr, SYS_PATH_MAX)) {
+        return -1;
+    }
      
     proc *p = get_p();
     if (p == NULL) {
@@ -161,6 +177,12 @@ int64_t sys_read(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, uin
         return -1;
     }
 
+    // Checked once, before either the keyboard path or the file path can
+    // write a single byte into it.
+    if (!user_range_ok(buf_ptr, count)) {
+        return -1;
+    }
+
     if (fd == PROC_FD_STDIN) {
         if (count == 0) {
             return 0;
@@ -223,6 +245,12 @@ int64_t sys_write(uint64_t fd, uint64_t buf_ptr, uint64_t count, uint64_t a3, ui
     }
     proc *p = get_p();
     if (p == NULL) {
+        return -1;
+    }
+
+    // Same check on the way out: without it, write(1, kernel_pointer, n)
+    // prints kernel memory to the console and the serial line.
+    if (!user_range_ok(buf_ptr, count)) {
         return -1;
     }
 

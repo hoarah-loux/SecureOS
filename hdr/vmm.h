@@ -481,6 +481,21 @@ void vmm_invalidate_tlb(uintptr_t virtual_adress);
 
 search_region_list_out search_region_list(vm_space *space, uintptr_t va);
 
+/*
+ * Is [addr, addr+len) entirely inside the calling process's own mapped user
+ * space? False for a kernel address, a wrapped range, or one that falls in no
+ * vm_region - the two cases that let ring3 make the kernel read or write
+ * memory it should not, or panic it with an unresolvable fault. Not yet
+ * present is fine: the fault handler pages it in.
+ *
+ * user_string_ok is the same question for a NUL-terminated string, whose
+ * length is not known until the terminator is found: it scans within the
+ * region the string starts in, bounded by max_len, and rejects a string that
+ * runs off the end without terminating.
+ */
+bool user_range_ok(uintptr_t addr, uint64_t len);
+bool user_string_ok(uintptr_t addr, uint64_t max_len);
+
 // Reserve a region in t's address space. Returns the base VA, or NULL.
 //
 // `t` is the target and is never taken from userspace - see the note above the

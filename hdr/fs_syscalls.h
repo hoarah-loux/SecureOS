@@ -12,6 +12,13 @@
 #define SYS_SEEK_CUR 1
 #define SYS_SEEK_END 2
 
+// How far sys_open() will scan a path from ring3 looking for its terminator.
+// Paths here are FAT 8.3 with a handful of components, so this is a bound on
+// the scan rather than a description of the filesystem: a "string" that never
+// terminates is rejected instead of walking through the caller's address
+// space.
+#define SYS_PATH_MAX 256
+
 // Binds the fd table to the mount used to service open/read/write/lseek/close.
 // Must be called once after fat32_mount() succeeds and before any process can
 // reach the syscall gate.

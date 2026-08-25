@@ -2845,6 +2845,94 @@ uint64_t destroy_vm_space(vm_space *space){
 }
 
 
+/*
+ * User-pointer validation for the syscall layer.
+ *
+ * A syscall argument that is a pointer arrives from ring3 as an integer, and
+ * nothing about it is trustworthy. Two separate things can go wrong if the
+ * kernel simply dereferences it:
+ *
+ *   - It can name kernel memory. read(fd, (void *)0xFFFFFFFF80000000, n) had
+ *     the FAT32 layer write file contents over the kernel image, and
+ *     write(1, kernel_ptr, n) printed kernel memory to the console. The
+ *     user_limit check is what closes that.
+ *
+ *   - It can name a user address that belongs to no region of the calling
+ *     process. That is not a segfault for the caller: the access happens in
+ *     kernel mode, so the #PF handler treats it as a kernel fault, and one it
+ *     cannot resolve is a panic. Ring3 could halt the machine with a bad
+ *     pointer. The region lookup is what closes that.
+ *
+ * An address that is inside a region but not yet mapped is fine and is left
+ * alone deliberately - the fault handler pages it in, which is the whole point
+ * of demand paging.
+ *
+ * Checking only the two ends of a range is a deliberate trade, the same one
+ * sys_fb_present makes: a caller perverse enough to straddle two regions with
+ * a hole between them is not caught, and the alternative is a lookup per page
+ * on the hot path of every read and write.
+ */
+static vm_space *current_user_space(void){
+
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if(cpu == NULL || cpu->current_thread == NULL){ return NULL; }
+
+    thread *t = cpu->current_thread;
+    if(t->owning_proc == NULL){ return NULL; }
+
+    return t->owning_proc->adress_space;
+}
+
+bool user_range_ok(uintptr_t addr, uint64_t len){
+
+    vm_space *space = current_user_space();
+    if(space == NULL){ return false; }
+
+    // Nothing is dereferenced for a zero-length access, so there is nothing to
+    // validate. Callers that treat zero as an error say so themselves.
+    if(len == 0){ return true; }
+
+    if(addr == 0){ return false; }
+
+    uint64_t last = addr + len - 1ULL;
+    if(last < addr){ return false; }                 // wrapped past the top
+    if(last >= space->user_limit){ return false; }
+
+    if(!search_region_list(space, addr).success){ return false; }
+    if(!search_region_list(space, (uintptr_t)last).success){ return false; }
+
+    return true;
+}
+
+bool user_string_ok(uintptr_t addr, uint64_t max_len){
+
+    vm_space *space = current_user_space();
+    if(space == NULL || addr == 0){ return false; }
+    if(addr >= space->user_limit){ return false; }
+
+    search_region_list_out md = search_region_list(space, addr);
+    if(!md.success){ return false; }
+
+    // A string has no length until its terminator is found, so the scan is
+    // bounded three ways: by the region the string starts in, by the user half,
+    // and by what the caller is willing to accept. Running off the end of the
+    // region without finding a NUL is a rejection rather than a walk into the
+    // next one.
+    uint64_t limit = (uint64_t)md.region->va_end;
+    if(limit > space->user_limit){ limit = space->user_limit; }
+
+    uint64_t caller_limit = addr + max_len;
+    if(caller_limit < addr){ return false; }
+    if(limit > caller_limit){ limit = caller_limit; }
+
+    const char *str = (const char *)addr;
+    for(uint64_t i = 0; (uint64_t)addr + i < limit; i++){
+        if(str[i] == '\0'){ return true; }
+    }
+
+    return false;
+}
+
 search_region_list_out search_region_list(vm_space *space, uintptr_t va){
 
         search_region_list_out result = {0};
