@@ -1,4 +1,7 @@
 #include <keyboard.h>
+#include <p.h>
+#include <scheduler.h>
+#include <t.h>
 
 enum {
     KEYBOARD_BUFFER_SIZE = 256
@@ -83,6 +86,50 @@ int keyboard_handle_scancode(uint8_t scancode) {
     return 0;
 }
 
+// ---------------- input ownership ----------------
+//
+// 0 means nobody, which is the state before the shell exists. A read by a
+// process that owns nothing blocks, which is the safe direction: keystrokes
+// wait in the ring buffer rather than being handed to the wrong reader.
+static uint64_t kbd_owner_pid;
+static uint64_t kbd_default_owner_pid;
+
+void keyboard_set_default_owner(uint64_t pid) {
+    kbd_default_owner_pid = pid;
+
+    if (kbd_owner_pid == 0) {
+        kbd_owner_pid = pid;
+    }
+}
+
+void keyboard_grant_input(uint64_t pid) {
+    kbd_owner_pid = pid;
+}
+
+void keyboard_release_input(uint64_t pid) {
+    // Only the holder can lose it. A background process exiting must not pull
+    // the keyboard out from under whatever is actually in the foreground.
+    if (pid != 0 && pid == kbd_owner_pid) {
+        kbd_owner_pid = kbd_default_owner_pid;
+    }
+}
+
+uint64_t keyboard_input_owner(void) {
+    return kbd_owner_pid;
+}
+
+// Whether the process on this CPU right now is the one allowed to consume a
+// keystroke.
+static int caller_owns_input(void) {
+    scheduler_cpu *cpu = scheduler_this_cpu();
+    if (cpu == NULL || cpu->current_thread == NULL) { return 0; }
+
+    proc *p = cpu->current_thread->owning_proc;
+    if (p == NULL) { return 0; }
+
+    return p->id == kbd_owner_pid;
+}
+
 int keyboard_getchar_nonblock(char *out_char) {
     if (!out_char || keyboard_head == keyboard_tail) {
         return 0;
@@ -120,6 +167,14 @@ int keyboard_getline(char *buffer, size_t buffer_size) {
 int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
 
+    // A process that does not own input has no key waiting for it, however
+    // full the buffer is. Reported as "nothing available" rather than as an
+    // error, because that is what it means to the caller and it is the answer
+    // a polling loop already knows how to handle.
+    if (!caller_owns_input()) {
+        return -1;
+    }
+
     char c;
     if (!keyboard_getchar_nonblock(&c)) {
         return -1;
@@ -129,6 +184,14 @@ int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t 
 
 int64_t sys_getkey_wait(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+
+    // Not owning input is a reason to wait, not to fail: the shell spends its
+    // whole life here, and while a program is in the foreground the shell must
+    // sit still rather than spin. It is re-checked on every wake, so ownership
+    // returning is enough to let it through - see keyboard_release_input().
+    if (!caller_owns_input()) {
+        return SYS_WOULD_BLOCK;
+    }
 
     char c;
     if (!keyboard_getchar_nonblock(&c)) {

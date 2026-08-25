@@ -412,7 +412,7 @@ void keyboard_interrupt_handler(int irq, void *data) {
     if (got_char) {
         scheduler_cpu *cpu = scheduler_this_cpu();
         if (cpu != NULL) {
-            scheduler_wake_one(cpu->cpu_id, cpu->keyboard_wait_queue);
+            scheduler_wake_all(cpu->cpu_id, cpu->keyboard_wait_queue);
         }
     }
 }

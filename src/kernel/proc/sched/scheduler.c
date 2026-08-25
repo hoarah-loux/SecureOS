@@ -1,4 +1,5 @@
 #include <scheduler.h>
+#include <keyboard.h>
 
 static scheduler_cpu cpus[MAX_CPUS];
 
@@ -400,6 +401,23 @@ uint64_t scheduler_exit_current(uint64_t cpu_id){
     if(!cpu->present || !cpu->is_initialized){return 0;}
     if(cpu->current_thread == NULL){return 0;}
 
+   // Take the keyboard back before the thread is gone.
+   //
+   // This is the choke point every exit passes through, deliberate or not, so
+   // a program cannot take input ownership to the grave with it and leave the
+   // shell unable to read a key ever again. keyboard_release_input() ignores a
+   // pid that does not currently hold input, so this is a no-op for the common
+   // case of a background process exiting.
+   //
+   // Keyed on the main thread because ownership is per-process: a process with
+   // several threads should not lose the keyboard when a worker finishes. With
+   // one thread per process today the distinction is theoretical, but the
+   // wrong version of this is silent when it stops being so.
+   if(cpu->current_thread->owning_proc != NULL &&
+      cpu->current_thread->owning_proc->main_thread == cpu->current_thread){
+       keyboard_release_input(cpu->current_thread->owning_proc->id);
+   }
+
    thread_exit_out exit_md = thread_exit(cpu->current_thread, cpu->current_thread->exit_status);
 
    if(!exit_md.success){return 0;}
@@ -507,6 +525,19 @@ uint64_t scheduler_wake_expired_sleepers(uint64_t cpu_id, uint64_t now_ticks){
 }
 
 
+// Wakes every thread on a wait queue.
+//
+// Used by the keyboard IRQ, where scheduler_wake_one() is not good enough now
+// that input has an owner. wake_one pops the head, and the head may be a thread
+// that does not own input: it wakes, sees it still does not own input, and
+// blocks again - while the keystroke that woke it sits unread and the process
+// entitled to it stays asleep. One key press, nobody served.
+//
+// Waking everyone and letting the ownership check in sys_getkey_wait() sort it
+// out costs one pointless context switch per blocked non-owner, of which there
+// is realistically one: the shell, while a program is in the foreground. That
+// is cheaper than the bookkeeping needed to wake exactly the right thread, and
+// unlike a targeted wake it cannot leave a keystroke stranded.
 uint64_t scheduler_wake_all(uint64_t cpu_id, thread_queue *wait_queue){
 
     if(cpu_id >= MAX_CPUS){return 0;}

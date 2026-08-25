@@ -599,6 +599,10 @@ static thread *install_shell_thread(void) {
         return NULL;
     }
 
+    // Input reverts here whenever a foreground program exits, so there is
+    // never a moment where keystrokes have nowhere to go.
+    keyboard_set_default_owner(shell_proc.proc->id);
+
     printk("[SHELL] shell thread ready (tid=%u)\r\n",
            (unsigned)shell_t.thread->id);
     probe_thread("[PROBE] shell @ registration", shell_t.thread);
