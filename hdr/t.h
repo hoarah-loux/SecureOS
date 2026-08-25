@@ -41,9 +41,48 @@ typedef struct thread{
     vm_region *t_k_a_region_list; //kernel asset thread region list
     struct thread_queue *owner_queue;
 
-
+    // x87/SSE register file, saved and restored around every context switch.
+    //
+    // The kernel itself is built -mno-sse and never touches these registers,
+    // so this exists purely so ring3 can. It is not optional there: the
+    // x86-64 SysV ABI passes floating-point arguments in xmm0-7, sets al to
+    // the vector-register count for varargs, and gcc emits SSE for ordinary
+    // struct and string copies at any optimisation level. Without a per-thread
+    // save area two user threads would silently corrupt each other's
+    // floating-point state.
+    //
+    // Saving is eager: fxsave in save_trap_frame(), fxrstor in
+    // restore_context. Lazy switching via CR0.TS and #NM would avoid the cost
+    // for threads that never use SSE, but it needs a "who owns the FPU"
+    // tracker and a #NM handler, and this kernel does not have enough
+    // FPU-using threads for that to pay for itself.
+    //
+    // FXSAVE requires a 16-byte-aligned destination and faults otherwise.
+    // thread objects come from the slab allocator, which makes no alignment
+    // promise beyond the natural one, so the area is over-allocated by 16
+    // bytes and fpu_state points at the first aligned address inside it.
+    // Everything else reads fpu_state and never the raw array.
+    //
+    // Appended at the end of the struct on purpose: context_switch.asm reads
+    // fields by hardcoded offset (THREAD_RSP_K), so inserting anywhere earlier
+    // would move them. See the _Static_asserts in src/kernel/proc/ds/t.c.
+    uint8_t *fpu_state;
+    uint8_t fpu_state_raw[512 + 16];
 
 }thread;
+
+// FXSAVE/FXRSTOR area size. The layout is fixed by the architecture; only the
+// size and the two fields initialised at thread creation matter here.
+#define FPU_STATE_SIZE 512
+
+// Offsets within the FXSAVE area of the two control words that must not start
+// as zero. FCW 0x037F is the x87 default (round to nearest, all exceptions
+// masked, 64-bit precision); MXCSR 0x1F80 is the SSE default (all exceptions
+// masked, no flush-to-zero).
+#define FPU_STATE_FCW_OFFSET   0
+#define FPU_STATE_MXCSR_OFFSET 24
+#define FPU_STATE_FCW_INIT     0x037Fu
+#define FPU_STATE_MXCSR_INIT   0x1F80u
 
 typedef struct create_thread_out{
 
