@@ -8,9 +8,44 @@
 // returning it to userspace.
 #define SYS_WOULD_BLOCK (-2)
 
-// Returns 1 if scancode produced a buffered char, 0 otherwise (modifier
-// key, key-release, or unmapped scancode).
+// Returns 1 if the scancode produced anything a reader could consume - a raw
+// event, a cooked character, or both - and 0 if it was swallowed (the 0xE0
+// prefix byte, or an unmapped key in cooked-only mode). The IRQ handler uses
+// this to decide whether to wake the threads waiting on the keyboard.
 int keyboard_handle_scancode(uint8_t scancode);
+
+// ---------------- raw scancodes ----------------
+//
+// The cooked path throws away everything a game needs. It drops key releases
+// outright, has no handling for the 0xE0 prefix, and collapses what is left
+// through an ASCII table - so arrows, RCtrl and RAlt do not exist as far as a
+// program is concerned, and nothing can tell "still held" from "let go". doom
+// needs press and release for every key it binds.
+//
+// Raw events are a parallel stream, not a replacement: the same interrupt
+// feeds both rings, so the shell keeps reading characters exactly as before
+// while a raw client reads events. One event per key transition, encoded as:
+//
+//   bits 0-7   the set-1 scancode with the release bit stripped
+//   bit 8      the key was introduced by an 0xE0 prefix (arrows, RCtrl,
+//              RAlt, keypad Enter, ...)
+//   bit 15     this is a release, not a press
+//
+// So 'A' pressed is 0x001E and released 0x801E; up-arrow pressed is 0x0148 and
+// released 0x8148.
+#define KBD_SC_EXTENDED 0x0100u
+#define KBD_SC_RELEASED 0x8000u
+
+// Raw mode, per the process that owns input.
+//
+// While it is on, the cooked ring is not fed at all. That is not an
+// optimisation: without it, every keystroke a game consumes would also pile up
+// in the shell's line buffer, and the moment the game exited the shell would
+// execute whatever that spelled. Both rings are flushed and raw mode is
+// cleared whenever input ownership moves, so a program that dies mid-game
+// cannot leave the shell deaf or holding a line of garbage.
+void keyboard_set_raw_mode(int enabled);
+int keyboard_raw_mode(void);
 
 // ---------------- input ownership ----------------
 //
@@ -58,3 +93,14 @@ int64_t sys_getkey(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t 
 // SYS_WOULD_BLOCK if the buffer is empty (syscall_handler blocks the
 // calling thread on the keyboard wait queue and retries on wake).
 int64_t sys_getkey_wait(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5);
+
+// Nonblocking raw event poll, for DG_GetKey and anything else that needs key
+// releases. Returns the next event (see KBD_SC_* above) or -1 when the raw
+// ring is empty or the caller does not own input. All six args are unused.
+int64_t sys_getscancode(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5);
+
+// Turns raw mode on (a0 non-zero) or off. Returns 0, or -1 if the caller does
+// not own input - a background process must not be able to blind the
+// foreground one. Both rings are flushed on the way in and out, so a mode
+// change never delivers keystrokes typed under the other mode.
+int64_t sys_kbd_raw(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5);

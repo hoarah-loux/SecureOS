@@ -128,6 +128,20 @@ the string and memory functions, `strdup`, math from `libm`, `open`/`read`/
 including varargs `%f`, static constructors, and `exit` running the atexit
 chain so stdio flushes.
 
+Output goes to the **console and the serial port** at once. `printf` shows up
+on the screen for a person sitting at the machine, and in `serial.log` for a
+headless test run.
+
+Input works too: `read(0, ...)`, `getchar()` and `fgets(..., stdin)` all block
+until a key is pressed rather than spinning. Two things to know:
+
+- **Nothing is echoed.** The kernel does not print what you type — a program
+  drawing to the framebuffer would get keystrokes painted over it. Echo what
+  you want the user to see, as `apps/echoin/` does.
+- **Only the foreground process is fed.** The shell grants keyboard input to
+  whatever it launches and takes it back when that program exits, so a
+  background process reading fd 0 simply blocks.
+
 Graphics, through one function in `libc_glue/secureos_fb.h`:
 
 ```c
@@ -142,6 +156,31 @@ The kernel scales the buffer up by the largest integer factor that fits the
 screen, centres it and puts black bars around the rest. There is nothing to
 open or map first, and the buffer is not retained after the call returns. See
 `apps/fbtest/` for a worked example.
+
+Raw keyboard events, through `libc_glue/secureos_kbd.h`, for anything that
+needs more than characters:
+
+```c
+#include "secureos_kbd.h"
+
+secureos_kbd_raw(1);                  /* stdin goes quiet; events start */
+
+int ev = secureos_getscancode();      /* -1 when nothing is buffered */
+if (ev >= 0) {
+    unsigned code = SECUREOS_KEY_CODE(ev);
+    int down      = !SECUREOS_KEY_IS_RELEASE(ev);
+    int arrow_etc =  SECUREOS_KEY_IS_EXTENDED(ev);
+}
+
+secureos_kbd_raw(0);                  /* back to characters */
+```
+
+Cooked stdin cannot report a key *release* or see the arrows at all, which is
+most of what a game needs. Raw mode also stops feeding the character ring, so
+the keys a game consumes do not pile up in the shell's line buffer and get
+executed as a command when the game exits. Both rings are flushed entering and
+leaving raw mode, and again whenever a program starts or exits — see
+`apps/keytest/`.
 
 `sleep()`, `usleep()` and `nanosleep()` work, with one caveat worth knowing
 before you build timing on them: the kernel timer runs at 100 Hz and rounds a
@@ -180,6 +219,7 @@ Also worth knowing:
 | `libc_glue/syscalls.c` | newlib's `_read`/`_write`/`_sbrk`/… on this kernel's `int 0x80` ABI |
 | `libc_glue/secureos_syscall.h` | the raw `int 0x80` inline asm |
 | `libc_glue/secureos_fb.h` | `secureos_fb_present()`, the whole graphics API |
+| `libc_glue/secureos_kbd.h` | raw key events: `secureos_kbd_raw()`, `secureos_getscancode()` |
 | `newlib/` | vendored `libc.a`, `libm.a`, headers — see its [README](newlib/README.md) |
 | `../../hdr/syscall_abi.h` | syscall numbers and calling convention, shared with the kernel |
 

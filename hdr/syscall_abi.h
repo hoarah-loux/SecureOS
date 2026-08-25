@@ -34,5 +34,7 @@ enum syscall_number {
     SYS_gettime,
     SYS_sleep,
     SYS_fb_present,
+    SYS_getscancode,
+    SYS_kbd_raw,
     SYS_MAX,
 };
