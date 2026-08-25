@@ -17,6 +17,18 @@ PROC_FD_STDOUT = 1,
 PROC_FD_STDERR = 2,
 PROC_FD_FILE,
 
+// The executable this process is running, pinned at PROC_FD_BASE by the
+// loader. It behaves exactly like PROC_FD_FILE for reading and seeking and
+// differs in one respect: sys_close refuses it.
+//
+// Every page of text and data that has not been touched yet is demand-paged
+// through this handle, for the whole life of the process. A close() from ring3
+// would tear out the backing store the calling code is running from, and the
+// next instruction to fault would read through a closed file. There is no
+// overwrite risk to go with it - fd_slot_alloc() hands out the first free
+// slot, and this one is marked in use from the moment the process exists.
+PROC_FD_EXEC_IMAGE,
+
 }proc_fd_kind;
 
 
