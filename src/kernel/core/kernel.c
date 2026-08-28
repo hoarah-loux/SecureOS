@@ -56,6 +56,16 @@ static fat32_mount_t mount;
 static console_t con;
 static shell_ctx_t shell_ctx;
 
+// 1 GiB page support (CPUID leaf 0x80000001, EDX bit 26) - the entry stub
+// extends its identity map past 4 GiB with 1 GiB pages only when this is set.
+static int cpu_has_1g_pages(void) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(0x80000001u));
+    return (int)((edx >> 26) & 1u);
+}
+
 // Bare-metal boot-stage markers. On a machine with no serial port the only
 // witness of a hang before the console exists is the screen itself, so each
 // early boot phase stamps a small colored square in the top-left corner by
@@ -88,7 +98,15 @@ static void boot_marker(const struct multiboot_tag_framebuffer *fb,
             return;
         }
     } else {
-        if (fb->common.framebuffer_addr >= 0x100000000ULL) {
+        // Pre-transition access goes through the entry stub's identity map:
+        // 0..4 GiB always, 4..512 GiB only when the CPU has 1 GiB pages
+        // (mirrors the stub's CPUID guard - a GPU BAR above 4 GiB is the
+        // normal case with firmware "Above 4G Decoding" enabled).
+        if (fb->common.framebuffer_addr >= 0x8000000000ULL) {
+            return;
+        }
+        if (fb->common.framebuffer_addr >= 0x100000000ULL &&
+            !cpu_has_1g_pages()) {
             return;
         }
         base = (uintptr_t)fb->common.framebuffer_addr;
@@ -867,6 +885,18 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         uintptr_t fb_pa = (uintptr_t)fb_snapshot.common.framebuffer_addr;
         uintptr_t fb_va = phys_to_virt(fb_pa);
         uintptr_t fb_pa_after_transition = 0;
+
+        if (fb_va == 0) {
+            // Framebuffer above the physmap clamp - a GPU BAR above 4 GiB
+            // ("Above 4G Decoding"). The physmap only covers managed RAM, so
+            // map the framebuffer MMIO into the same alias explicitly;
+            // without this the machine boots blind.
+            uint64_t fb_bytes = (uint64_t)fb_snapshot.common.framebuffer_pitch *
+                                fb_snapshot.common.framebuffer_height;
+            fb_va = vmm_map_high_physmap_range(fb_pa, fb_bytes);
+            printk("[SecureOS] framebuffer above physmap clamp; explicit map %s\r\n",
+                   fb_va != 0 ? "ok" : "FAILED");
+        }
 
         // Local: fb_set_runtime() copies it, and nothing after this point reads
         // the tag through anything but fb_get_runtime().

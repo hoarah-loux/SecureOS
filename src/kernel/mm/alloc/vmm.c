@@ -794,6 +794,38 @@ static uint64_t poplulate_phys_map(uintptr_t *new_root){
 
 
 
+// Map a physical range that lies OUTSIDE the physmap's managed clamp
+// (BUDDY_MAX_PHYS, 4 GiB) into the physmap alias with 2 MiB pages - the
+// GPU framebuffer BAR above 4 GiB is the motivating case ("Above 4G
+// Decoding" firmware setting). Returns the virtual address of pa_start,
+// or 0 on failure. Only for MMIO-style ranges the PMM does not manage;
+// RAM below the clamp is already mapped and would make populate2m fail
+// on the existing entries.
+uintptr_t vmm_map_high_physmap_range(uintptr_t pa_start, uint64_t bytes){
+
+    if(!physmap_ready || bytes == 0 || kroot == NULL){return 0;}
+    if(pa_start < (uintptr_t)BUDDY_MAX_PHYS){return 0;}
+
+    uintptr_t two_mib = 2097152ULL;
+    uintptr_t start = pa_start & ~(two_mib - 1);
+    uintptr_t end = (pa_start + bytes + two_mib - 1) & ~(two_mib - 1);
+    if(end <= start){return 0;}
+
+    for(uintptr_t pa = start; pa < end; pa += two_mib){
+
+        uintptr_t va = PHYS_MAP_BASE + pa;
+        uint64_t table_flags = (1ULL << 0) | (1ULL << 1);                    // P | RW
+        uint64_t large_flags = (1ULL << 0) | (1ULL << 1) | (1ULL << 7);      // P | RW | PS
+
+        if(!populate2m_into_table(kroot, va, pa, table_flags,
+            table_flags, large_flags)){return 0;}
+
+    }
+
+    return PHYS_MAP_BASE + pa_start;
+
+}
+
 static uintptr_t cr3_switch_t(uintptr_t new_root_table_phys){
 
     if(new_root_table_phys % 4096 != 0){return 0;}

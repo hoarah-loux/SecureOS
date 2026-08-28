@@ -367,6 +367,46 @@ serial_dead_flag:
         mov dword [edi + 24], eax
         mov dword [edi + 28], 0
 
+        ; PDPT[4..511]: identity-map 4..512 GiB with 1 GiB pages, RW + NX.
+        ; A discrete GPU's framebuffer BAR can sit above 4 GiB when the
+        ; firmware's "Above 4G Decoding" is enabled (the ASUS H670 default),
+        ; and with only the low 4 GiB mapped every early framebuffer write -
+        ; including the boot-stage markers - silently vanishes and the screen
+        ; stays black. Data-only mapping: NX stays set, kernel .text is far
+        ; below 4 GiB. Guarded by CPUID since 1 GiB pages are a CPU feature
+        ; (leaf 0x80000001, EDX bit 26; present on anything this kernel
+        ; targets - without it the map simply stays 4 GiB as before).
+        ; Clobbers EAX/EBX/ECX/EDX (CPUID); both are reinitialized by the
+        ; PT0 loop below.
+        mov eax, 0x80000001
+        cpuid
+        test edx, (1 << 26)
+        jz .no_1g_pages
+
+        mov edi, pgtables + 0x1000 + (4 * 8)
+        ; ECX = PDPT index (each index maps index * 1 GiB).
+        mov ecx, 4
+    .fill_1g:
+        ; Entry low dword: bits 31:30 of the 1 GiB-aligned base live here
+        ; (base = index << 30, so low = (index & 3) << 30), plus
+        ; Present | RW | PS.
+        mov eax, ecx
+        and eax, 3
+        shl eax, 30
+        or eax, 0x00000083
+        mov dword [edi], eax
+        ; Entry high dword: bits 63:32 of the base (= index >> 2) plus the
+        ; NX bit (bit 63 = high dword bit 31).
+        mov eax, ecx
+        shr eax, 2
+        or eax, 0x80000000
+        mov dword [edi + 4], eax
+        add edi, 8
+        inc ecx
+        cmp ecx, 512
+        jb .fill_1g
+    .no_1g_pages:
+
         ; PT0: 4KiB pages for first 2MiB.
         ; - 0..1MiB: RW + NX (includes MB2 info at 0x4000 and VGA at 0xB8000)
         ; - 1MiB..2MiB: RO; NX cleared only for pages overlapping kernel .text

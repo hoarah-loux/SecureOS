@@ -439,6 +439,12 @@ uint64_t vmm_query_page2(uintptr_t virtual_adress);
 
 uintptr_t phys_to_virt(uintptr_t physical_adress);
 
+// Map a physical MMIO range that lies above the physmap clamp
+// (BUDDY_MAX_PHYS) into the physmap alias with 2 MiB pages; returns the
+// virtual address of pa_start or 0. Motivating case: a GPU framebuffer
+// BAR placed above 4 GiB by firmware "Above 4G Decoding".
+uintptr_t vmm_map_high_physmap_range(uintptr_t pa_start, uint64_t bytes);
+
 
 // THIS CREATES A PAGE TABLE WOOOWWW. and returns a pointer to its adress
 uintptr_t* vmm_create_page_table(void);
