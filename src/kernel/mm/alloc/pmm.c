@@ -175,10 +175,42 @@ void pmm_init(uint32_t mb2_info_ptr, uintptr_t kernel_start, uintptr_t kernel_en
     uintptr_t bitmap_addr = (uintptr_t)&bitmap;
     _pmm_alloc_frame_range(bitmap_addr, bitmap_addr + pmm_managed_bitmap_size);
 
+    // 3b. Reserve Multiboot2 module frames (type 3 tags). GRUB's memory map
+    // reports module regions as ordinary usable RAM, so without this the
+    // frames holding the fat32-ramdisk image are handed to the buddy
+    // allocator and overwritten by the first few allocations. The highest
+    // module end also pushes the buddy metadata placement below.
+    uintptr_t modules_end = 0;
+    tag = mb2_base + 8;
+    while (tag < mb2_end) {
+        uint32_t tag_type = *(const uint32_t *)tag;
+        uint32_t tag_size = *(const uint32_t *)(tag + 4);
+
+        if (tag_type == 0) break;
+
+        if (tag_type == 3 && tag_size >= 16) {
+            uint32_t mod_start = *(const uint32_t *)(tag + 8);
+            uint32_t mod_end = *(const uint32_t *)(tag + 12);
+
+            if (mod_end > mod_start) {
+                _pmm_alloc_frame_range(mod_start, mod_end);
+                if (mod_end > modules_end) {
+                    modules_end = mod_end;
+                }
+            }
+        }
+        tag += (tag_size + 7) & ~7;
+    }
+
     // 4. Set up the Buddy Metadata (frame_metadata)
-    // We store this 4 KiB after the kernel end.
-    // to align use the ALIGN_UP macro
-    uintptr_t metadata_addr = ALIGN_UP(kernel_end, frame_size);
+    // We store this 4 KiB after the kernel end - or after the highest
+    // Multiboot2 module when GRUB placed one above the kernel, since the
+    // metadata array is written immediately and would shred the module.
+    uintptr_t metadata_floor = kernel_end;
+    if (modules_end > metadata_floor) {
+        metadata_floor = modules_end;
+    }
+    uintptr_t metadata_addr = ALIGN_UP(metadata_floor, frame_size);
     frame_metadata = (struct frame*)metadata_addr;
     uintptr_t metadata_size = pmm_managed_frame_count * sizeof(struct frame);
 

@@ -56,6 +56,15 @@ static fat32_mount_t mount;
 static console_t con;
 static shell_ctx_t shell_ctx;
 
+// printk's framebuffer mirror (see hdr/serial.h). Registered the moment the
+// console is up so that on a machine with no serial port - every modern
+// desktop - boot progress and panics are still visible on screen. The shell
+// writes to the same console; kernel messages after handoff interleave with
+// it, which is exactly what a bare-metal debug session wants.
+static void printk_console_mirror(char c) {
+    console_putc(&con, c);
+}
+
 static inline void pit_outb(uint16_t port, uint8_t value) {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
@@ -410,6 +419,9 @@ static void run_bitmap_pmm_tests(void) {
     pmm_print_test_result("bitmap reject invalid free", invalid_free == 0);
 }
 
+// No caller since the early framebuffer console replaced the banner (the
+// console clear would wipe it the same instant); kept for reuse.
+__attribute__((unused))
 static void draw_boot_banner(const struct multiboot_tag_framebuffer *fb) {
     if (!fb) {
         return;
@@ -620,11 +632,13 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     struct multiboot_tag_framebuffer fb_snapshot = {0};
     uint64_t timer_ticks_boot = 0;
     int fb_snapshot_valid = 0;
-    int fb_runtime_valid = 0;
+    int console_ready = 0;
+    uint32_t ramdisk_mod_start = 0;
+    uint32_t ramdisk_mod_end = 0;
 
     serial_init();
     printk("[SecureOS] kmain reached\r\n");
-   
+
     {
         const struct multiboot_tag_framebuffer *fb_pre =
             (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
@@ -633,6 +647,24 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             fb_snapshot_valid = 1;
         } else if (fb_pre) {
             printk("[SecureOS] framebuffer tag too small\r\n");
+        }
+    }
+
+    // Snapshot the fat32-ramdisk module range while the Multiboot2 info is
+    // still guaranteed mapped: after transition() the low-identity window is
+    // partially unmapped, so the tag list must not be walked again later.
+    // Only the physical range is kept; the data itself is read through the
+    // physmap once it exists (pmm_init reserves the frames).
+    {
+        const struct multiboot_tag_module *mod_pre =
+            (const struct multiboot_tag_module *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_MODULE);
+        if (mod_pre && mod_pre->mod_end > mod_pre->mod_start) {
+            ramdisk_mod_start = mod_pre->mod_start;
+            ramdisk_mod_end = mod_pre->mod_end;
+            printk("[SecureOS] boot module found: PA=0x%x..0x%x\r\n",
+                   ramdisk_mod_start, ramdisk_mod_end);
+        } else {
+            printk("[SecureOS] no boot module (module tag missing)\r\n");
         }
     }
 
@@ -788,8 +820,21 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
         if (fb_va != 0 && fb_pa_after_transition != 0 &&
             fb_set_runtime(&fb_relocated) == 0) {
-            fb_runtime_valid = 1;
-            draw_boot_banner(fb_get_runtime());
+            // Console comes up as early as the framebuffer allows, replacing
+            // the old boot banner: from here on printk is mirrored on screen,
+            // so a bare-metal boot that dies before the shell still shows
+            // where. Serial keeps receiving everything regardless.
+            if (console_init(&con, fb_get_runtime()) == 0) {
+                console_set_active(&con);
+                printk_set_mirror(printk_console_mirror);
+                console_ready = 1;
+                printk("[CONSOLE] framebuffer console up (%ux%u bpp=%u); printk mirrored to screen\r\n",
+                       fb_get_runtime()->common.framebuffer_width,
+                       fb_get_runtime()->common.framebuffer_height,
+                       fb_get_runtime()->common.framebuffer_bpp);
+            } else {
+                printk("[CONSOLE] console init failed\r\n");
+            }
         } else {
             printk("[SecureOS] framebuffer unmapped after transition; skip draw\r\n");
         }
@@ -797,8 +842,37 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         printk("[SecureOS] framebuffer tag missing (type 8)\r\n");
     }
 
-    printk("[FAT32] initializing IDE-backed disk\r\n");
-    if (block_device_init_ide_primary_master(&fat32_disk, "fat32-disk") != 0) {
+    // Userland storage. Preferred: the fat32-ramdisk Multiboot2 module GRUB
+    // loaded into RAM - works on any machine, no disk controller involved,
+    // which is the whole bare-metal story (the desktop's SATA is AHCI-only
+    // and the IDE PIO driver cannot see it). Fallback: the legacy QEMU IDE
+    // disk, so the old run/run-uefi targets keep working unchanged.
+    int storage_ready = 0;
+    if (ramdisk_mod_end > ramdisk_mod_start) {
+        uintptr_t ramdisk_va = phys_to_virt((uintptr_t)ramdisk_mod_start);
+        uint64_t ramdisk_bytes = (uint64_t)ramdisk_mod_end - ramdisk_mod_start;
+
+        if (ramdisk_va != 0 &&
+            block_device_init_memory(&fat32_disk, "fat32-ramdisk",
+                                     (void *)ramdisk_va, ramdisk_bytes, 512) == 0) {
+            storage_ready = 1;
+            printk("[FAT32] ramdisk ready: PA=0x%x VA=0x%llx bytes=0x%llx\r\n",
+                   ramdisk_mod_start,
+                   (unsigned long long)ramdisk_va,
+                   (unsigned long long)ramdisk_bytes);
+        } else {
+            printk("[FAT32] ramdisk module unusable; trying IDE fallback\r\n");
+        }
+    }
+
+    if (!storage_ready) {
+        printk("[FAT32] initializing IDE-backed disk\r\n");
+        if (block_device_init_ide_primary_master(&fat32_disk, "fat32-disk") == 0) {
+            storage_ready = 1;
+        }
+    }
+
+    if (!storage_ready) {
         printk("[FAT32] disk init failed\r\n");
     } else if (fat32_mount(&mount, &fat32_disk, 0) != 0) {
         printk("[FAT32] mount failed\r\n");
@@ -1022,24 +1096,18 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
 
     // Assaf DON'T PUT TEST CODE BELOW THIS POINT ----------------
-    printk("[CONSOLE] Attempting to init console...\r\n");
 
-    int console_ready = 0;
-
-    if (!fb_runtime_valid) {
-        printk("[CONSOLE] framebuffer runtime mapping not valid\r\n");
-    } else if (console_init(&con, fb_get_runtime()) != 0) {
-        printk("[CONSOLE] console init failed\r\n");
-    } else {
-        printk("[CONSOLE] console initialized\r\n");
-        // From here on userland's fd 1 and fd 2 reach the screen, not just the
-        // serial port. `con` is file-scope, so the pointer stays valid after
-        // kmain's frame is gone.
-        console_set_active(&con);
+    // The console itself came up right after the framebuffer runtime mapping
+    // (see the fb block above) so the whole boot log is on screen; here it
+    // only gets its shell face. Userland's fd 1 and fd 2 already reach the
+    // screen via console_set_active(). `con` is file-scope, so the pointer
+    // stays valid after kmain's frame is gone.
+    if (console_ready) {
         console_set_prompt(&con, "SSH> ");
         console_puts(&con, "-={ Welcome to the SecureOS! }=-\n\n\n");
         shell_init(&shell_ctx, &mount, &con);
-        console_ready = 1;
+    } else {
+        printk("[CONSOLE] no usable framebuffer console\r\n");
     }
 
     if (!console_ready) {

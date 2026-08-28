@@ -37,9 +37,11 @@ void serial_write_char(char c) {
     outb(COM1, (uint8_t)c);
 }
 
+static void mirrored_putc(char c);
+
 void serial_write_string(const char *s) {
     while (*s) {
-        serial_write_char(*s++);
+        mirrored_putc(*s++);
     }
 }
 
@@ -47,7 +49,7 @@ void serial_write_hex32(uint32_t value) {
     for (int i = 0; i < 8; i++) {
         uint8_t nibble = (value >> 28) & 0xF;
         char c = (nibble <= 9) ? (char)('0' + nibble) : (char)('A' + (nibble - 10));
-        serial_write_char(c);
+        mirrored_putc(c);
         value <<= 4;
     }
 }
@@ -57,10 +59,30 @@ void serial_write_hex64(uint64_t value) {
     serial_write_hex32((uint32_t)(value & 0xFFFFFFFFu));
 }
 
+// See hdr/serial.h: printk's characters - and the hex/string log helpers
+// above - fan out to the serial port and, once kmain registers the console,
+// to the framebuffer as well. serial_write_char itself stays raw: sys_write
+// calls it per character while also writing the console, and mirroring at
+// that level would double userland's on-screen output. Runtime-assigned
+// (not a static initializer), so the stored address is the post-transition
+// higher-half one and needs no KIMG rebase.
+static printk_mirror_fn printk_mirror;
+
+void printk_set_mirror(printk_mirror_fn fn) {
+    printk_mirror = fn;
+}
+
+static void mirrored_putc(char c) {
+    serial_write_char(c);
+    if (printk_mirror) {
+        printk_mirror(c);
+    }
+}
+
 static int serial_write_n(const char *s, size_t len) {
     int count = 0;
     for (size_t i = 0; i < len; i++) {
-        serial_write_char(s[i]);
+        mirrored_putc(s[i]);
         count++;
     }
     return count;
@@ -69,7 +91,7 @@ static int serial_write_n(const char *s, size_t len) {
 static int serial_write_repeat(char c, int count) {
     int written = 0;
     for (int i = 0; i < count; i++) {
-        serial_write_char(c);
+        mirrored_putc(c);
         written++;
     }
     return written;
@@ -129,7 +151,7 @@ int printk(const char *fmt, ...) {
 
     while (*fmt) {
         if (*fmt != '%') {
-            serial_write_char(*fmt++);
+            mirrored_putc(*fmt++);
             count++;
             continue;
         }
@@ -219,7 +241,7 @@ int printk(const char *fmt, ...) {
         }
 
         if (spec == '%') {
-            serial_write_char('%');
+            mirrored_putc('%');
             count++;
             continue;
         }
@@ -230,7 +252,7 @@ int printk(const char *fmt, ...) {
             if (!left) {
                 count += serial_write_repeat(' ', pad);
             }
-            serial_write_char(c);
+            mirrored_putc(c);
             count++;
             if (left) {
                 count += serial_write_repeat(' ', pad);
@@ -383,7 +405,7 @@ int printk(const char *fmt, ...) {
         }
 
         if (sign_char) {
-            serial_write_char(sign_char);
+            mirrored_putc(sign_char);
             count++;
         }
         if (prefix_len) {

@@ -433,13 +433,16 @@ $(GRUB_MODS_DIR)/relocator.mod: $(GRUB_PLATFORM_DIR)/relocator.mod | $(BUILD_DIR
 
 # Create the bootable ISO image.
 # - grub-mkrescue collects GRUB modules and our staged tree and emits an ISO.
-$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(GRUB_MODS_DIR)/relocator.mod
+$(ISO_FILE): $(KERNEL_ELF) $(GRUB_CFG) $(GRUB_MODS_DIR)/relocator.mod $(FAT32_IMAGE)
 	# Create directories inside the staged ISO tree.
 	mkdir -p $(ISO_DIR)/boot/grub
 	# Copy the built kernel to the path referenced by grub.cfg.
 	cp $(KERNEL_ELF) $(ISO_DIR)/boot/secureos.elf
 	# Copy the GRUB configuration file.
 	cp $(GRUB_CFG) $(ISO_DIR)/boot/grub/grub.cfg
+	# Copy the FAT32 userland image; grub.cfg loads it as a Multiboot2
+	# module ("fat32-ramdisk") so the kernel can run without a disk driver.
+	cp $(FAT32_IMAGE) $(ISO_DIR)/boot/fat32.img
 	$(GRUB_MKRESCUE) $(GRUB_MKRESCUE_FLAGS) -o $(ISO_FILE) $(ISO_DIR)
 	@echo "=== Build Complete ==="
 	@echo "Bootable ISO created: $(ISO_FILE)"
@@ -521,6 +524,33 @@ run-debug: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-serial stdio \
 		-m 2048 \
 		-s -S
+
+# ---------------- Bare-metal rehearsal target ----------------
+#
+# Emulates the target desktop (ASUS PRIME H670-PLUS D4, i5-12400F, 32 GiB,
+# UEFI, AHCI-only SATA) as closely as QEMU allows:
+# - `-machine q35` models a modern Intel chipset: the CD-ROM attaches via
+#   AHCI/SATA, and there is NO legacy IDE controller at 0x1F0. This proves
+#   the kernel reaches userland through the Multiboot2 ramdisk alone -
+#   exactly the situation on the real machine.
+# - No $(FAT32_DRIVE): the FAT32 image travels inside the ISO instead.
+# - `-m 8192` puts RAM well past the PMM's 4 GiB managed clamp, like the
+#   real 32 GiB machine (host cannot spare a full 32 GiB guest).
+# - `-smp 12` matches the 12400F's 6c/12t; extra cores stay parked since
+#   the kernel is single-CPU, same as they will on hardware.
+# - q35 still provides the i8042 PS/2 controller, which is also what the
+#   desktop's firmware USB legacy emulation presents the keyboard as.
+run-desktop: userland $(ISO_FILE) $(OVMF_VARS_COPY)
+	qemu-system-x86_64 \
+		-machine q35 \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
+		-boot order=d \
+		-cdrom $(ISO_FILE) \
+		-serial stdio \
+		-vga std \
+		-smp 12 \
+		-m 8192
 
 
 # ---------------- Userland test binaries ----------------
