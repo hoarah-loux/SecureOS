@@ -814,11 +814,16 @@ uintptr_t vmm_map_high_physmap_range(uintptr_t pa_start, uint64_t bytes){
     for(uintptr_t pa = start; pa < end; pa += two_mib){
 
         uintptr_t va = PHYS_MAP_BASE + pa;
-        uint64_t table_flags = (1ULL << 0) | (1ULL << 1);                    // P | RW
-        uint64_t large_flags = (1ULL << 0) | (1ULL << 1) | (1ULL << 7);      // P | RW | PS
 
-        if(!populate2m_into_table(kroot, va, pa, table_flags,
-            table_flags, large_flags)){return 0;}
+        // vmm_map_page, not populate2m_into_table: the populate helpers are
+        // transitional code that dereferences page-table frames by raw
+        // physical address, valid only under the pre-transition identity
+        // map. This function runs post-transition, where that walk faults.
+        map_out mapped = vmm_map_page(va, pa, kroot, 3, (1ULL << 1) /* RW */);
+
+        if(!mapped.success && mapped.error_code != MAPPING_EXISTS_AT_DESIRED_LVL){
+            return 0;
+        }
 
     }
 
