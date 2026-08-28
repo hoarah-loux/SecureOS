@@ -14,6 +14,14 @@
 // this to decide whether to wake the threads waiting on the keyboard.
 int keyboard_handle_scancode(uint8_t scancode);
 
+// Minimal i8042 controller init: drain stale output, enable port 1 with
+// IRQ + set-1 translation, start device scanning. Bounded waits throughout;
+// a machine with no controller (floating 0xFF status) falls straight
+// through. Call once at boot, before interrupts are enabled - real firmware
+// keyboard emulation can come up wedged (stale byte + timeout error) and
+// stays silent until this runs.
+void i8042_init(void);
+
 // ---------------- raw scancodes ----------------
 //
 // The cooked path throws away everything a game needs. It drops key releases

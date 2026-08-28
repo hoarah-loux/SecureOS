@@ -332,3 +332,119 @@ int64_t sys_kbd_raw(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t
     keyboard_set_raw_mode(a0 != 0);
     return 0;
 }
+
+// ---------------- i8042 controller bring-up ----------------
+//
+// The kernel used to touch the i8042 only from the IRQ1 handler and the
+// timer-tick poll, never initializing it. Fine in QEMU; on the bare-metal
+// target (firmware USB legacy emulation) the controller came up wedged:
+// status 0x55 = a stale byte in the output buffer plus the timeout-error
+// bit, and no scancodes ever flowed. This is the standard minimal init:
+// drain the output buffer, enable port 1 with IRQ + set-1 translation in
+// the config byte, and tell the device to start scanning. Every write
+// waits for IBF to clear and every response read waits for OBF, all
+// bounded, so a machine with no controller at all (status 0xFF, floating
+// bus) falls straight through without hanging.
+
+enum {
+    I8042_DATA_PORT = 0x60,
+    I8042_STATUS_PORT = 0x64,
+    I8042_CMD_PORT = 0x64,
+    I8042_STATUS_OBF = 0x01,
+    I8042_STATUS_IBF = 0x02,
+    I8042_SPINS = 65536,
+    I8042_FLUSH_MAX = 32
+};
+
+static inline uint8_t i8042_inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+static inline void i8042_outb(uint16_t port, uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+// Wait until the controller will accept a command/data byte (IBF clear).
+static int i8042_wait_write_ready(void) {
+    for (uint32_t i = 0; i < I8042_SPINS; i++) {
+        uint8_t status = i8042_inb(I8042_STATUS_PORT);
+        if (status == 0xFF) {
+            return 0;
+        }
+        if ((status & I8042_STATUS_IBF) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Wait until a response byte is available (OBF set).
+static int i8042_wait_read_ready(void) {
+    for (uint32_t i = 0; i < I8042_SPINS; i++) {
+        uint8_t status = i8042_inb(I8042_STATUS_PORT);
+        if (status == 0xFF) {
+            return 0;
+        }
+        if ((status & I8042_STATUS_OBF) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Drain whatever sits in the output buffer - stale bytes, error markers,
+// leftovers from the firmware. Bounded so a stuck OBF bit cannot hang boot.
+static void i8042_flush(void) {
+    for (uint32_t i = 0; i < I8042_FLUSH_MAX; i++) {
+        uint8_t status = i8042_inb(I8042_STATUS_PORT);
+        if (status == 0xFF || (status & I8042_STATUS_OBF) == 0) {
+            return;
+        }
+        (void)i8042_inb(I8042_DATA_PORT);
+    }
+}
+
+void i8042_init(void) {
+    if (i8042_inb(I8042_STATUS_PORT) == 0xFF) {
+        return; // floating bus: no controller, nothing to set up
+    }
+
+    i8042_flush();
+
+    // Config byte: enable port 1 IRQ (bit 0) and set-1 translation (bit 6),
+    // clear the port 1 clock-disable bit (bit 4). Read-modify-write so any
+    // firmware bits we do not understand survive.
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_CMD_PORT, 0x20);
+        if (i8042_wait_read_ready()) {
+            uint8_t config = i8042_inb(I8042_DATA_PORT);
+            config |= 0x01;
+            config |= 0x40;
+            config &= (uint8_t)~0x10;
+            if (i8042_wait_write_ready()) {
+                i8042_outb(I8042_CMD_PORT, 0x60);
+                if (i8042_wait_write_ready()) {
+                    i8042_outb(I8042_DATA_PORT, config);
+                }
+            }
+        }
+    }
+
+    // Enable port 1 explicitly, then tell the device to start scanning
+    // (0xF4). Eat the ACK (0xFA) if one comes; tolerate silence.
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_CMD_PORT, 0xAE);
+    }
+    i8042_flush();
+
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_DATA_PORT, 0xF4);
+        if (i8042_wait_read_ready()) {
+            (void)i8042_inb(I8042_DATA_PORT);
+        }
+    }
+
+    i8042_flush();
+}

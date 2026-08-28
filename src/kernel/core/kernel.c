@@ -713,6 +713,7 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     }
 
      idt_init();
+    i8042_init();
     pic_init_for_keyboard();
     pit_init(100);
     __asm__ volatile("sti" ::: "memory");

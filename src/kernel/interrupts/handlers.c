@@ -516,10 +516,13 @@ void timer_handler(trap_frame *frame, trap_reason trap_reason){
     // controller at all), bit 5 marks mouse (AUX) data - skip both.
     {
         uint8_t kb_status = inb(0x64);
-        if (kb_status != 0xFF && (kb_status & 0x01) != 0 &&
-            (kb_status & 0x20) == 0) {
+        if (kb_status != 0xFF && (kb_status & 0x01) != 0) {
             uint8_t kb_scancode = inb(0x60);
-            if (keyboard_handle_scancode(kb_scancode)) {
+            // Bytes flagged as mouse data (bit 5) or arriving with the
+            // timeout/parity error bits (6/7) are consumed to unblock the
+            // controller but never fed to the scancode decoder.
+            if ((kb_status & 0xE0) == 0 &&
+                keyboard_handle_scancode(kb_scancode)) {
                 scheduler_wake_all(cpu->cpu_id, cpu->keyboard_wait_queue);
             }
         }
