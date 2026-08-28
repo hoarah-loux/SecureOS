@@ -22,6 +22,29 @@ int keyboard_handle_scancode(uint8_t scancode);
 // stays silent until this runs.
 void i8042_init(void);
 
+// What i8042_init() observed, for the bring-up report kmain prints. A
+// response field left at 0xFF means nothing answered within the bounded
+// wait - the telling case on firmware that services ports 60h/64h but has
+// no device behind them.
+typedef struct {
+    uint8_t status_entry;   // port 0x64 before any command
+    uint8_t status_exit;    // port 0x64 after init
+    uint8_t self_test;      // 0xAA response, 0x55 = controller alive
+    uint8_t port_test;      // 0xAB response, 0x00 = port 1 line good
+    uint8_t config_before;  // config byte as firmware left it
+    uint8_t config_after;   // config byte we wrote
+    uint8_t ident_first;    // 0xF2 first response, 0xFA = a device answers
+    uint8_t enable_ack;     // 0xF4 response, 0xFA = scanning enabled
+} i8042_diag_t;
+
+extern i8042_diag_t i8042_diag;
+
+// Bytes the timer-tick poll has consumed from port 0x60 since boot, and the
+// last one seen. Distinguishes "no bytes ever arrive" from "bytes arrive but
+// decode to nothing" without a serial port.
+extern uint32_t i8042_poll_bytes;
+extern uint8_t i8042_poll_last;
+
 // ---------------- raw scancodes ----------------
 //
 // The cooked path throws away everything a game needs. It drops key releases

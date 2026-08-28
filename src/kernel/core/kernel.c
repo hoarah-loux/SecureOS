@@ -882,7 +882,13 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     // USB Support" setting, and prefer Enabled over Auto); anything else
     // means the controller responds and input arrives via IRQ1 or the
     // timer-tick poll fallback.
-    printk("[KBD] i8042 status port 0x64 reads 0x%x\r\n", kmain_inb(0x64));
+    printk("[KBD] status entry=0x%x exit=0x%x selftest=0x%x porttest=0x%x\r\n",
+           i8042_diag.status_entry, i8042_diag.status_exit,
+           i8042_diag.self_test, i8042_diag.port_test);
+    printk("[KBD] config before=0x%x after=0x%x ident=0x%x enable_ack=0x%x\r\n",
+           i8042_diag.config_before, i8042_diag.config_after,
+           i8042_diag.ident_first, i8042_diag.enable_ack);
+    printk("[KBD] 0xFF in a response field = no answer within the bounded wait\r\n");
 
     if (console_ready) {
         console_set_prompt(&con, "SSH> ");

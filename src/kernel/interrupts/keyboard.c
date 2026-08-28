@@ -406,12 +406,35 @@ static void i8042_flush(void) {
     }
 }
 
+// What init observed, for the on-screen bring-up report. Populated once by
+// i8042_init(); read by kmain. 0xFF in a response field means "no answer
+// within the bounded wait", which is the interesting failure on firmware
+// that services the ports but not device commands.
+i8042_diag_t i8042_diag;
+
 void i8042_init(void) {
-    if (i8042_inb(I8042_STATUS_PORT) == 0xFF) {
+    i8042_diag.status_entry = i8042_inb(I8042_STATUS_PORT);
+    i8042_diag.self_test = 0xFF;
+    i8042_diag.port_test = 0xFF;
+    i8042_diag.config_before = 0xFF;
+    i8042_diag.config_after = 0xFF;
+    i8042_diag.enable_ack = 0xFF;
+    i8042_diag.ident_first = 0xFF;
+
+    if (i8042_diag.status_entry == 0xFF) {
         return; // floating bus: no controller, nothing to set up
     }
 
     i8042_flush();
+
+    // Controller self-test. Answers 0x55 when the 8042 (or its emulation)
+    // is alive; silence here means nothing is servicing commands at all.
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_CMD_PORT, 0xAA);
+        if (i8042_wait_read_ready()) {
+            i8042_diag.self_test = i8042_inb(I8042_DATA_PORT);
+        }
+    }
 
     // Config byte: enable port 1 IRQ (bit 0) and set-1 translation (bit 6),
     // clear the port 1 clock-disable bit (bit 4). Read-modify-write so any
@@ -420,6 +443,7 @@ void i8042_init(void) {
         i8042_outb(I8042_CMD_PORT, 0x20);
         if (i8042_wait_read_ready()) {
             uint8_t config = i8042_inb(I8042_DATA_PORT);
+            i8042_diag.config_before = config;
             config |= 0x01;
             config |= 0x40;
             config &= (uint8_t)~0x10;
@@ -427,24 +451,51 @@ void i8042_init(void) {
                 i8042_outb(I8042_CMD_PORT, 0x60);
                 if (i8042_wait_write_ready()) {
                     i8042_outb(I8042_DATA_PORT, config);
+                    i8042_diag.config_after = config;
                 }
             }
         }
     }
 
-    // Enable port 1 explicitly, then tell the device to start scanning
-    // (0xF4). Eat the ACK (0xFA) if one comes; tolerate silence.
+    // Enable port 1 explicitly.
     if (i8042_wait_write_ready()) {
         i8042_outb(I8042_CMD_PORT, 0xAE);
     }
     i8042_flush();
 
+    // Port 1 interface test: 0x00 means a working port 1 line.
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_CMD_PORT, 0xAB);
+        if (i8042_wait_read_ready()) {
+            i8042_diag.port_test = i8042_inb(I8042_DATA_PORT);
+        }
+    }
+    i8042_flush();
+
+    // Device identify (0xF2): an ACK plus ID bytes proves a keyboard (or
+    // firmware pretending to be one) is answering DEVICE commands, not just
+    // the controller. This is the discriminator on machines where USB legacy
+    // emulation services 60h/64h but has no device behind them.
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_DATA_PORT, 0xF2);
+        if (i8042_wait_read_ready()) {
+            i8042_diag.ident_first = i8042_inb(I8042_DATA_PORT);
+        }
+    }
+    i8042_flush();
+
+    // Enable scanning and record the ACK (0xFA expected).
     if (i8042_wait_write_ready()) {
         i8042_outb(I8042_DATA_PORT, 0xF4);
         if (i8042_wait_read_ready()) {
-            (void)i8042_inb(I8042_DATA_PORT);
+            i8042_diag.enable_ack = i8042_inb(I8042_DATA_PORT);
         }
     }
 
     i8042_flush();
+    i8042_diag.status_exit = i8042_inb(I8042_STATUS_PORT);
 }
+
+// Counters for the poll path in handlers.c; see hdr/keyboard.h.
+uint32_t i8042_poll_bytes;
+uint8_t i8042_poll_last;

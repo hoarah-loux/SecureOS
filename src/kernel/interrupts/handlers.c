@@ -518,6 +518,16 @@ void timer_handler(trap_frame *frame, trap_reason trap_reason){
         uint8_t kb_status = inb(0x64);
         if (kb_status != 0xFF && (kb_status & 0x01) != 0) {
             uint8_t kb_scancode = inb(0x60);
+            i8042_poll_bytes++;
+            i8042_poll_last = kb_scancode;
+
+            // Bring-up evidence, first few bytes only: with no serial port
+            // on the target, this is how "does anything reach port 0x60 at
+            // all" gets answered - type a key and watch for a line.
+            if (i8042_poll_bytes <= 8) {
+                printk("[KBD] poll byte 0x%x status 0x%x\r\n",
+                       kb_scancode, kb_status);
+            }
             // Bytes flagged as mouse data (bit 5) or arriving with the
             // timeout/parity error bits (6/7) are consumed to unblock the
             // controller but never fed to the scancode decoder.
