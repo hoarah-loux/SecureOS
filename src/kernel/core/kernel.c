@@ -56,6 +56,11 @@ static fat32_mount_t mount;
 static console_t con;
 static shell_ctx_t shell_ctx;
 
+// Framebuffer snapshot shared with boot_stage_mark() below, so transition()
+// (vmm.c) can stamp sub-stage markers - kmain's local copy is out of reach.
+static struct multiboot_tag_framebuffer boot_fb_snapshot;
+static int boot_fb_valid;
+
 // 1 GiB page support (CPUID leaf 0x80000001, EDX bit 26) - the entry stub
 // extends its identity map past 4 GiB with 1 GiB pages only when this is set.
 static int cpu_has_1g_pages(void) {
@@ -125,6 +130,13 @@ static void boot_marker(const struct multiboot_tag_framebuffer *fb,
             row[x0 + x] = rgb;
         }
     }
+}
+
+// Exported wrapper so transition() (vmm.c) can stamp sub-stage markers into
+// the same top-left square row: indices 4+ are transition sub-stages, drawn
+// from the shared snapshot above. Declared in hdr/vmm.h.
+void boot_stage_mark(uint32_t index, uint32_t rgb, int via_physmap) {
+    boot_marker(&boot_fb_snapshot, boot_fb_valid, index, rgb, via_physmap);
 }
 
 // printk's framebuffer mirror (see hdr/serial.h). Registered the moment the
@@ -719,6 +731,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         if (fb_pre && fb_pre->common.size >= sizeof(struct multiboot_tag_framebuffer_common)) {
             fb_snapshot = *fb_pre;
             fb_snapshot_valid = 1;
+            // Copy for boot_stage_mark(), so code outside kmain (transition's
+            // sub-stage markers in vmm.c) can stamp progress on screen too.
+            boot_fb_snapshot = fb_snapshot;
+            boot_fb_valid = 1;
         }
     }
 
@@ -791,7 +807,12 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
 
-    boot_marker(&fb_snapshot, fb_snapshot_valid, 3, 0x0000FF, 1);
+    // Only via the physmap when the transition actually happened - on an
+    // early transition failure the old root is still active and the physmap
+    // VA is unmapped, so drawing would fault with no IDT to catch it.
+    if (transition_ok == 1) {
+        boot_marker(&fb_snapshot, fb_snapshot_valid, 3, 0x0000FF, 1);
+    }
 
     if (transition_ok == 1 && kernel_start_pa_pre != 0 && kernel_end_last_pa_pre != 0) {
         uintptr_t kernel_end_pa_exclusive = kernel_end_last_pa_pre + 1;

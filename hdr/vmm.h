@@ -445,6 +445,13 @@ uintptr_t phys_to_virt(uintptr_t physical_adress);
 // BAR placed above 4 GiB by firmware "Above 4G Decoding".
 uintptr_t vmm_map_high_physmap_range(uintptr_t pa_start, uint64_t bytes);
 
+// Defined in kernel.c: stamp a colored boot-progress square (index picks the
+// column, ~40 px apart). via_physmap = 0 draws through the framebuffer's
+// physical address (pre-cr3-switch identity map), 1 through the physmap
+// alias. Serial-independent breadcrumbs for bare-metal bring-up; no-op when
+// no usable framebuffer was found.
+void boot_stage_mark(uint32_t index, uint32_t rgb, int via_physmap);
+
 
 // THIS CREATES A PAGE TABLE WOOOWWW. and returns a pointer to its adress
 uintptr_t* vmm_create_page_table(void);

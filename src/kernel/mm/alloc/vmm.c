@@ -852,6 +852,12 @@ uint64_t transition(uintptr_t *old_root){
     uintptr_t *new_root = page_metdata.pgtable_pointer;
     uintptr_t new_root_phys = page_metdata.physical_adress;
 
+    // Bare-metal breadcrumbs (see boot_stage_mark in hdr/vmm.h): the first
+    // real-hardware boot died somewhere in this function with nothing on
+    // screen, so each sub-stage stamps a square. Pre-cr3-switch stamps go
+    // through the identity map, post-switch ones through the fresh physmap.
+    boot_stage_mark(4, 0xFF8000, 0);   // orange: new root table allocated
+
     uintptr_t src_start_va =((uintptr_t)&_kernel_start) & ~((uintptr_t)0x1FFFFF);
     uintptr_t src_end_va = (((uintptr_t)&_kernel_end) + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
 
@@ -868,13 +874,22 @@ uint64_t transition(uintptr_t *old_root){
 
     if(!copy_mapping_dynamic_over_range(old_root,src_start_va, src_end_va, new_root, src_start_va)) return 0;
     if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, hh_base)) return 0;
+
+    boot_stage_mark(5, 0x00FFFF, 0);   // cyan: kernel window mappings copied
+
     if(!poplulate_phys_map(new_root)) return 0;
 
+    boot_stage_mark(6, 0xFF00FF, 0);   // magenta: physmap populated
+
     cr3_switch_t(new_root_phys);
+
+    boot_stage_mark(7, 0xFFFFFF, 1);   // white: running on the new root
 
     if(!arch_rebase_and_reload_gdt_tss(src_start_va, src_end_va, hh_base)){
         return 0;
     }
+
+    boot_stage_mark(8, 0x808080, 1);   // gray: GDT/TSS rebased
 
     // Rebase the current frame so function epilogue and RET continue via higher-half aliases.
     uintptr_t current_rbp = 0;
