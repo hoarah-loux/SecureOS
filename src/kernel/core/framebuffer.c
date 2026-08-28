@@ -11,6 +11,24 @@
 static struct multiboot_tag_framebuffer fb_runtime;
 static int fb_runtime_valid;
 
+// System-RAM shadow of the framebuffer. Real framebuffers are PCIe MMIO:
+// writes are posted and tolerable, but READS are single serialized bus
+// transactions - the old scroll implementation read the whole screen back
+// through the aperture and took seconds per scrolled line on hardware
+// (QEMU's fb is host RAM, so it never showed). Every console-path draw
+// lands in both the shadow and the fb; scrolling reads only the shadow.
+// Sized for the largest mode we drive (1920x1080x32); larger modes fall
+// back to direct fb access. fb_blit_scaled (doom's path) intentionally
+// bypasses the shadow - it never reads the fb and overdraws every frame.
+enum { FB_SHADOW_BYTES = 1920u * 1080u * 4u };
+static uint8_t fb_shadow[FB_SHADOW_BYTES];
+static int fb_shadow_active;
+
+static int fb_shadow_usable(const struct multiboot_tag_framebuffer *fb) {
+    return (uint64_t)fb->common.framebuffer_pitch *
+               fb->common.framebuffer_height <= FB_SHADOW_BYTES;
+}
+
 // Where each color channel sits in a native pixel, taken from the Multiboot2
 // tag's RGB field descriptors. QEMU's stdvga and most GOP firmware use
 // xRGB8888 (red at 16, green at 8, blue at 0), but the Multiboot2 spec lets
@@ -82,6 +100,7 @@ int fb_set_runtime(const struct multiboot_tag_framebuffer *fb) {
     fb_runtime = *fb;
     fb_format_from_tag(&fb_runtime);
     fb_runtime_valid = 1;
+    fb_shadow_active = fb_shadow_usable(&fb_runtime);
     return 0;
 }
 
@@ -94,18 +113,32 @@ static void fb_putpixel(const struct multiboot_tag_framebuffer *fb, uint32_t x, 
         return;
     }
     uint8_t *base = (uint8_t *)(uintptr_t)fb->common.framebuffer_addr;
-    uint8_t *row = base + (uint64_t)y * fb->common.framebuffer_pitch;
+    uint64_t row_offset = (uint64_t)y * fb->common.framebuffer_pitch;
+    uint8_t *row = base + row_offset;
+    uint8_t *shadow_row = fb_shadow_active ? fb_shadow + row_offset : 0;
     uint32_t px = fb_pack_color(rgb);
 
     if (fb->common.framebuffer_bpp == 32) {
         ((uint32_t *)(void *)row)[x] = px;
+        if (shadow_row) {
+            ((uint32_t *)(void *)shadow_row)[x] = px;
+        }
     } else if (fb->common.framebuffer_bpp == 24) {
         uint8_t *dst = row + x * 3;
         dst[0] = (uint8_t)(px & 0xFF);
         dst[1] = (uint8_t)((px >> 8) & 0xFF);
         dst[2] = (uint8_t)((px >> 16) & 0xFF);
+        if (shadow_row) {
+            uint8_t *sdst = shadow_row + x * 3;
+            sdst[0] = dst[0];
+            sdst[1] = dst[1];
+            sdst[2] = dst[2];
+        }
     } else if (fb->common.framebuffer_bpp == 16) {
         ((uint16_t *)(void *)row)[x] = (uint16_t)px;
+        if (shadow_row) {
+            ((uint16_t *)(void *)shadow_row)[x] = (uint16_t)px;
+        }
     }
 }
 
@@ -171,8 +204,33 @@ void fb_scroll_up(const struct multiboot_tag_framebuffer *fb, uint32_t pixel_row
 
     uint32_t shift = pitch * pixel_rows;
     uint32_t move_bytes = pitch * (height - pixel_rows);
-    for (uint32_t i = 0; i < move_bytes; i++) {
-        base[i] = base[i + shift];
+
+    if (fb_shadow_active) {
+        // Shift within the RAM shadow, then push the changed region to the
+        // fb with pure writes. Never read the fb: MMIO reads are what made
+        // scrolling take seconds per line on real hardware. 64-bit chunks
+        // because at -O0 a byte loop over 8 MB is itself visible time.
+        uint64_t *sdst = (uint64_t *)(void *)fb_shadow;
+        const uint64_t *ssrc = (const uint64_t *)(void *)(fb_shadow + shift);
+        uint32_t chunks = move_bytes / 8u;
+        for (uint32_t i = 0; i < chunks; i++) {
+            sdst[i] = ssrc[i];
+        }
+        for (uint32_t i = chunks * 8u; i < move_bytes; i++) {
+            fb_shadow[i] = fb_shadow[i + shift];
+        }
+
+        uint64_t *fdst = (uint64_t *)(void *)base;
+        for (uint32_t i = 0; i < chunks; i++) {
+            fdst[i] = sdst[i];
+        }
+        for (uint32_t i = chunks * 8u; i < move_bytes; i++) {
+            base[i] = fb_shadow[i];
+        }
+    } else {
+        for (uint32_t i = 0; i < move_bytes; i++) {
+            base[i] = base[i + shift];
+        }
     }
 
     fb_fill_rect(fb,

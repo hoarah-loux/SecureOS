@@ -501,11 +501,29 @@ void mouse_interrupt_handler(int irq, void *data) {
 
 
 void timer_handler(trap_frame *frame, trap_reason trap_reason){
-    
+
     timer_ticks++;
     pic_send_eoi(PIC_TIMER_IRQ);
     scheduler_cpu *cpu = scheduler_this_cpu();
     if(cpu == NULL){return;}
+
+    // i8042 poll fallback for machines where firmware USB legacy emulation
+    // presents ports 60h/64h but never raises IRQ1 once the OS owns the
+    // machine (observed on the ASUS H670 target: keyboard alive in the
+    // bootloader, silent in the kernel). Feeds the exact same path as the
+    // IRQ1 handler; whichever fires first consumes the byte, so both being
+    // active is harmless. Guards: 0xFF status is a floating bus (no
+    // controller at all), bit 5 marks mouse (AUX) data - skip both.
+    {
+        uint8_t kb_status = inb(0x64);
+        if (kb_status != 0xFF && (kb_status & 0x01) != 0 &&
+            (kb_status & 0x20) == 0) {
+            uint8_t kb_scancode = inb(0x60);
+            if (keyboard_handle_scancode(kb_scancode)) {
+                scheduler_wake_all(cpu->cpu_id, cpu->keyboard_wait_queue);
+            }
+        }
+    }
 
     // Anything whose SYS_sleep deadline has passed goes back on the ready
     // queue. Done before scheduler_tick() so a thread that became runnable on
