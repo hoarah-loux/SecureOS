@@ -56,6 +56,59 @@ static fat32_mount_t mount;
 static console_t con;
 static shell_ctx_t shell_ctx;
 
+// Bare-metal boot-stage markers. On a machine with no serial port the only
+// witness of a hang before the console exists is the screen itself, so each
+// early boot phase stamps a small colored square in the top-left corner by
+// writing the framebuffer directly. Which squares made it onto the glass is
+// the diagnosis (photo the screen):
+//   0 red    = kmain reached (framebuffer tag parsed)
+//   1 yellow = pmm_init + bitmap tests survived
+//   2 green  = vmm_init survived
+//   3 blue   = transition() returned; higher-half live
+// Pre-transition the framebuffer is reachable through its physical address
+// (the entry stub identity-maps 0..4 GiB); post-transition through the
+// physmap. `via_physmap` picks the path. 32 bpp only - real GOP firmware is
+// 32 bpp in practice, and this must stay dumb enough to never fault; a
+// framebuffer above 4 GiB (Resizable BAR) is skipped entirely, and the
+// squares simply never appear - itself a diagnostic.
+static void boot_marker(const struct multiboot_tag_framebuffer *fb,
+                        int fb_valid, uint32_t index, uint32_t rgb,
+                        int via_physmap) {
+    enum { MARKER_SIZE = 32, MARKER_STRIDE = 40 };
+
+    if (!fb_valid || fb->common.framebuffer_type != 1 ||
+        fb->common.framebuffer_bpp != 32) {
+        return;
+    }
+
+    uintptr_t base;
+    if (via_physmap) {
+        base = phys_to_virt((uintptr_t)fb->common.framebuffer_addr);
+        if (base == 0) {
+            return;
+        }
+    } else {
+        if (fb->common.framebuffer_addr >= 0x100000000ULL) {
+            return;
+        }
+        base = (uintptr_t)fb->common.framebuffer_addr;
+    }
+
+    uint32_t x0 = index * MARKER_STRIDE;
+    if (x0 + MARKER_SIZE > fb->common.framebuffer_width ||
+        MARKER_SIZE > fb->common.framebuffer_height) {
+        return;
+    }
+
+    for (uint32_t y = 0; y < MARKER_SIZE; y++) {
+        uint32_t *row = (uint32_t *)(void *)((uint8_t *)base +
+                        (uint64_t)y * fb->common.framebuffer_pitch);
+        for (uint32_t x = 0; x < MARKER_SIZE; x++) {
+            row[x0 + x] = rgb;
+        }
+    }
+}
+
 // printk's framebuffer mirror (see hdr/serial.h). Registered the moment the
 // console is up so that on a machine with no serial port - every modern
 // desktop - boot progress and panics are still visible on screen. The shell
@@ -668,13 +721,19 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
         }
     }
 
+    boot_marker(&fb_snapshot, fb_snapshot_valid, 0, 0xFF0000, 0);
+
     printk("[VMM] initializing PMM/VMM test path\r\n");
     pmm_init(mb2_info_ptr, (uintptr_t)&_kernel_start, (uintptr_t)&_kernel_end);
     run_bitmap_pmm_tests();
 
+    boot_marker(&fb_snapshot, fb_snapshot_valid, 1, 0xFFFF00, 0);
+
     uintptr_t *boot_root = (uintptr_t *)read_cr3_root_phys();
     uint64_t init_ok = vmm_init(boot_root);
     vmm_print_test_result("vmm_init", init_ok == 1);
+
+    boot_marker(&fb_snapshot, fb_snapshot_valid, 2, 0x00FF00, 0);
 
     uintptr_t kmain_va = (uintptr_t)&kmain;
     uintptr_t kernel_low_window_start_va = ((uintptr_t)&_kernel_start) & TWO_MIB_PAGE_MASK;
@@ -707,6 +766,8 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
 
     uint64_t transition_ok = transition(boot_root);
     vmm_print_test_result("transition", transition_ok == 1);
+
+    boot_marker(&fb_snapshot, fb_snapshot_valid, 3, 0x0000FF, 1);
 
     if (transition_ok == 1 && kernel_start_pa_pre != 0 && kernel_end_last_pa_pre != 0) {
         uintptr_t kernel_end_pa_exclusive = kernel_end_last_pa_pre + 1;
