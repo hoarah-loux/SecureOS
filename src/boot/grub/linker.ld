@@ -73,10 +73,19 @@ PHDRS
 
 SECTIONS
 {
-    /* Start placing sections at virtual address 1 MiB (0x0010_0000). */
-    /* - Multiboot2 kernels are traditionally linked at 1 MiB. */
-    /* - Our early paging is identity-mapped, so VA == PA initially. */
-    . = 1M;
+    /* Start placing sections at virtual address 16 MiB (0x0100_0000). */
+    /* - Multiboot2 kernels are traditionally linked at 1 MiB, but UEFI
+     *   firmware keeps allocations in the low megabytes: GRUB papered over
+     *   that by force-copying the image at handoff (its relocator - the
+     *   code that crashes on NX-enforcing firmware), while Limine refuses
+     *   outright with "could not find viable load address". 16 MiB is
+     *   clear of the firmware's low-memory footprint on both OVMF and the
+     *   ASUS H670 target.
+     * - The entry stub clears NX on the 2 MiB pages overlapping .text
+     *   (see .pde_2m in entry64_mb2.asm), so the kernel may execute from
+     *   any link address, not just the 4 KiB-granular first 2 MiB.
+     * - Our early paging is identity-mapped, so VA == PA initially. */
+    . = 16M;
 
     /* Multiboot header MUST be in first 8 KiB (8192 bytes) of the file. */
     /*

@@ -746,7 +746,10 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     uintptr_t low_identity_unmap_end_va = 0;
     uintptr_t kmain_higher_half_va = 0;
     if (kmain_va >= kernel_low_window_start_va) {
-        kmain_higher_half_va = (uintptr_t)(KERNEL_IMAGE_BASE_VA + (kmain_va - kernel_low_window_start_va));
+        // transition() aliases the kernel window at KERNEL_IMAGE_BASE_VA +
+        // link address (not +offset-from-window), so KIMG-style rebases
+        // stay valid with the 16 MiB link base - mirror that here.
+        kmain_higher_half_va = (uintptr_t)(KERNEL_IMAGE_BASE_VA + kmain_va);
     }
 
     if (kernel_low_window_end_va > kernel_low_window_start_va) {

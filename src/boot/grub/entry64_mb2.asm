@@ -484,6 +484,28 @@ tss64_end:
         or eax, 0x00000083                 ; present + RW + PS
         ; Store low 32 bits of the PDE.
         mov dword [edi], eax
+
+        ; NX policy: default NX=1, but clear NX for 2 MiB pages overlapping
+        ; [__kernel_text_start, __kernel_text_end). The kernel links at
+        ; 16 MiB now (see linker.ld) - outside PT0's 4 KiB-granular first
+        ; 2 MiB - so without this the very first instruction after the jump
+        ; to kmain would fault on an NX page. Overlap test:
+        ;   page overlaps text iff base < text_end AND base+2MiB > text_start
+        mov esi, __kernel_text_start
+        mov ebp, __kernel_text_end
+        cmp ebx, ebp
+        jae .pde_2m_nx                     ; page base >= text end: no overlap
+        lea edx, [ebx + 0x200000]
+        cmp edx, esi
+        jbe .pde_2m_nx                     ; page end <= text start: no overlap
+
+        ; Overlaps kernel .text: executable (NX=0), count it for the debug
+        ; report printed after long-mode entry.
+        mov dword [edi + 4], 0
+        inc dword [nx_exec_2m_pages]
+        jmp .pde_next
+
+    .pde_2m_nx:
         ; Store high 32 bits; set NX=1 by default.
         mov dword [edi + 4], 0x80000000    ; NX=1
 

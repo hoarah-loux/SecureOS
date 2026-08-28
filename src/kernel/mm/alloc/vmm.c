@@ -823,15 +823,24 @@ uint64_t transition(uintptr_t *old_root){
     uintptr_t src_start_va =((uintptr_t)&_kernel_start) & ~((uintptr_t)0x1FFFFF);
     uintptr_t src_end_va = (((uintptr_t)&_kernel_end) + 0x1FFFFF) & ~((uintptr_t)0x1FFFFF);
 
-    //uintptr_t dest_va_start = KERNEL_IMAGE_BASE + (_kernel_start - LOW_BASE); check this shit
+    // The higher-half alias must satisfy VA = KERNEL_IMAGE_BASE + link
+    // address, because every KIMG-style rebase in the tree (idt.c isr
+    // tables, block_device/ide_pio/syscall ops tables) computes exactly
+    // `symbol + KERNEL_IMAGE_BASE`. The copy/rebase helpers all use
+    // dest = base + (addr - src_start_va), which only matched that formula
+    // while the kernel linked at 1 MiB (src_start_va rounded to 0). Since
+    // the link base moved to 16 MiB (UEFI firmware owns the low megabytes;
+    // see linker.ld), shift the base they receive so the two schemes agree
+    // for any link address.
+    uintptr_t hh_base = KERNEL_IMAGE_BASE + src_start_va;
 
     if(!copy_mapping_dynamic_over_range(old_root,src_start_va, src_end_va, new_root, src_start_va)) return 0;
-    if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, KERNEL_IMAGE_BASE)) return 0;
+    if (!copy_mapping_dynamic_over_range(old_root, src_start_va, src_end_va, new_root, hh_base)) return 0;
     if(!poplulate_phys_map(new_root)) return 0;
 
     cr3_switch_t(new_root_phys);
 
-    if(!arch_rebase_and_reload_gdt_tss(src_start_va, src_end_va, KERNEL_IMAGE_BASE)){
+    if(!arch_rebase_and_reload_gdt_tss(src_start_va, src_end_va, hh_base)){
         return 0;
     }
 
@@ -854,31 +863,31 @@ uint64_t transition(uintptr_t *old_root){
         return 0;
     }
 
-    uintptr_t higher_half_return_rip = KERNEL_IMAGE_BASE + (saved_return_rip - src_start_va);
-    if(higher_half_return_rip < KERNEL_IMAGE_BASE){
+    uintptr_t higher_half_return_rip = hh_base + (saved_return_rip - src_start_va);
+    if(higher_half_return_rip < hh_base){
         return 0;
     }
 
     uintptr_t higher_half_saved_caller_rbp = saved_caller_rbp;
     if(saved_caller_rbp >= src_start_va && saved_caller_rbp < src_end_va){
-        higher_half_saved_caller_rbp = KERNEL_IMAGE_BASE + (saved_caller_rbp - src_start_va);
-        if(higher_half_saved_caller_rbp < KERNEL_IMAGE_BASE){
+        higher_half_saved_caller_rbp = hh_base + (saved_caller_rbp - src_start_va);
+        if(higher_half_saved_caller_rbp < hh_base){
             return 0;
         }
     }
 
     uintptr_t higher_half_current_rbp = current_rbp;
     if(current_rbp >= src_start_va && current_rbp < src_end_va){
-        higher_half_current_rbp = KERNEL_IMAGE_BASE + (current_rbp - src_start_va);
-        if(higher_half_current_rbp < KERNEL_IMAGE_BASE){
+        higher_half_current_rbp = hh_base + (current_rbp - src_start_va);
+        if(higher_half_current_rbp < hh_base){
             return 0;
         }
     }
 
     uintptr_t higher_half_current_rsp = current_rsp;
     if(current_rsp >= src_start_va && current_rsp < src_end_va){
-        higher_half_current_rsp = KERNEL_IMAGE_BASE + (current_rsp - src_start_va);
-        if(higher_half_current_rsp < KERNEL_IMAGE_BASE){
+        higher_half_current_rsp = hh_base + (current_rsp - src_start_va);
+        if(higher_half_current_rsp < hh_base){
             return 0;
         }
     }

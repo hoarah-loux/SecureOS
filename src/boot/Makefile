@@ -525,6 +525,59 @@ run-debug: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 		-m 2048 \
 		-s -S
 
+# ---------------- Limine ISO (bare-metal boot path) ----------------
+#
+# GRUB's Multiboot2 handoff crashes inside its relocator on firmware that
+# enforces NX/W^X on loader memory - reproduced on QEMU with new EDK2 (the
+# relocator.mod workaround above) and terminally on the target desktop's
+# ASUS H670 firmware, where `boot` freezes instantly with zero kernel
+# output. Limine speaks the same Multiboot2 protocol (kernel unchanged,
+# module + cmdline included) but allocates its trampolines the way modern
+# firmware demands. This ISO is what actually goes on the USB stick; the
+# GRUB ISO above stays for the QEMU-based development workflow.
+#
+# The ISO is hybrid: `--efi-boot` covers UEFI, `-b limine-bios-cd.bin`
+# plus `limine bios-install` cover legacy/CSM boot as a fallback.
+
+LIMINE_DATA ?= /usr/share/limine
+LIMINE_ISO_DIR = $(BUILD_DIR)/limine_isodir
+LIMINE_ISO_FILE = $(PROJECT_ROOT)/secureos-limine.iso
+LIMINE_CONF = $(BOOT_DIR)/limine/limine.conf
+
+$(LIMINE_ISO_FILE): $(KERNEL_ELF) $(LIMINE_CONF) $(FAT32_IMAGE)
+	rm -rf $(LIMINE_ISO_DIR)
+	mkdir -p $(LIMINE_ISO_DIR)/boot/limine $(LIMINE_ISO_DIR)/EFI/BOOT
+	cp $(KERNEL_ELF) $(LIMINE_ISO_DIR)/boot/secureos.elf
+	cp $(FAT32_IMAGE) $(LIMINE_ISO_DIR)/boot/fat32.img
+	cp $(LIMINE_CONF) $(LIMINE_ISO_DIR)/boot/limine/limine.conf
+	cp $(LIMINE_DATA)/limine-bios.sys $(LIMINE_DATA)/limine-bios-cd.bin \
+		$(LIMINE_DATA)/limine-uefi-cd.bin $(LIMINE_ISO_DIR)/boot/limine/
+	cp $(LIMINE_DATA)/BOOTX64.EFI $(LIMINE_ISO_DIR)/EFI/BOOT/
+	xorriso -as mkisofs \
+		-b boot/limine/limine-bios-cd.bin -no-emul-boot \
+		-boot-load-size 4 -boot-info-table \
+		--efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image --protective-msdos-label \
+		$(LIMINE_ISO_DIR) -o $(LIMINE_ISO_FILE)
+	limine bios-install $(LIMINE_ISO_FILE)
+	@echo "=== Limine ISO created: $(LIMINE_ISO_FILE) ==="
+
+limine-iso: userland $(LIMINE_ISO_FILE)
+
+# The desktop rehearsal, but booting the Limine ISO - this is the config
+# that must work before burning the stick again.
+run-desktop-limine: userland $(LIMINE_ISO_FILE) $(OVMF_VARS_COPY)
+	qemu-system-x86_64 \
+		-machine q35 \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS_COPY) \
+		-boot order=d \
+		-cdrom $(LIMINE_ISO_FILE) \
+		-serial stdio \
+		-vga std \
+		-smp 12 \
+		-m 8192
+
 # ---------------- Bare-metal rehearsal target ----------------
 #
 # Emulates the target desktop (ASUS PRIME H670-PLUS D4, i5-12400F, 32 GiB,
