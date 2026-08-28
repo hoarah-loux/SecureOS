@@ -30,9 +30,28 @@ void serial_init(void) {
     outb(COM1 + 4, 0x0B);
 }
 
+// Sticky "COM1 is not usable" latch. On hardware without a functioning
+// UART the Line Status Register can read 0x00 forever (SuperIO serial
+// absent or disabled - QEMU always emulates COM1, so emulator runs never
+// see this), and the old unbounded THRE poll hung the whole kernel on the
+// first printk with nothing on screen. One bounded timeout flips this
+// flag and serial output becomes a no-op; the framebuffer console mirror
+// is the output path that remains.
+static int serial_dead;
+
 void serial_write_char(char c) {
+    if (serial_dead) {
+        return;
+    }
+
+    // 65536 polls is orders of magnitude beyond what a live 38400-baud
+    // UART needs to drain one byte.
+    uint32_t spins = 65536;
     while ((inb(COM1 + 5) & 0x20) == 0) {
-        /* wait */
+        if (--spins == 0) {
+            serial_dead = 1;
+            return;
+        }
     }
     outb(COM1, (uint8_t)c);
 }

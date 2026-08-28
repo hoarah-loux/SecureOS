@@ -250,11 +250,17 @@ pgtables:
 
 
     ALIGN 16
-tss64: 
+tss64:
 
     resb 0x68
 
 tss64_end:
+
+    ; Sticky "COM1 is not usable" flag for serial_write_char's bounded poll.
+    ; Lives in this NOLOAD RW section because it is written after paging and
+    ; W^X are enabled - the dd variables in .text are only written before.
+serial_dead_flag:
+    resb 1
     
     SECTION .text
 
@@ -844,7 +850,21 @@ serial_write_char:
     ; Write one character to the serial port.
     ; Calling convention used here:
     ; - We pass the character in DIL (low 8 bits of RDI) in callers.
-    ; - This function polls the UART until the transmit-holding register is empty.
+    ; - This function polls the UART until the transmit-holding register is
+    ;   empty, but only for a bounded number of iterations. On hardware with
+    ;   no usable COM1 the LSR can read as 0x00 forever (SuperIO UART absent
+    ;   or disabled; QEMU always emulates one, so this never bit in testing),
+    ;   and an unbounded poll here hangs the whole boot with a black screen
+    ;   before the kernel can draw anything. After one timeout, serial is
+    ;   declared dead and every later write returns immediately.
+    cmp byte [rel serial_dead_flag], 0
+    jne .skip
+    ; RCX is a loop counter in serial_write_hex32, which calls back in here;
+    ; preserve it around the bounded poll.
+    push rcx
+    ; Bounded THRE poll. 65536 polls is orders of magnitude beyond what a
+    ; live 38400-baud UART needs to drain one byte.
+    mov ecx, 65536
     .wait:
     ; Line Status Register (LSR) at COM1+5.
     mov dx, COM1 + 5
@@ -852,14 +872,22 @@ serial_write_char:
     in al, dx
     ; Test THRE (Transmit Holding Register Empty) bit (bit 5 = 0x20).
     test al, 0x20
-    ; If not empty, keep waiting.
-    jz .wait
+    jnz .send
+    dec ecx
+    jnz .wait
+    ; Timed out: no functioning UART. Mark serial dead and drop the byte.
+    mov byte [rel serial_dead_flag], 1
+    pop rcx
+    ret
+    .send:
+    pop rcx
     ; Data register at COM1+0.
     mov dx, COM1
     ; Load the character to send.
     mov al, dil
     ; Transmit the byte.
     out dx, al
+    .skip:
     ; Return to caller.
     ret
 

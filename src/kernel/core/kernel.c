@@ -690,18 +690,23 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     uint32_t ramdisk_mod_end = 0;
 
     serial_init();
-    printk("[SecureOS] kmain reached\r\n");
 
+    // Framebuffer snapshot and the first boot marker come BEFORE the first
+    // printk on purpose: on a machine with a broken/absent COM1 the very
+    // first serial write is the first thing that can go wrong, and the red
+    // square is the proof that kmain was reached at all.
     {
         const struct multiboot_tag_framebuffer *fb_pre =
             (const struct multiboot_tag_framebuffer *)mb2_find_tag(mb2_info_ptr, MULTIBOOT_TAG_TYPE_FRAMEBUFFER);
         if (fb_pre && fb_pre->common.size >= sizeof(struct multiboot_tag_framebuffer_common)) {
             fb_snapshot = *fb_pre;
             fb_snapshot_valid = 1;
-        } else if (fb_pre) {
-            printk("[SecureOS] framebuffer tag too small\r\n");
         }
     }
+
+    boot_marker(&fb_snapshot, fb_snapshot_valid, 0, 0xFF0000, 0);
+
+    printk("[SecureOS] kmain reached\r\n");
 
     // Snapshot the fat32-ramdisk module range while the Multiboot2 info is
     // still guaranteed mapped: after transition() the low-identity window is
@@ -720,8 +725,6 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
             printk("[SecureOS] no boot module (module tag missing)\r\n");
         }
     }
-
-    boot_marker(&fb_snapshot, fb_snapshot_valid, 0, 0xFF0000, 0);
 
     printk("[VMM] initializing PMM/VMM test path\r\n");
     pmm_init(mb2_info_ptr, (uintptr_t)&_kernel_start, (uintptr_t)&_kernel_end);
