@@ -359,6 +359,13 @@ enum {
     I8042_STATUS_OBF = 0x01,
     I8042_STATUS_IBF = 0x02,
     I8042_SPINS = 65536,
+    // A device reset runs the keyboard's own self-test (BAT) before it
+    // answers, which the AT specification allows up to 750 ms for. The
+    // ordinary wait is roughly a status read per microsecond, so the reset
+    // path gets a budget an order of magnitude longer rather than timing
+    // out halfway through a healthy keyboard's power-on test and then
+    // talking over the 0xAA when it finally arrives.
+    I8042_SPINS_RESET = 65536 * 16,
     I8042_FLUSH_MAX = 32,
     I8042_DEV_TRIES = 3,
     I8042_RESEND = 0xFE
@@ -398,9 +405,10 @@ static int i8042_wait_write_ready(void) {
     return 0;
 }
 
-// Wait until a response byte is available (OBF set).
-static int i8042_wait_read_ready(void) {
-    for (uint32_t i = 0; i < I8042_SPINS; i++) {
+// Wait until a response byte is available (OBF set), for at most `spins`
+// status reads.
+static int i8042_wait_read_ready_bounded(uint32_t spins) {
+    for (uint32_t i = 0; i < spins; i++) {
         uint8_t status = i8042_inb(I8042_STATUS_PORT);
         if (status == 0xFF) {
             return 0;
@@ -410,6 +418,10 @@ static int i8042_wait_read_ready(void) {
         }
     }
     return 0;
+}
+
+static int i8042_wait_read_ready(void) {
+    return i8042_wait_read_ready_bounded(I8042_SPINS);
 }
 
 // Drain whatever sits in the output buffer - stale bytes, error markers,
@@ -562,8 +574,12 @@ void i8042_init(void) {
     // later. Firmware USB legacy emulation that answers this is emulating a
     // device, not merely the ports.
     i8042_diag.reset_ack = i8042_device_command(0xFF, NULL);
-    if (i8042_diag.reset_ack == 0xFA && i8042_wait_read_ready()) {
-        i8042_diag.reset_bat = i8042_inb(I8042_DATA_PORT);
+    if (i8042_diag.reset_ack == 0xFA) {
+        // Only a device that acknowledged the reset is worth waiting on, so
+        // the long budget costs nothing on a machine with an empty port 1.
+        if (i8042_wait_read_ready_bounded(I8042_SPINS_RESET)) {
+            i8042_diag.reset_bat = i8042_inb(I8042_DATA_PORT);
+        }
     }
     i8042_flush();
 
