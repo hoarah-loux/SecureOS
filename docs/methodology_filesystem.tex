@@ -1,0 +1,235 @@
+% Methodology section for the SecureOS report: file system.
+% Drop-in for the report body. If the report already has a \section{Methodology},
+% delete the \section line below and keep the \subsection.
+
+\section{Methodology}
+\subsection{File System}
+
+The file system was built bottom up, as four layers with a single direction of
+dependency: a block device abstraction, the FAT32 on-disk structures, the file
+and path operations built on those structures, and finally the system call
+layer that exposes them to user programs. Each layer was written and verified
+before the one above it was started, so that a failure at any point in
+development could be attributed to the layer being worked on rather than to
+the ones underneath. Table~\ref{tab:fs-layers} lists the layers and the source
+files that implement them.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{|l|l|l|}
+        \hline
+        \textbf{Layer} & \textbf{Responsibility} & \textbf{Source} \\
+        \hline
+        Block device & Sector-granular read and write & \texttt{block\_device.c} \\
+        Device driver & ATA/IDE transfers in PIO mode & \texttt{ide\_pio.c} \\
+        Volume & Boot sector parsing, mount validation & \texttt{fat.c} \\
+        Allocation & FAT entries, cluster chains, FSInfo & \texttt{fat32\_cluster.c} \\
+        Directory & 8.3 entries, lookup, create, delete & \texttt{fat32\_dir.c} \\
+        File and path & Open, read, write, truncate, seek & \texttt{fat32\_fs.c} \\
+        System calls & Per-process descriptors, validation & \texttt{fs\_syscalls.c} \\
+        \hline
+    \end{tabular}
+    \caption{File system layers and their implementation files.}
+    \label{tab:fs-layers}
+\end{table}
+
+\subsubsection{Choice of On-Disk Format}
+
+FAT32 was selected over a purpose-designed format for three reasons. First, it
+is fully documented and stable, so the on-disk layout could be treated as a
+fixed specification to implement against rather than a moving design decision.
+Second, standard host tooling can produce and inspect a FAT32 volume, which
+means the disk images used during development are created by an independent
+implementation (\texttt{mkfs.fat}) and populated by another (\texttt{mcopy});
+any disagreement between our reader and the on-disk bytes is therefore a bug in
+our reader, not an ambiguity shared by both sides. Third, FAT32 has no journal
+and no extent trees, so a correct implementation is small enough to be read and
+audited in full, which is consistent with the project's wider goal of keeping
+privileged code reviewable.
+
+\subsubsection{Block Device Abstraction}
+
+The file system never issues port I/O itself. It operates on a
+\texttt{block\_device\_t}, a structure holding a sector size, a sector count,
+an opaque context pointer and a table of two function pointers, \texttt{read}
+and \texttt{write}, both taking a starting Logical Block Address (LBA) and a
+sector count. Two backends implement that interface: an in-memory backend used
+during early development, before any disk driver existed, and the ATA/IDE
+driver used in the running system. Because the FAT32 code was written against
+the abstraction rather than against the driver, the two were developed and
+tested independently.
+
+The driver operates the primary and secondary ATA channels in Programmed
+Input/Output (PIO) mode. At initialisation it probes up to four
+channel and drive combinations, issuing \texttt{IDENTIFY} (\texttt{0xEC}) to
+each and accepting the first that answers; the sector count is taken from the
+28-bit field of the identify block, falling back to the 48-bit field when that
+field reads zero. Reads issue one \texttt{READ SECTORS} (\texttt{0x20}) command
+per run of up to 256 sectors, which is the architectural maximum of the sector
+count register, and then service one Data Request (DRQ) per sector inside the
+run. Batching the command in this way was a deliberate optimisation: the
+command itself costs six port writes and a busy-wait for the BSY flag to clear,
+and that fixed cost was previously being paid once per sector. Writes are
+issued one sector at a time and are followed by a \texttt{CACHE FLUSH}
+(\texttt{0xE7}) so that data is not left sitting in the drive's write cache.
+
+The driver validates its own transfer buffers before touching the hardware.
+Every page spanned by the buffer is checked against the page tables, and a
+transfer whose buffer is not fully mapped is refused rather than attempted.
+This is a hard requirement rather than a defensive nicety: the transfer loop is
+inside a device command sequence, and a page fault taken part-way through such
+a sequence cannot be serviced and resumed cleanly.
+
+\subsubsection{Mounting and Validation}
+
+Mounting reads the boot sector at the start of the volume and rejects it unless
+every one of the following holds: the boot signature is \texttt{0xAA55}, the
+sector size is 512 bytes, the sectors-per-cluster field is non-zero, the root
+directory cluster is at least 2, the FAT size field is non-zero, the file system
+type string begins with \texttt{FAT32}, and the version field is zero. From the
+accepted boot sector the mount derives the FAT start LBA, the data area start
+LBA, the number of data clusters and the cluster size in bytes. The FSInfo
+sector is then parsed and accepted only if all three of its signatures
+(\texttt{0x41615252}, \texttt{0x61417272}, \texttt{0xAA550000}) are correct, and
+the backup boot sector, when the volume declares one, is read and compared
+field by field against the primary. A volume that fails any check is not
+mounted at all.
+
+The rationale is that every later operation computes disk addresses from these
+few fields. Validating them once at mount time means the arithmetic in the
+layers above can be written without repeating the same defensive checks, and a
+malformed or hostile image is rejected at the one point where rejection is
+still cheap.
+
+\subsubsection{Cluster Chains and Allocation}
+
+The data area is addressed in clusters, numbered from 2, and the mapping from a
+cluster number to its first sector is
+
+\[
+    \mathrm{sector}(c) = \mathrm{data\_start} + (c - 2) \times \mathrm{sectors\_per\_cluster}.
+\]
+
+Each FAT entry is 32 bits of which the low 28 are significant, and a value of
+\texttt{0x0FFFFFF8} or above marks the end of a chain. Reading an entry
+therefore means reading the FAT sector that contains it, and this is where the
+first performance problem appeared: a 512-byte sector holds 128 FAT entries, so
+walking a chain naively re-reads the same sector 128 times in succession, and
+each of those reads is a polled PIO transfer rather than a memory access.
+Reading a 4~MB file with 512-byte clusters walks 8192 entries, which is 8192
+disk reads.
+
+The mount therefore carries a one-sector FAT cache. One entry is sufficient
+because chain walks are sequential by nature: the FAT sector holding the entry
+for cluster $N$ is almost always the one holding the entry for cluster $N+1$.
+With the cache, the same 8192-entry walk costs 64 sector reads. The cache is
+marked invalid before the read that fills it and only marked valid once the
+data is known good, so that a failed read cannot leave a torn mixture of two
+sectors to be served as if it were a FAT. The write path does not attempt to
+patch the cached copy; it invalidates it, on the grounds that FAT writes are
+rare (allocating a cluster, extending a file) while the read path they would
+complicate is the hot one.
+
+Allocation scans the FAT from cluster 2 for the first entry reading zero,
+claims it by writing an end-of-chain marker, and updates the FSInfo free count
+and next-free hint. Every FAT write is mirrored into all FAT copies the volume
+declares, so the redundant FAT that the format specifies is genuinely
+maintained rather than left to drift. Freeing a chain walks it entry by entry,
+zeroing each and incrementing the free count, and carries a guard counter
+bounded by the total cluster count so that a corrupted volume containing a
+cyclic chain terminates with an error instead of looping forever.
+
+\subsubsection{Directories, Paths and Files}
+
+A directory is a cluster chain of 32-byte entries, 16 to a sector. Iteration
+walks the chain, skipping entries marked deleted (\texttt{0xE5}) and long file
+name entries (attribute \texttt{0x0F}), and stops at the first entry whose name
+begins with a zero byte, since that marks the end of the directory rather than
+a gap within it. Names are handled in the 8.3 short form: user-supplied names
+are converted to upper-case ASCII and split into an eight character name and a
+three character extension before comparison, so that lookup does not depend on
+the case a program happened to use. On top of iteration sit the four operations
+the layers above need: find an entry by name, create one in the first free
+slot, update the first cluster and size of an existing one, and delete one.
+
+Path resolution splits an absolute path into components and walks them from the
+root cluster, requiring every component except the last to carry the directory
+attribute. Opening a file resolves its path, records the parent directory
+cluster and short name (needed later to write metadata back), and initialises a
+read position of zero.
+
+The read path received the second significant optimisation. Two properties of
+real access patterns are exploited. First, reads are usually sequential, so
+each open file carries a chain hint: the cluster last reached and its index
+within the chain, allowing the next read to resume the walk from there instead
+of restarting at the first cluster. The hint cannot silently go stale, because
+the only operation that rewrites a chain is truncation, which resets it, while
+appending only adds indices beyond any the hint can name. Second, files on a
+freshly written image are laid out contiguously, so before issuing a transfer
+the reader looks ahead through the FAT to find how many clusters continue
+physically next door and reads that whole run in one command. For the 4~MB WAD
+file used by the ported game, which occupies 8192 consecutive clusters, this
+collapses 8192 single-sector commands into 128 multi-sector ones. A fragmented
+file is not a special case; it simply yields shorter runs.
+
+Sectors are never read directly into the caller's buffer. They are read into a
+kernel bounce buffer, allocated at eight sectors and falling back to a single
+512-byte stack buffer when the heap allocation fails, and the requested bytes
+are copied out from there. This is required by the isolation model rather than
+by convenience: the destination may be a userland pointer whose pages are
+demand-paged and not yet present, and the driver refuses unmapped destinations
+because it cannot service a fault from inside a transfer.
+
+Writing is a read-modify-write at sector granularity: the affected sector is
+read, the new bytes are copied in, and the sector is written back, with clusters
+allocated and linked on demand as the file grows past its current chain.
+Truncation frees the tail of the chain, resets the read hint and rewrites the
+directory entry; deletion frees the whole chain and clears the entry.
+
+\subsubsection{Exposure to User Programs}
+
+User programs reach the file system only through system calls. Each process
+carries its own descriptor table of sixteen slots, in which the first three are
+reserved for standard input, output and error, and the fourth is pinned by the
+program loader to the executable the process is running. That pinned descriptor
+behaves like any other open file for reading and seeking, but \texttt{close}
+refuses it, because every page of program text and data that has not yet been
+touched is demand-paged through it for the lifetime of the process; closing it
+from user space would remove the backing store the calling code is executing
+from.
+
+Because descriptor tables are per-process, one process cannot name another
+process's open files, and the descriptor numbers a program sees are indices
+into its own table rather than into any global structure. Every pointer that
+arrives from user space is validated against the calling process's own address
+space before it is dereferenced: buffers are checked as a range, and path
+strings are checked as a bounded string with a 256 byte ceiling. A pointer that
+fails validation causes the call to return an error, so that a bad or malicious
+pointer from ring 3 produces a failed system call rather than a kernel fault.
+
+\subsubsection{Verification}
+
+Correctness was established by three complementary means rather than by
+inspection alone.
+
+The first is a self-test suite that runs inside the kernel at every boot and
+reports each result over the serial line. It covers resolving and listing the
+root directory, resolving and reading a file in the root and a file in a
+subdirectory, and comparing the returned bytes against known content; it then
+performs a full write cycle on a scratch file, creating it, writing, appending,
+reading the result back and comparing it, truncating it, deleting it and
+confirming that resolution afterwards fails. Mount-level invariants such as the
+root cluster number and the FSInfo signatures are asserted as well. Because
+these run on every boot, a regression in the file system is visible immediately
+rather than at the point some later feature happens to depend on it.
+
+The second is the independence of the test data already noted: the images are
+formatted and populated by host tools, so passing the suite means agreeing with
+an implementation written by someone else.
+
+The third is end-to-end use by real programs. A user space \texttt{cat} utility
+reads, seeks within and checksums the 4~MB WAD file through the C library's
+buffered I/O, exercising the whole stack from newlib down to the PIO driver;
+and the ported game reads that same file at startup through ordinary system
+calls, which makes it an integration test of the read path, the chain hint, the
+contiguous run detection and the bounce buffer under sustained load.
