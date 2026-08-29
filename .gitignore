@@ -31,10 +31,15 @@ skills-lock.json
 *~
 .cache/
 .tmp
-src/boot/Makefile
 serial.log
 qemu.log
 
 # Fetched on demand by "make doom-wad": the shareware WAD is freely
 # redistributable but is not ours to commit. See src/boot/Makefile.
 /assets/
+
+# ...except the hand-written ring3 test sources, which live there. Their
+# built .elf outputs stay ignored by the *.elf rule above.
+!/assets/elf_tests/
+!/assets/elf_tests/*.S
+!/assets/elf_tests/*.ld

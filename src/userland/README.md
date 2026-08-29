@@ -63,21 +63,21 @@ there, not sources you expect to be compiled.
 ## 3. Build and run it
 
 ```sh
-cd src/boot
+# From the project root, where the Makefile lives.
 
 # Build the kernel, with the shell set to run your program at startup.
-touch ../kernel/core/kernel.c          # make does not track CFLAGS changes
+touch src/kernel/core/kernel.c         # make does not track CFLAGS changes
 make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./GREET.EXE\""'
 
 # Build the disk image. The absolute path is required - see below.
-make "$PWD/build/secureos.fat32.img"
+make "$PWD/src/boot/build/secureos.fat32.img"
 
 # Boot headless; program output lands in serial.log.
 qemu-system-x86_64 -machine pc \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive if=pflash,format=raw,file=build/OVMF_VARS_4M.fd \
-  -boot order=d -cdrom ../../secureos-uefi.iso \
-  -drive file=build/secureos.fat32.img,format=raw,if=ide,index=0,media=disk \
+  -drive if=pflash,format=raw,file=src/boot/build/OVMF_VARS_4M.fd \
+  -boot order=d -cdrom secureos-uefi.iso \
+  -drive file=src/boot/build/secureos.fat32.img,format=raw,if=ide,index=0,media=disk \
   -serial file:serial.log -display none -m 2048 -no-reboot
 
 tail -20 serial.log

@@ -57,7 +57,7 @@ Full configure line:
 
 ## How it is used
 
-`src/boot/Makefile` compiles userland with `-isystem
+The root `Makefile` compiles userland with `-isystem
 src/userland/newlib/include` and links with `-L src/userland/newlib/lib -lc
 -lm -lgcc`. `libgcc` comes last because newlib's 64-bit and soft-float helpers
 resolve out of it.

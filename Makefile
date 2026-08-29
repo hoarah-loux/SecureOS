@@ -37,9 +37,9 @@
 # entry is some build/kernel/fs/fat32_fs.d and the project root resolves to
 # build/, taking -I$(INCLUDE_DIR) with it. := pins it to this file while this
 # file is being read, which is the only moment the expression is true.
-PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-# The boot build directory (this Makefile lives here).
+# The boot sources (entry stub, grub config, linker script).
 BOOT_DIR = $(PROJECT_ROOT)/src/boot
 
 # Kernel source root directory.
@@ -71,8 +71,8 @@ CC = gcc
 # - We use GNU ld to link the final kernel ELF image with our linker script.
 LD = ld
 
-# GNU assembler, used for the GAS-syntax userland test binaries at the
-# project root (elf.S / elf_ring3_test.S) - distinct from $(ASM)/NASM,
+# GNU assembler, used for the GAS-syntax userland test binaries under
+# assets/elf_tests (elf.S / elf_ring3_test.S) - distinct from $(ASM)/NASM,
 # which only handles the kernel's own .asm sources.
 AS = as
 
@@ -343,6 +343,9 @@ FAT32_VOLUME_LABEL = SECUREOS
 # the port. This is v1.9, 4196020 bytes, which is what the port was brought up
 # against.
 ASSETS_DIR = $(PROJECT_ROOT)/assets
+
+# Hand-written ring3 test binaries: sources, linker scripts and outputs.
+RING3_TEST_DIR = $(ASSETS_DIR)/elf_tests
 DOOM_WAD = $(ASSETS_DIR)/DOOM1.WAD
 DOOM_WAD_URL = https://github.com/Akbar30Bill/DOOM_wads/raw/master/doom1.wad
 DOOM_WAD_SHA256 = 1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
@@ -528,22 +531,22 @@ run-debug: userland $(ISO_FILE) $(OVMF_VARS_COPY) $(FAT32_IMAGE)
 # This-OS-native ELF test binary (int 0x80 SYS_write, not Linux syscall) -
 # used to verify the ELF loader end-to-end. Built the same way elf.elf
 # presumably was (no prior rule existed for either).
-RING3_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_test.elf
+RING3_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_test.elf
 
-$(RING3_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_test.S $(PROJECT_ROOT)/elf_ring3_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_test.S -o $(BUILD_DIR)/elf_ring3_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_test.ld $(BUILD_DIR)/elf_ring3_test.o -o $@
+$(RING3_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_test.S $(RING3_TEST_DIR)/elf_ring3_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_test.S -o $(BUILD_DIR)/elf_ring3_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_test.ld $(BUILD_DIR)/elf_ring3_test.o -o $@
 
 # Second ring3 test binary. elf_ring3_test.S never touches its stack, so it
 # passes whether or not the user stack is usable; this one writes to the stack
 # at every step (push/pop, a call frame with locals, and a frame deep enough to
 # demand-fault a second page) and prints which step failed, if any.
 # Lands on the FAT32 image as /RING3S.EXE - see the mcopy below.
-RING3_STACK_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_stack_test.elf
+RING3_STACK_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_stack_test.elf
 
-$(RING3_STACK_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_stack_test.S $(PROJECT_ROOT)/elf_ring3_stack_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_stack_test.S -o $(BUILD_DIR)/elf_ring3_stack_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_stack_test.ld $(BUILD_DIR)/elf_ring3_stack_test.o -o $@
+$(RING3_STACK_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_stack_test.S $(RING3_TEST_DIR)/elf_ring3_stack_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_stack_test.S -o $(BUILD_DIR)/elf_ring3_stack_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_stack_test.ld $(BUILD_DIR)/elf_ring3_stack_test.o -o $@
 
 # Third ring3 test binary, for demand paging. The other two link to a single
 # one-page read+exec PT_LOAD with no .bss, so they run identically whether the
@@ -552,22 +555,22 @@ $(RING3_STACK_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_stack_test.S $(PROJECT_ROOT)/
 # with .data and runs several pages past it, which is what actually
 # distinguishes a correct demand-paged load from a broken one.
 # Lands on the FAT32 image as /RING3M.EXE - see the mcopy below.
-RING3_MMAP_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_mmap_test.elf
+RING3_MMAP_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_mmap_test.elf
 
-$(RING3_MMAP_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_mmap_test.S $(PROJECT_ROOT)/elf_ring3_mmap_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_mmap_test.S -o $(BUILD_DIR)/elf_ring3_mmap_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_mmap_test.ld $(BUILD_DIR)/elf_ring3_mmap_test.o -o $@
+$(RING3_MMAP_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_mmap_test.S $(RING3_TEST_DIR)/elf_ring3_mmap_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_mmap_test.S -o $(BUILD_DIR)/elf_ring3_mmap_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_mmap_test.ld $(BUILD_DIR)/elf_ring3_mmap_test.o -o $@
 
 # Fourth ring3 test binary, the B side of the preemption test. Loaded together
 # with RING3.EXE as two separate processes: both busy-loop and print, neither
 # yields, so interleaved output means the timer preempted. Both then SYS_exit,
 # which drains the ready queue and exercises the idle-thread fallback.
 # Lands on the FAT32 image as /RING3P.EXE - see the mcopy below.
-RING3_PREEMPT_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_preempt_test.elf
+RING3_PREEMPT_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_preempt_test.elf
 
-$(RING3_PREEMPT_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_preempt_test.S $(PROJECT_ROOT)/elf_ring3_preempt_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_preempt_test.S -o $(BUILD_DIR)/elf_ring3_preempt_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_preempt_test.ld $(BUILD_DIR)/elf_ring3_preempt_test.o -o $@
+$(RING3_PREEMPT_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_preempt_test.S $(RING3_TEST_DIR)/elf_ring3_preempt_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_preempt_test.S -o $(BUILD_DIR)/elf_ring3_preempt_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_preempt_test.ld $(BUILD_DIR)/elf_ring3_preempt_test.o -o $@
 
 # Fifth ring3 test binary, the only one bigger than 4 KiB. Its .pages payload
 # is 20 KiB of real file content with a marker every 4096 bytes, one qword
@@ -577,11 +580,11 @@ $(RING3_PREEMPT_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_preempt_test.S $(PROJECT_RO
 # reproducer for TODO.md's "load_file() will fail on any file over 4KB"
 # (loader.c kmallocs file_size; kmalloc() caps at 4096 in heap.c).
 # Lands on the FAT32 image as /RING3B.EXE - see the mcopy below.
-RING3_BIG_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_big_test.elf
+RING3_BIG_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_big_test.elf
 
-$(RING3_BIG_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_big_test.S $(PROJECT_ROOT)/elf_ring3_big_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_big_test.S -o $(BUILD_DIR)/elf_ring3_big_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_big_test.ld $(BUILD_DIR)/elf_ring3_big_test.o -o $@
+$(RING3_BIG_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_big_test.S $(RING3_TEST_DIR)/elf_ring3_big_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_big_test.S -o $(BUILD_DIR)/elf_ring3_big_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_big_test.ld $(BUILD_DIR)/elf_ring3_big_test.o -o $@
 
 # Sixth ring3 test binary, and the only one that touches a vector register.
 # Checks that SSE executes at all (CR0.EM clear, CR4.OSFXSR set), that
@@ -589,7 +592,7 @@ $(RING3_BIG_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_big_test.S $(PROJECT_ROOT)/elf_
 # that xmm0-xmm7 survive being preempted by IRQ0, which is what the
 # fxsave/fxrstor pair in save_trap_frame()/restore_context exists for.
 # Lands on the FAT32 image as /RING3F.EXE - see the mcopy below.
-RING3_SSE_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_sse_test.elf
+RING3_SSE_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_sse_test.elf
 
 # Two binaries from one source, differing only in SEED_TAG - which is the
 # whole point. Step 4 checks that xmm0-7 survive preemption, and with a single
@@ -598,26 +601,26 @@ RING3_SSE_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_sse_test.elf
 # register, because the kernel is built -mno-sse and the shell is kernel code.
 # Run both together (see SHELL_AUTORUN) and they clobber each other's xmm
 # registers unless fxsave/fxrstor genuinely work.
-$(RING3_SSE_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_sse_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
-	$(AS) --64 --defsym SEED_TAG=0 $(PROJECT_ROOT)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse_test.o -o $@
+$(RING3_SSE_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_sse_test.S $(RING3_TEST_DIR)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 --defsym SEED_TAG=0 $(RING3_TEST_DIR)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse_test.o -o $@
 
-RING3_SSE2_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_sse2_test.elf
+RING3_SSE2_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_sse2_test.elf
 
-$(RING3_SSE2_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_sse_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
-	$(AS) --64 --defsym SEED_TAG=1 $(PROJECT_ROOT)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse2_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse2_test.o -o $@
+$(RING3_SSE2_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_sse_test.S $(RING3_TEST_DIR)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 --defsym SEED_TAG=1 $(RING3_TEST_DIR)/elf_ring3_sse_test.S -o $(BUILD_DIR)/elf_ring3_sse2_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_sse2_test.o -o $@
 
 # Seventh ring3 test binary: SYS_brk, SYS_gettime and SYS_sleep, all three of
 # which were stubs returning -1 until now. They sit directly under newlib -
 # _sbrk(), _gettimeofday(), and doomgeneric's DG_SleepMs - so checking them
 # from assembly first keeps a kernel bug distinguishable from a libc
 # retargeting bug. Lands on the FAT32 image as /RING3T.EXE.
-RING3_TIME_TEST_ELF = $(PROJECT_ROOT)/elf_ring3_time_test.elf
+RING3_TIME_TEST_ELF = $(RING3_TEST_DIR)/elf_ring3_time_test.elf
 
-$(RING3_TIME_TEST_ELF): $(PROJECT_ROOT)/elf_ring3_time_test.S $(PROJECT_ROOT)/elf_ring3_sse_test.ld | $(BUILD_DIR)
-	$(AS) --64 $(PROJECT_ROOT)/elf_ring3_time_test.S -o $(BUILD_DIR)/elf_ring3_time_test.o
-	$(LD) -T $(PROJECT_ROOT)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_time_test.o -o $@
+$(RING3_TIME_TEST_ELF): $(RING3_TEST_DIR)/elf_ring3_time_test.S $(RING3_TEST_DIR)/elf_ring3_sse_test.ld | $(BUILD_DIR)
+	$(AS) --64 $(RING3_TEST_DIR)/elf_ring3_time_test.S -o $(BUILD_DIR)/elf_ring3_time_test.o
+	$(LD) -T $(RING3_TEST_DIR)/elf_ring3_sse_test.ld $(BUILD_DIR)/elf_ring3_time_test.o -o $@
 
 # ---------------- Userland C binaries ----------------
 #
