@@ -33,8 +33,12 @@ typedef struct {
     uint8_t port_test;      // 0xAB response, 0x00 = port 1 line good
     uint8_t config_before;  // config byte as firmware left it
     uint8_t config_after;   // config byte we wrote
+    uint8_t reset_ack;      // 0xFF response, 0xFA = a device took the reset
+    uint8_t reset_bat;      // post-reset self-test byte, 0xAA = device good
     uint8_t ident_first;    // 0xF2 first response, 0xFA = a device answers
+    uint8_t ident_tries;    // attempts 0xF2 took; >1 means it saw a resend
     uint8_t enable_ack;     // 0xF4 response, 0xFA = scanning enabled
+    uint8_t enable_tries;   // attempts 0xF4 took
 } i8042_diag_t;
 
 extern i8042_diag_t i8042_diag;

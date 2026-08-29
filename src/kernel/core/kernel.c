@@ -885,10 +885,14 @@ void kmain(uint32_t mb2_magic, uint32_t mb2_info_ptr) {
     printk("[KBD] status entry=0x%x exit=0x%x selftest=0x%x porttest=0x%x\r\n",
            i8042_diag.status_entry, i8042_diag.status_exit,
            i8042_diag.self_test, i8042_diag.port_test);
-    printk("[KBD] config before=0x%x after=0x%x ident=0x%x enable_ack=0x%x\r\n",
+    printk("[KBD] config before=0x%x after=0x%x reset_ack=0x%x reset_bat=0x%x\r\n",
            i8042_diag.config_before, i8042_diag.config_after,
-           i8042_diag.ident_first, i8042_diag.enable_ack);
-    printk("[KBD] 0xFF in a response field = no answer within the bounded wait\r\n");
+           i8042_diag.reset_ack, i8042_diag.reset_bat);
+    printk("[KBD] ident=0x%x tries=%u enable_ack=0x%x tries=%u\r\n",
+           i8042_diag.ident_first, (unsigned)i8042_diag.ident_tries,
+           i8042_diag.enable_ack, (unsigned)i8042_diag.enable_tries);
+    printk("[KBD] 0xFF = no answer in the bounded wait; 0xFE on every try = "
+           "controller alive, nothing behind port 1\r\n");
 
     if (console_ready) {
         console_set_prompt(&con, "SSH> ");

@@ -339,11 +339,17 @@ int64_t sys_kbd_raw(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t
 // timer-tick poll, never initializing it. Fine in QEMU; on the bare-metal
 // target (firmware USB legacy emulation) the controller came up wedged:
 // status 0x55 = a stale byte in the output buffer plus the timeout-error
-// bit, and no scancodes ever flowed. This is the standard minimal init:
-// drain the output buffer, enable port 1 with IRQ + set-1 translation in
-// the config byte, and tell the device to start scanning. Every write
-// waits for IBF to clear and every response read waits for OBF, all
-// bounded, so a machine with no controller at all (status 0xFF, floating
+// bit, and no scancodes ever flowed.
+//
+// This is the canonical bring-up order rather than the short one, because
+// the ordering matters on real silicon: both ports are disabled first so a
+// chatty device cannot answer a controller command, the config byte is
+// rewritten after the 0xAA self-test (which resets the controller and takes
+// the config byte with it), and only then is port 1 enabled and the device
+// spoken to.
+//
+// Every write waits for IBF to clear and every response read waits for OBF,
+// all bounded, so a machine with no controller at all (status 0xFF, floating
 // bus) falls straight through without hanging.
 
 enum {
@@ -353,7 +359,9 @@ enum {
     I8042_STATUS_OBF = 0x01,
     I8042_STATUS_IBF = 0x02,
     I8042_SPINS = 65536,
-    I8042_FLUSH_MAX = 32
+    I8042_FLUSH_MAX = 32,
+    I8042_DEV_TRIES = 3,
+    I8042_RESEND = 0xFE
 };
 
 static inline uint8_t i8042_inb(uint16_t port) {
@@ -364,6 +372,16 @@ static inline uint8_t i8042_inb(uint16_t port) {
 
 static inline void i8042_outb(uint16_t port, uint8_t value) {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+// A few microseconds of nothing, spent on the POST port because a write
+// there is a bus cycle with no side effect. Firmware that emulates 60h/64h
+// from SMM needs the gap: the SMI runs after the OUT retires, so a status
+// read issued immediately afterwards can observe the pre-command state.
+static void i8042_io_delay(void) {
+    for (int i = 0; i < 4; i++) {
+        i8042_outb(0x80, 0);
+    }
 }
 
 // Wait until the controller will accept a command/data byte (IBF clear).
@@ -406,10 +424,83 @@ static void i8042_flush(void) {
     }
 }
 
+// Send a controller command (port 0x64) that takes no argument.
+static void i8042_command(uint8_t command) {
+    if (i8042_wait_write_ready()) {
+        i8042_outb(I8042_CMD_PORT, command);
+        i8042_io_delay();
+    }
+}
+
+// Send a controller command and read its one-byte response, or 0xFF if
+// nothing answered within the bounded wait.
+static uint8_t i8042_command_response(uint8_t command) {
+    if (!i8042_wait_write_ready()) {
+        return 0xFF;
+    }
+    i8042_outb(I8042_CMD_PORT, command);
+    i8042_io_delay();
+    if (!i8042_wait_read_ready()) {
+        return 0xFF;
+    }
+    return i8042_inb(I8042_DATA_PORT);
+}
+
+// Write the controller config byte (command 0x60 plus one data byte).
+static void i8042_write_config(uint8_t config) {
+    if (!i8042_wait_write_ready()) {
+        return;
+    }
+    i8042_outb(I8042_CMD_PORT, 0x60);
+    i8042_io_delay();
+    if (!i8042_wait_write_ready()) {
+        return;
+    }
+    i8042_outb(I8042_DATA_PORT, config);
+    i8042_io_delay();
+}
+
+// Send a command to the device on port 1 and return its first response byte.
+//
+// 0xFE is "resend". The device sends it after a byte it could not parse, and
+// - the case that matters here - a real 8042 with nothing attached emits it
+// itself once its own three retries have timed out. So one 0xFE deserves
+// another try, while 0xFE on every try is the signature of an empty port,
+// which is why the attempt count is reported alongside the response.
+static uint8_t i8042_device_command(uint8_t command, uint8_t *tries_out) {
+    uint8_t response = 0xFF;
+    uint8_t tries = 0;
+
+    while (tries < I8042_DEV_TRIES) {
+        tries++;
+
+        if (!i8042_wait_write_ready()) {
+            break;
+        }
+        i8042_outb(I8042_DATA_PORT, command);
+        i8042_io_delay();
+
+        if (!i8042_wait_read_ready()) {
+            response = 0xFF;
+            continue;
+        }
+
+        response = i8042_inb(I8042_DATA_PORT);
+        if (response != I8042_RESEND) {
+            break;
+        }
+    }
+
+    if (tries_out != NULL) {
+        *tries_out = tries;
+    }
+    return response;
+}
+
 // What init observed, for the on-screen bring-up report. Populated once by
 // i8042_init(); read by kmain. 0xFF in a response field means "no answer
-// within the bounded wait", which is the interesting failure on firmware
-// that services the ports but not device commands.
+// within the bounded wait"; 0xFE on every try of a device command means the
+// controller is there but nothing is behind port 1.
 i8042_diag_t i8042_diag;
 
 void i8042_init(void) {
@@ -418,57 +509,61 @@ void i8042_init(void) {
     i8042_diag.port_test = 0xFF;
     i8042_diag.config_before = 0xFF;
     i8042_diag.config_after = 0xFF;
-    i8042_diag.enable_ack = 0xFF;
+    i8042_diag.reset_ack = 0xFF;
+    i8042_diag.reset_bat = 0xFF;
     i8042_diag.ident_first = 0xFF;
+    i8042_diag.ident_tries = 0;
+    i8042_diag.enable_ack = 0xFF;
+    i8042_diag.enable_tries = 0;
 
     if (i8042_diag.status_entry == 0xFF) {
         return; // floating bus: no controller, nothing to set up
     }
 
+    // Both ports off first: no device may answer while the controller is
+    // being configured and tested.
+    i8042_command(0xAD);
+    i8042_command(0xA7);
     i8042_flush();
 
-    // Controller self-test. Answers 0x55 when the 8042 (or its emulation)
-    // is alive; silence here means nothing is servicing commands at all.
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_CMD_PORT, 0xAA);
-        if (i8042_wait_read_ready()) {
-            i8042_diag.self_test = i8042_inb(I8042_DATA_PORT);
-        }
+    // Config byte as firmware left it, then the same byte with every
+    // interrupt and translation off for the duration of the tests.
+    uint8_t config = i8042_command_response(0x20);
+    i8042_diag.config_before = config;
+    if (config != 0xFF) {
+        i8042_write_config((uint8_t)(config & (uint8_t)~(0x01u | 0x02u | 0x40u)));
     }
 
-    // Config byte: enable port 1 IRQ (bit 0) and set-1 translation (bit 6),
-    // clear the port 1 clock-disable bit (bit 4). Read-modify-write so any
-    // firmware bits we do not understand survive.
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_CMD_PORT, 0x20);
-        if (i8042_wait_read_ready()) {
-            uint8_t config = i8042_inb(I8042_DATA_PORT);
-            i8042_diag.config_before = config;
-            config |= 0x01;
-            config |= 0x40;
-            config &= (uint8_t)~0x10;
-            if (i8042_wait_write_ready()) {
-                i8042_outb(I8042_CMD_PORT, 0x60);
-                if (i8042_wait_write_ready()) {
-                    i8042_outb(I8042_DATA_PORT, config);
-                    i8042_diag.config_after = config;
-                }
-            }
-        }
+    // Controller self-test. Answers 0x55 when the 8042 (or its emulation) is
+    // alive; silence here means nothing is servicing commands at all. The
+    // test resets the controller, so the config byte goes back afterwards.
+    i8042_diag.self_test = i8042_command_response(0xAA);
+    if (config != 0xFF) {
+        i8042_write_config((uint8_t)(config & (uint8_t)~(0x01u | 0x02u | 0x40u)));
     }
 
-    // Enable port 1 explicitly.
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_CMD_PORT, 0xAE);
+    // Port 1 interface test: 0x00 means a working port 1 line. It says
+    // nothing about whether a device is on the other end of it.
+    i8042_diag.port_test = i8042_command_response(0xAB);
+    i8042_flush();
+
+    // Port 1 back on, with IRQ1 (bit 0) and set-1 translation (bit 6)
+    // enabled and the port 1 clock-disable bit (bit 4) cleared. Read-modify
+    // -write of the firmware value so bits we do not understand survive.
+    i8042_command(0xAE);
+    if (config != 0xFF) {
+        uint8_t enabled = (uint8_t)((config | 0x01u | 0x40u) & (uint8_t)~0x10u);
+        i8042_write_config(enabled);
+        i8042_diag.config_after = enabled;
     }
     i8042_flush();
 
-    // Port 1 interface test: 0x00 means a working port 1 line.
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_CMD_PORT, 0xAB);
-        if (i8042_wait_read_ready()) {
-            i8042_diag.port_test = i8042_inb(I8042_DATA_PORT);
-        }
+    // Device reset (0xFF): ACK, then the self-test result 0xAA a moment
+    // later. Firmware USB legacy emulation that answers this is emulating a
+    // device, not merely the ports.
+    i8042_diag.reset_ack = i8042_device_command(0xFF, NULL);
+    if (i8042_diag.reset_ack == 0xFA && i8042_wait_read_ready()) {
+        i8042_diag.reset_bat = i8042_inb(I8042_DATA_PORT);
     }
     i8042_flush();
 
@@ -476,21 +571,11 @@ void i8042_init(void) {
     // firmware pretending to be one) is answering DEVICE commands, not just
     // the controller. This is the discriminator on machines where USB legacy
     // emulation services 60h/64h but has no device behind them.
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_DATA_PORT, 0xF2);
-        if (i8042_wait_read_ready()) {
-            i8042_diag.ident_first = i8042_inb(I8042_DATA_PORT);
-        }
-    }
+    i8042_diag.ident_first = i8042_device_command(0xF2, &i8042_diag.ident_tries);
     i8042_flush();
 
     // Enable scanning and record the ACK (0xFA expected).
-    if (i8042_wait_write_ready()) {
-        i8042_outb(I8042_DATA_PORT, 0xF4);
-        if (i8042_wait_read_ready()) {
-            i8042_diag.enable_ack = i8042_inb(I8042_DATA_PORT);
-        }
-    }
+    i8042_diag.enable_ack = i8042_device_command(0xF4, &i8042_diag.enable_tries);
 
     i8042_flush();
     i8042_diag.status_exit = i8042_inb(I8042_STATUS_PORT);
