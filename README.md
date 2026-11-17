@@ -461,10 +461,10 @@ SecureOS was developed as a senior project in the Computer Engineering Departmen
 
 The project report credits the following team contributions:
 
-- **Abdelrahman Abu-Hurirah:** bootloader, physical/virtual memory management, heap, process management, user space, and interrupt handling.
-- **Bilal Altabaa:** filesystem, physical memory management, user space, interrupt handling, shell, and system-call interface.
-- **Kerim Albed:** networking stack and user space.
-- **Wail Shahin:** networking stack and user space.
+- **Hoarah Loux:** bootloader, physical/virtual memory management, heap, process management, user space, and interrupt handling.
+- **5pky:** filesystem, physical memory management, user space, interrupt handling, shell, and system-call interface.
+- **FalconABD:** networking stack and user space.
+- **TheWmountain:** networking stack and user space.
 
 ---
 
