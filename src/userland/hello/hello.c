@@ -37,9 +37,10 @@ int main(int argc, char **argv, char **envp)
     printf("[HELLO] step 3: %d %s %c 0x%lx %.3f\n",
            -42, "str", 'x', 0xdeadbeefUL, 3.14159);
 
-    // malloc goes through _sbrk, which is still a fixed .bss arena rather than
-    // SYS_brk. Touch every byte so a region that was reserved but never mapped
-    // faults here instead of somewhere confusing later.
+    // malloc goes through _sbrk, which is SYS_brk: a cursor inside the 64 MiB
+    // anonymous demand-paged region the loader reserves per process. Touch
+    // every byte so a page that was reserved but never mapped faults here
+    // rather than somewhere confusing later.
     size_t n = 64 * 1024;
     char *buf = malloc(n);
     if (!buf) {
@@ -57,8 +58,8 @@ int main(int argc, char **argv, char **envp)
            (unsigned long)n, (unsigned long)bad);
     free(buf);
 
-    // .bss really is zero. This is the one crt0 currently guarantees itself,
-    // because populate_fault_frame does not clamp reads at p_filesz yet.
+    // .bss really is zero - now guaranteed twice over, by the p_filesz clamp
+    // in populate_fault_frame() and by crt0 zeroing it as well.
     static char zeroed[8192];
     size_t nonzero = 0;
     for (size_t i = 0; i < sizeof(zeroed); i++) {

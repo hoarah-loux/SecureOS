@@ -123,38 +123,39 @@ int _stat(const char *name, struct stat *st)
 //
 // TEMPORARY: a fixed .bss arena, not SYS_brk.
 //
-// SYS_brk is still sys_stub (src/kernel/interrupts/syscall.c), so there is
-// nothing behind a real sbrk yet. A static arena is enough for stdio's buffers
-// and keeps this milestone honest: it isolates "does newlib work on this OS"
-// from "does the kernel's break implementation work". Doom needs a real
-// SYS_brk with a demand-paged anonymous reservation - that is a separate piece
-// of work and this whole block goes away when it lands.
+// SYS_brk is real now (src/kernel/interrupts/syscall.c). The kernel reserves
+// one 64 MiB anonymous demand-paged region per process at load time and brk()
+// moves a cursor inside it, so growing the heap costs nothing until the pages
+// are touched and there is no mapping work on this path at all.
 //
-// The arena lives in .bss, so it costs nothing in the binary on disk, and it
-// is demand-paged: only the pages actually touched get frames. crt0 zeroes it,
-// which does mean every page is faulted in at startup.
-#ifndef USER_HEAP_SIZE
-#define USER_HEAP_SIZE (256 * 1024)
-#endif
-
-static char  __user_heap[USER_HEAP_SIZE];
-static char *__user_brk = __user_heap;
+// This replaces a fixed 256 KiB .bss arena that stood in while SYS_brk was a
+// stub. That arena could not have carried doom, whose zone allocator asks for
+// 16 MiB up front.
+//
+// The contract SYS_brk implements is the traditional one: it returns the new
+// break, or the unchanged old break if the request could not be satisfied. So
+// "did it work" is "did the value move", which is what the comparison below
+// tests. brk(0) is the query form.
 
 void *_sbrk(ptrdiff_t incr)
 {
-    char *prev = __user_brk;
+    long current = __sys1(SYS_brk, 0);
+    if (current < 0) { errno = ENOMEM; return (void *)-1; }
 
-    if (incr < 0 && (prev + incr) < __user_heap) {
-        errno = ENOMEM;
-        return (void *)-1;
-    }
-    if (incr > 0 && (size_t)(prev - __user_heap) + (size_t)incr > USER_HEAP_SIZE) {
-        errno = ENOMEM;
-        return (void *)-1;
-    }
+    if (incr == 0) { return (void *)current; }
 
-    __user_brk = prev + incr;
-    return prev;
+    long requested = current + (long)incr;
+
+    // A negative incr large enough to wrap below zero would otherwise be sent
+    // to the kernel as a huge positive address.
+    if (incr < 0 && requested > current) { errno = ENOMEM; return (void *)-1; }
+    if (incr > 0 && requested < current) { errno = ENOMEM; return (void *)-1; }
+
+    long result = __sys1(SYS_brk, requested);
+    if (result != requested) { errno = ENOMEM; return (void *)-1; }
+
+    // sbrk returns the *previous* break - the base of the newly added space.
+    return (void *)current;
 }
 
 // ---------------- process ----------------
@@ -216,3 +217,45 @@ int _execve(const char *name, char * const *argv, char * const *env)
     errno = ENOMEM;
     return -1;
 }
+
+// ---------------- unprefixed aliases ----------------
+//
+// Built with --disable-newlib-supplied-syscalls, newlib's reentrant layer
+// (newlib/libc/reent/*.c) calls the *unprefixed* names - _read_r() calls
+// read(), _sbrk_r() calls sbrk(), and so on - while everything else in newlib
+// and every convention for retargeting it uses the underscore-prefixed ones.
+// Both spellings therefore have to exist, and they have to be the same
+// function.
+//
+// Aliases rather than forwarding wrappers so there is exactly one
+// implementation of each and no chance of the two drifting apart.
+//
+// Only the names newlib actually references are aliased; adding the rest
+// would be dead weight that the linker cannot discard from a .o this small.
+
+int     open(const char *name, int flags, ...)      __attribute__((alias("_open")));
+int     close(int fd)                               __attribute__((alias("_close")));
+_READ_WRITE_RETURN_TYPE read(int fd, void *buf, size_t len)        __attribute__((alias("_read")));
+_READ_WRITE_RETURN_TYPE write(int fd, const void *buf, size_t len) __attribute__((alias("_write")));
+_off_t  lseek(int fd, _off_t offset, int whence)    __attribute__((alias("_lseek")));
+int     fstat(int fd, struct stat *st)              __attribute__((alias("_fstat")));
+int     stat(const char *name, struct stat *st)     __attribute__((alias("_stat")));
+int     isatty(int fd)                              __attribute__((alias("_isatty")));
+int     getpid(void)                                __attribute__((alias("_getpid")));
+int     kill(int pid, int sig)                      __attribute__((alias("_kill")));
+int     unlink(const char *name)                    __attribute__((alias("_unlink")));
+int     link(const char *a, const char *b)          __attribute__((alias("_link")));
+void   *sbrk(ptrdiff_t incr)                        __attribute__((alias("_sbrk")));
+int     gettimeofday(struct timeval *tv, void *tz)  __attribute__((alias("_gettimeofday")));
+clock_t times(struct tms *buf)                      __attribute__((alias("_times")));
+
+// __libc_init_array() calls _init() before running the .init_array
+// constructors. It is the head of the classic .init section chain, which a
+// hosted toolchain supplies in crti.o/crtn.o - files that only exist for a
+// target with a full toolchain installed, which this is not.
+//
+// Nothing here uses .init: user.ld collects constructors into .init_array,
+// which __libc_init_array walks directly. So _init exists to be called and to
+// return, and _fini is its counterpart for the exit path.
+void _init(void) { }
+void _fini(void) { }

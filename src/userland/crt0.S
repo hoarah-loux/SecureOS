@@ -24,13 +24,12 @@ _start:
 
     /* Zero .bss.
      *
-     * The kernel is supposed to do this - .bss lives past p_filesz and should
-     * fault in as zeroed anonymous pages - but populate_fault_frame() currently
-     * reads a full 4096 bytes from the backing file with no clamp at p_filesz,
-     * so the tail of .bss comes back as whatever bytes follow the segment in
-     * the file. Until that is fixed, zeroing here is what makes a C binary
-     * correct; after it is fixed, this is redundant but harmless, and every
-     * real crt0 does it anyway. */
+     * Redundant as of the p_filesz clamp in populate_fault_frame(): the kernel
+     * now zero-fills everything past p_filesz, so .bss arrives zeroed. Kept
+     * anyway, because every real crt0 does it and because the C standard makes
+     * it this code's guarantee rather than the loader's - a binary that
+     * depends on the kernel getting it right has no way to notice when it does
+     * not. The cost is touching pages that would otherwise fault in lazily. */
     lea rdi, [rip + __bss_start]
     lea rcx, [rip + __bss_end]
     sub rcx, rdi

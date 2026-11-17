@@ -11,6 +11,10 @@ build/
 *.obj
 *.elf
 *.a
+
+# ...except the vendored newlib, which is a committed build artifact rather
+# than build output. See src/userland/newlib/README.md.
+!src/userland/newlib/lib/*.a
 *.so
 
 # Disk images / ISOs
