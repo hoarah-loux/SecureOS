@@ -100,7 +100,9 @@ make CFLAGS_EXTRA='-DSHELL_AUTORUN="\"./RING3F.EXE;./RING3G.EXE\""'
 
 **make does not track `CFLAGS`.** Changing only `SHELL_AUTORUN` rebuilds
 nothing and you boot the previous kernel. `touch src/kernel/core/kernel.c`
-first. This looks exactly like your program not running.
+first. This looks exactly like your program not running. Headers *are* tracked
+now (`-MMD -MP`), so editing one does rebuild everything that includes it —
+only command-line defines are invisible to make.
 
 **The FAT32 image needs its absolute path.** `$(FAT32_IMAGE)` expands under an
 absolute `BUILD_DIR`, so `make build/secureos.fat32.img` matches no rule. It
@@ -190,7 +192,10 @@ interrupt a sleep — there are no signals — so none of them return `EINTR`, a
 `nanosleep()`'s remaining-time argument always comes back zero.
 
 Not working, and failing honestly rather than silently: `fork`, `execve`,
-`wait`, signals, `unlink`, `link`. These return -1 with a plausible `errno`.
+`wait`, signals, `unlink`, `link`, `mkdir`. These return -1 with a plausible
+`errno`. There are no directories to create and no second process to start, so
+a program that needs either has to do without — doom does, writing its config
+and savegames into the FAT32 root.
 
 Also worth knowing:
 
@@ -199,8 +204,9 @@ Also worth knowing:
   `argv[0]="prog"` and an empty environment. A program needing real arguments
   has to fabricate them itself, which is what the doom backend does.
 - **fds are 3..15**, sixteen slots. **Slot 3 is the executable itself** and
-  must never be closed — the process's own text is demand-paged through it for
-  its entire life.
+  cannot be closed: the kernel gives it its own fd kind and `close(3)` returns
+  -1. The process's own text is demand-paged through that handle for its entire
+  life. Reading and seeking it work normally.
 - **The heap is 64 MiB per process**, an anonymous demand-paged reservation at
   `0x40000000`. Untouched pages cost nothing.
 - **The stack is 1 MiB**, GROWDOWN and demand-paged. Deep recursion runs off
