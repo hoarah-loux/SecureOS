@@ -3,22 +3,22 @@
 Living roadmap for the doom port. Supersedes the "Doom-generic port blockers"
 section of `TODO.md`.
 
-**Status: milestone 5 reached, all nine kernel blockers done.** A C program
-runs in ring3 against a real libc, puts pixels on the screen at 320x200 faster
-than doom needs, and reads the keyboard as raw press/release events including
-the arrows. What is left is doomgeneric itself.
+**Status: done. `./DOOM.EXE` plays doom.** The demo loop runs E1M1 at 320x200
+with the right palette and a working HUD, the menu takes the arrow keys, and
+the WAD loads off FAT32 in a quarter of a second. Everything below is now a
+record of how it was built rather than a plan.
 
 ---
 
 ## Where things stand
 
 ```
-Phase 0  toolchain & vendoring     newlib DONE   doomgeneric TODO   WAD TODO
+Phase 0  toolchain & vendoring     newlib DONE   doomgeneric DONE   WAD DONE
 Phase 1  kernel blockers           9 of 9 DONE
 Phase 2  userland build path       DONE
-Phase 3  newlib retargeting        DONE (fstat/fd-3 hardening outstanding)
-Phase 4  doomgeneric backend       TODO
-Phase 5  milestones                0, 1, 2, 4 and 5 covered; 3 and 6 TODO
+Phase 3  newlib retargeting        DONE
+Phase 4  doomgeneric backend       DONE
+Phase 5  milestones                0 through 6 DONE
 ```
 
 ### What runs today
@@ -39,6 +39,8 @@ Every one of these is on the FAT32 image and launched from the shell with
 | `FBTEST.EXE` | **`SYS_fb_present`**: scaling, centring, letterbox, rejection of bad buffers, throughput |
 | `ECHOIN.EXE` | **blocking `fd 0`**: `read()` and `fgets()` on the keyboard, shell does not steal keys |
 | `KEYTEST.EXE` | **raw scancodes**: press *and* release, arrows, `0xE0`, raw mode keeping the shell clean |
+| `CAT.EXE` | **FAT32 through newlib stdio**: the 4 MB WAD read, seeked and checksummed, and `close(3)` refused |
+| `DOOM.EXE` | **everything** |
 
 `HELLO.EXE`'s actual output:
 
@@ -55,6 +57,22 @@ Every one of these is on the FAT32 image and launched from the shell with
 Step 3 prints `3.142` only because SSE is enabled and saved across context
 switches; step 5 reads zero only because of the `p_filesz` clamp; step 4 is
 malloc on a real `SYS_brk`. Each step is load-bearing.
+
+`CAT.EXE`'s:
+
+```
+[CAT] step 1: opening /DOOM1.WAD
+[CAT] step 2: size 4196020 bytes
+[CAT] step 3: header ok, 1264 lumps, directory at 4175796
+[CAT] step 4: first lump PLAYPAL, 10752 bytes at 12
+[CAT] step 5: 4196020 bytes read, checksums match, 230 ms, 17813 KB/s
+[CAT] step 6: close(3) on the executable refused
+[CAT] done, exiting 0
+```
+
+The checksums are computed on the host from the same file, so a single wrong
+byte anywhere in the chain walk fails the test here rather than turning into
+doom misbehaving for no visible reason twenty minutes later.
 
 `FBTEST.EXE`'s, on an 800x600 screen:
 
@@ -243,8 +261,6 @@ game's movement keys never arrive at a shell prompt as a line of text.
 **§1.9 User stack.** 64 KB → 1 MB (`USER_STACK_SIZE`). GROWDOWN and
 demand-paged, so this is a recursion-depth ceiling rather than an allocation.
 
-### Remaining
-
 ---
 
 ## Phase 3 — newlib retargeting
@@ -265,50 +281,93 @@ obvious and are worth not rediscovering:
   empty function here; `user.ld` collects constructors into `.init_array`,
   which `__libc_init_array` walks directly.
 
+### Hardening, done
+
+- **`_fstat`** reports `S_IFCHR` for fds 0/1/2, and `S_IFREG` with a size
+  recovered by `lseek(END)` for files. Doom stats the WAD and stdio sizes its
+  reads from `st_blksize`, so both spellings had to be honest.
+- **fd 3 cannot be closed.** `PROC_FD_EXEC_IMAGE` (`hdr/p.h`) is a separate fd
+  kind for the executable the loader pins at `PROC_FD_BASE`. It reads, writes
+  and seeks exactly like `PROC_FD_FILE` — `fd_slot_is_file()` in
+  `fs_syscalls.c` is what every operation except close asks — and `sys_close`
+  refuses it. Teardown in `release_threadless_proc()` closes it directly,
+  bypassing the syscall. Regression test: `CAT.EXE` step 6.
+
+  The risk was never an overwrite: `fd_slot_alloc()` hands out the first free
+  slot and this one is in use from the moment the process exists. It was that
+  a `close(3)` from ring3 removes the backing store the calling code is being
+  demand-paged from, and the next text fault reads through a closed handle.
+
 ### Outstanding hardening
 
-- `_fstat` should report `S_IFCHR` for fds 0/1/2 and `S_IFREG` plus a size
-  from `lseek(END)` for files. Doom stats the WAD.
-- **fd 3 must never be closed.** The loader pins the executable there and
-  every not-yet-touched text page is still demand-paged through it. A stray
-  `close(3)` from ring3 tears out the backing store the process is running
-  from, and the next fault reads through a closed handle. Add a fd kind
-  (`PROC_FD_EXEC_IMAGE`) that `sys_close` refuses and teardown bypasses.
-  No overwrite risk exists — `fd_slot_alloc()` scans for the first free slot
-  and skips the pinned one — only a close risk.
 - No user-pointer validation in the syscall layer. Worth a
   `< USER_SPACE_LIMIT_` check on `read`/`write`/`fb_present` buffers.
+  `sys_fb_present` already does its own; `read`/`write` do not.
 
 ---
 
-## Phase 0 — what is left
+## Phase 0 — vendoring
 
-- **doomgeneric**: vendor into `src/userland/doom/` at `dcb7a8d`. Delete the
-  platform backends (`doomgeneric_sdl.c`, `_xlib.c`, `_win.c`, …); keep
-  `doomgeneric.c`, `doomgeneric.h` and the DOOM sources. Set
-  `DOOMGENERIC_RESX 320` / `RESY 200`.
-- **`DOOM1.WAD`**: shareware, ~4 MB, into a gitignored `assets/`. Do **not**
-  commit it. Add a Makefile rule that fetches it and errors clearly if absent.
-  Lands on the image as `/DOOM1.WAD` (FAT 8.3).
+**doomgeneric** lives in `src/userland/apps/doom/`, upstream `dcb7a8d`, flat:
+the app discovery in the Makefile compiles every `.c` directly inside an app
+directory and does not descend, which is exactly doomgeneric's own layout. The
+file list is the one `Makefile.soso` uses — the other hobby-OS port — minus its
+backend, so the platform backends (`_sdl.c`, `_xlib.c`, `_win.c`, `_soso.c`, …)
+and the SDL sound and music modules are simply not vendored.
+
+Two files needed a decision rather than a copy:
+
+- **`i_joystick.c`** is SDL top to bottom and is replaced by a local file of
+  the same name holding four empty functions. Stubbing it there rather than
+  deleting the `I_InitJoystick()` calls in `d_main.c` and `i_system.c` is what
+  keeps the vendored sources diffable against upstream.
+- **`net_sdl.h`** and **`i_joystick.h`** are kept. Both are referenced by
+  files that are compiled, neither includes an SDL header, and the one symbol
+  `net_sdl.h` declares is never linked against.
+
+Resolution and warnings come from `doom_CFLAGS` in `src/boot/Makefile`:
+`-DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 -DNORMALUNIX -w`. 320x200 is
+doom's native mode and the kernel scales it on presentation, so rendering
+larger would cost work and gain nothing. `-w` silences roughly two thousand
+warnings in third-party code nobody here is going to fix; every other app
+still builds `-Wall -Wextra`.
+
+**`DOOM1.WAD`** is not committed. `make doom-wad` fetches the shareware v1.9
+WAD into a gitignored `assets/`, checks it against a sha256, and only then
+renames it into place; the FAT32 image depends on it and copies it to
+`/DOOM1.WAD`. Downloading to a `.part` file first is what keeps an HTML error
+page saved under the WAD's name from being cached as a finished artifact that
+make then considers up to date forever. The checksum is not decoration either:
+several different files are called `doom1.wad`, and doom misbehaves on the
+wrong one in ways that look like a bug in the port.
 
 ---
 
 ## Phase 4 — the backend
 
-`src/userland/doom/doomgeneric_secureos.c`:
+`src/userland/apps/doom/doomgeneric_secureos.c`:
 
 | Function | Implementation |
 |---|---|
 | `DG_Init` | `SYS_kbd_raw(1)` |
-| `DG_DrawFrame` | `SYS_fb_present(DG_ScreenBuffer, 320, 200)` |
+| `DG_DrawFrame` | `SYS_fb_present(DG_ScreenBuffer, 320, 200)`, then drain the key ring |
 | `DG_GetTicksMs` | `SYS_gettime` |
 | `DG_SleepMs` | `SYS_sleep` |
 | `DG_SetWindowTitle` | no-op |
-| `DG_GetKey` | drain `SYS_getscancode`, translate to doomkey, `*pressed` from the release bit |
+| `DG_GetKey` | pop one event from the queue `DG_DrawFrame` fills |
 
-Doomkeys: `KEY_RIGHTARROW 0xae`, `KEY_LEFTARROW 0xac`, `KEY_UPARROW 0xad`,
-`KEY_DOWNARROW 0xaf`, `KEY_FIRE`/RCtrl `0x9d`, `KEY_USE` space,
-`KEY_ESCAPE 27`, `KEY_ENTER 13`, `KEY_TAB 9`, plus alphanumerics.
+The kernel ring is drained in `DG_DrawFrame` rather than in `DG_GetKey`
+because `DG_DrawFrame` is the one entry point doom is guaranteed to call every
+frame, while `DG_GetKey` is called until it returns zero — draining there
+would mean the ring is only ever emptied as fast as doom asks, and a key held
+down across a slow frame would arrive late.
+
+Translation is a switch on the set-1 scancode, with the `0xE0` prefix taken
+from `SECUREOS_KEY_EXTENDED` selecting a second table: extended `0x48` is the
+up arrow, plain `0x48` is keypad 8, and both map to `KEY_UPARROW` because doom
+wants either to work. `SECUREOS_KEY_RELEASED` becomes doomgeneric's `pressed`
+flag, which is what makes movement keys repeat while held rather than
+stuttering.
 
 The kernel supplies no argv, so the backend provides `main()`:
 
@@ -317,22 +376,77 @@ char *argv[] = { "doom", "-iwad", "/DOOM1.WAD", NULL };
 doomgeneric_Create(3, argv);
 ```
 
+`-iwad` rather than letting `d_iwad.c` search: its search walks directories
+this filesystem does not have.
+
+### What newlib had to grow
+
+Linking doom turned up four missing symbols, all added to
+`src/userland/libc_glue/syscalls.c`:
+
+- **`mkdir`** — `M_MakeDirectory()` wants somewhere for savegames and a config
+  file. There is no mkdir syscall and the FAT32 layer creates files but not
+  directories, so it fails with `ENOSYS`. Doom copes by writing to the current
+  directory, which is the FAT32 root and is where everything lives anyway.
+- **`fork`, `wait`, `execve`** — unprefixed aliases of the already-failing
+  underscore versions. Nothing in doom calls them; newlib's `system()` and its
+  reentrant exec wrappers reference them, and linking anything that pulls in
+  `system()` drags all three in.
+
 ---
 
-## Phase 5 — remaining milestones
+## Phase 4a — making the WAD readable in finite time
+
+Doom opens a 4 MB file and then seeks all over it, and the FAT32 read path was
+quadratic in the file size. Three changes, all in the kernel, took a full read
+of the WAD from "unusable" to 240 ms:
+
+**A one-sector FAT cache in the mount** (`fat32_mount_t::fat_cache`). Walking a
+cluster chain reads one FAT entry per cluster and a 512-byte FAT sector holds
+128 of them, so an uncached walk re-read the same sector 128 times in a row —
+and a read is a polled PIO transfer, not a memory access. One entry is enough
+because chain walks are sequential by nature. It is filled through a const
+pointer, deliberately: every FAT reader in the tree holds the mount as const,
+and the cache is not part of the filesystem's logical state.
+
+**A per-file chain hint** (`fat32_file_t::read_hint`). Without it every read
+walks from the first cluster, so reading a 4 MB file in 4 KB pieces walks the
+chain from the beginning a thousand times. The hint makes the common case — the
+next read continues where the last stopped — a walk of zero steps. It is only
+ever written from a position reached by following the chain, so the only thing
+that can invalidate it is truncation, which resets it.
+
+**Contiguous multi-sector reads.** `fat32_read_file_at()` now finds the longest
+run of physically consecutive clusters and reads it in one `block_device_read`,
+and `ide_pio_read()` issues one READ SECTORS command per run instead of one per
+sector. A freshly formatted image lays files out in a single run, so the WAD is
+8192 consecutive clusters. The bounce buffer is 8 sectors because that is
+kmalloc's ceiling — `kmalloc` refuses anything over 4096 (`heap.c`), and asking
+for more silently falls back to the one-sector path.
+
+Reads go through that bounce buffer rather than straight into the caller's
+buffer on purpose: `sys_read`'s destination is a userland pointer whose pages
+may be demand-paged and not yet present, and the IDE driver refuses a
+destination that is not mapped — it cannot resolve a fault from inside its
+transfer loop.
+
+---
+
+## Phase 5 — milestones
 
 | # | Binary | Proves | Status |
 |---|---|---|---|
 | 0 | `RING3M.EXE` | mmap ABI from ring3, `.bss` genuinely zeroed | **done** |
 | 1 | `HELLO.EXE` | newlib, crt0, `_write`, SSE, ELF > 4 KB | **done** |
 | 2 | `RING3T.EXE` | `SYS_brk`, demand-paged anon | **done** (assembly; a `MALLOC.EXE` doing 16 MB through malloc would be a stronger check) |
-| 3 | `CAT.EXE` | FAT32 read of a multi-MB file through newlib stdio | todo |
+| 3 | `CAT.EXE` | FAT32 read of a multi-MB file through newlib stdio | **done** (4 MB in 240 ms, checksums verified) |
 | 4 | `FBTEST.EXE` | `SYS_fb_present`, scaling, blit throughput | **done** (100 fps at 320x200 2x) |
 | 5 | `KEYTEST.EXE` | press *and* release, arrows, `0xE0`, shell not stealing input | **done** |
-| 6 | `DOOM.EXE` | everything | todo |
+| 6 | `DOOM.EXE` | everything | **done** |
 
-**Definition of done**: `./DOOM.EXE` from the shell reaches the title screen,
-the demo loop plays, and arrow keys + Ctrl move and fire in-game.
+**Definition of done**, met: `./DOOM.EXE` from the shell reaches the title
+screen, the demo loop plays E1M1 with the correct palette and HUD, and the
+arrow keys and Ctrl work.
 
 ---
 
@@ -410,16 +524,31 @@ looks exactly like a program that started and printed nothing.
 
 ## Known risks
 
-- **`-O0` kernel plus polled single-sector PIO IDE** means WAD loading will be
-  slow. The blit itself is no longer the worry — milestone 4 measured 100 fps
-  at 2x — so if doom runs slowly, look at the WAD read path and at doom's own
-  rendering, not at `fb_blit_scaled`.
+- **WAD loading was the predicted bottleneck and is not one any more** — see
+  Phase 4a. A full 4 MB read is 240 ms. If doom runs slowly now, look at its
+  own rendering under `-O0`, not at `fb_blit_scaled` (100 fps at 2x, milestone
+  4) and not at the read path.
 - **Protection faults panic the whole kernel** (`pf_panic`). Doom *will* fault
   during bring-up and every fault costs a reboot. Out of scope, but if the
   reboot cycle becomes the bottleneck, promoting protection faults to a
   process kill is the highest-value scope addition available.
 - **`krealloc` is declared but never defined** (`hdr/heap.h`) — a link error
   waiting for whatever kernel code reaches for it first.
+- **A header change used to rebuild nothing**, and that is not a slow build,
+  it is a wrong one. Change a field in a struct that lives in a header — `proc`,
+  `thread`, `fat32_file_t` — and every object compiled before the edit keeps
+  the old layout while the ones after use the new one. The kernel links happily
+  and reads fields at different offsets depending on which file is asking; the
+  symptom here was `sbrk` returning -1 in every ring3 program because `sys_brk`
+  and the loader disagreed about where `proc::brk_base` lives. The Makefile now
+  generates `.d` files with `-MMD -MP` and includes them.
+
+  That fix has a trap of its own, already sprung: `PROJECT_ROOT` was defined
+  with `=` from `$(lastword $(MAKEFILE_LIST))`, which is re-evaluated at use
+  time — and once the generated `.d` files are included, the last file make
+  read is one of them, so the project root resolved to `build/` and took
+  `-I$(INCLUDE_DIR)` with it. It is `:=` now.
+
 - **No `ENTRY()` in a linker script is a trap.** ld falls back to the start of
   `.text`, which is `_start` only by accident of source order and stops being
   `_start` the moment a helper is defined above it. The binary then runs from
