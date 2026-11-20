@@ -2,11 +2,11 @@
 
 **A security-oriented, clean-slate operating system for x86-64 · v1**
 
-SecureOS is an experimental operating-system kernel developed from first principles as a senior computer-engineering project. It explores how a small, modular operating system can incorporate memory protection, privilege separation, and fault containment into its core architecture instead of treating security as a collection of optional add-ons.
+SecureOS is an operating-system kernel developed from scratch as a research operating system. It explores how a modular operating system can incorporate memory protection, privilege separation, and fault containment into its core architecture instead of treating security as a collection of optional add-ons.
 
 SecureOS has been developed and validated in **QEMU** and has also been tested on **real hardware**, where it boots and operates normally. Version **1 (v1)** brings together the core kernel architecture and the user-space execution environment: memory management, scheduling, system calls, persistent storage, keyboard input, and framebuffer output work together to support statically linked applications running in ring 3.
 
-> **Project status:** SecureOS v1 is a functional research and educational operating system. It is not positioned as a production-ready security platform; its implemented capabilities, current scope, and planned extensions are described separately below.
+> **Project status:** SecureOS v1 is a functional research operating system. It is not positioned as a production-ready security platform; its implemented capabilities, current scope, and planned extensions are described separately below.
 
 ---
 
@@ -442,22 +442,6 @@ Following the SMP milestone, planned work includes:
 6. **Security services:** develop concrete policy and monitoring facilities, potentially including system-call behavior monitoring, honeypot mechanisms, and lightweight AI-assisted anomaly detection.
 7. **Hardware compatibility:** continue validating drivers and boot behavior across a wider range of physical machines and firmware configurations.
 
-## Contributing
-
-Contributions, bug reports, and technical discussion are welcome. When changing kernel code, please:
-
-- Keep architecture-specific code separated from generic kernel logic where practical.
-- Preserve the freestanding build assumptions and the System V AMD64 ABI requirements.
-- Validate user-provided pointers and lengths at kernel boundaries.
-- Keep page permissions and process/address-space ownership explicit.
-- Add or update a focused test when changing a subsystem or ABI contract.
-- Include serial output or reproducible QEMU steps when reporting a boot/runtime regression.
-
-Before opening a pull request, build the ISO and run the relevant QEMU target. Include the commands used and the observed output in the pull request description.
-
-## Project background
-
-SecureOS was developed as a senior project in the Computer Engineering Department of Istanbul Bilgi University. The project explores clean-slate operating-system architecture, security-oriented memory protection, and modular kernel design.
 
 The project report credits the following team contributions:
 
@@ -468,4 +452,4 @@ The project report credits the following team contributions:
 
 ---
 
-*SecureOS is an educational and research project. Its security mechanisms are experimental and should not be interpreted as a guarantee of protection against malicious code or real-world attacks.*
+*SecureOS is a research project. Its security mechanisms are experimental and should not be interpreted as a guarantee of protection against malicious code or real-world attacks.*
