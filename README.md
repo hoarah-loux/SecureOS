@@ -443,7 +443,7 @@ Following the SMP milestone, planned work includes:
 7. **Hardware compatibility:** continue validating drivers and boot behavior across a wider range of physical machines and firmware configurations.
 
 
-## contributions
+## Contributions
 
 The project report credits the following team contributions: 
 
