@@ -443,7 +443,9 @@ Following the SMP milestone, planned work includes:
 7. **Hardware compatibility:** continue validating drivers and boot behavior across a wider range of physical machines and firmware configurations.
 
 
-The project report credits the following team contributions: ##contributions
+## contributions
+
+The project report credits the following team contributions: 
 
 - **Hoarah Loux:** bootloader, physical/virtual memory management, heap, process management, user space, and interrupt handling.
 - **5pky:** filesystem, physical memory management, user space, interrupt handling, shell, and system-call interface.
